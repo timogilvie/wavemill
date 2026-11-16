@@ -56,3 +56,18 @@ The requested Moonshot K3 reference again exhausted its six-turn budget. It reco
 The original HTTP wire was not retained, so these arguments alone cannot locate corruption between inference, upstream streaming and adapter parsing. Recovered generation metadata corroborates Moonshot for the available responses, but missing rows remain explicit. Wafer US passed short compatibility; Relace remained inconclusive for missing host evidence. The failed reference stopped K3's paired phase. Production restrictions remain unchanged.
 
 See [OpenRouter's provider routing documentation](https://openrouter.ai/docs/guides/routing/provider-selection) for request restrictions and service-tier behavior. Catalog availability and low advertised input prices do not independently establish workload savings or qualification.
+
+
+## Final follow-up results
+
+| Study | Completed runs | Complete paired repetitions | Outcome |
+| -- | --: | --: | -- |
+| K2.7 initial | 2 | 0 | Tasks completed; host evidence incomplete, inconclusive |
+| GLM initial | 2 | 0 | Tasks completed; host evidence incomplete, inconclusive |
+| K3 follow-up | 3 | 0 | Moonshot corruption/budget failure; Wafer US short pass; Relace host evidence missing |
+| K2.7 metadata retest | 15 | 3 | CoreWeave failed the next workflow's six-turn limit after a rejected mutation; candidate rejected and testing stopped |
+| GLM metadata retest | 4 | 0 | Both endpoints exceeded the workflow turn limit; candidate rejected and testing stopped |
+
+All 26 metered attempts are represented in `combined-cost.json`: SDK total **$0.218960072**, including fallback estimates; reported-charge subtotal **$0.211071072**. The SDK's `estimatedUsd` is its alternative estimate subtotal and must not be added to `actualUsd`; `totalUsd` is the combined figure to use. These are measurement-time figures, not a promise that every billed charge is known. Later read-only metadata recovery does not erase the original evidence gaps or change these saved outcomes. The normal consent-gated queue recorded every original attempt.
+
+No tested alternative qualifies for promotion. Three complete K2.7 pairs are far short of the required 73, and the subsequent rejection remains authoritative. HOK-3497 stays gated; production pins are unchanged. This outcome does not establish that all other endpoints are unsafe: StreamLake/Inceptron for K2.7, other GLM hosts, and Gemini Flex remain untested opportunities. Their catalog prices alone do not authorize production selection.

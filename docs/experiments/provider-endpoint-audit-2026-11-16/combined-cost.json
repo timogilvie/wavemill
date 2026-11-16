@@ -1,0 +1,429 @@
+{
+  "studies": [
+    "k2-live",
+    "glm-live",
+    "k3-live",
+    "k2-retest",
+    "glm-retest"
+  ],
+  "accountedAttempts": 26,
+  "sdkReport": {
+    "taskId": "provider-followups",
+    "totalUsd": 0.218960072,
+    "actualUsd": 0.211071072,
+    "estimatedUsd": 0.226529,
+    "byModel": {
+      "kimi-k2.7-code": {
+        "totalUsd": 0.16544105,
+        "actualUsd": 0.16208405,
+        "estimatedUsd": 0.167249,
+        "usage": {
+          "inputTokens": 63853,
+          "outputTokens": 15217,
+          "cacheReadTokens": 455712,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": null
+        },
+        "eventCount": 17,
+        "turnCount": 17,
+        "costSource": "mixed",
+        "coverage": "partial"
+      },
+      "glm-5.3-flash": {
+        "totalUsd": 0.00479719,
+        "actualUsd": 0.00479719,
+        "estimatedUsd": 0.005898,
+        "usage": {
+          "inputTokens": 27369,
+          "outputTokens": 5583,
+          "cacheReadTokens": 51648,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": null
+        },
+        "eventCount": 6,
+        "turnCount": 6,
+        "costSource": "provider_reported",
+        "coverage": "partial"
+      },
+      "kimi-k3": {
+        "totalUsd": 0.048721832,
+        "actualUsd": 0.044189832,
+        "estimatedUsd": 0.053382,
+        "usage": {
+          "inputTokens": 10227,
+          "outputTokens": 2326,
+          "cacheReadTokens": 18944,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": null
+        },
+        "eventCount": 3,
+        "turnCount": 3,
+        "costSource": "mixed",
+        "coverage": "partial"
+      }
+    },
+    "byHarness": {
+      "native": {
+        "totalUsd": 0.218960072,
+        "actualUsd": 0.211071072,
+        "estimatedUsd": 0.226529,
+        "usage": {
+          "inputTokens": 101449,
+          "outputTokens": 23126,
+          "cacheReadTokens": 526304,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": null
+        },
+        "eventCount": 26,
+        "turnCount": 26,
+        "costSource": "mixed",
+        "coverage": "partial"
+      }
+    },
+    "usage": {
+      "inputTokens": 101449,
+      "outputTokens": 23126,
+      "cacheReadTokens": 526304,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": null
+    },
+    "eventCount": 26,
+    "turnCount": 26,
+    "source": {
+      "cost": "mixed",
+      "basis": "per_token_api",
+      "capture": [
+        "manual"
+      ],
+      "sessionFileCount": 0
+    },
+    "pricing": {
+      "source": "local_estimate",
+      "revision": null,
+      "effectiveDate": "2026-11-04",
+      "revisions": [],
+      "priceTables": [
+        "external"
+      ],
+      "builtInTableAsOf": "2026-11-04",
+      "overrideCount": 0,
+      "currency": "USD"
+    },
+    "coverage": {
+      "status": "partial",
+      "pricedEvents": 26,
+      "unpricedEvents": 0,
+      "unknownModels": []
+    },
+    "diagnostics": [
+      {
+        "code": "mixed_coverage",
+        "level": "warn",
+        "message": "coverage is partial: some events are missing cost or usage",
+        "count": 1
+      },
+      {
+        "code": "provider_reported_cost",
+        "level": "info",
+        "message": "at least one event carries a provider-reported charge",
+        "count": 1
+      }
+    ],
+    "summaries": [
+      {
+        "schema_version": "task_cost_summary/v1",
+        "task_id": "provider-followups",
+        "session_ids": [
+          "redacted-05271ce3bf37daa4",
+          "redacted-0ccbdabab18b2ad2",
+          "redacted-168290c7a5d9a384",
+          "redacted-1f3d57c6f30d5aff",
+          "redacted-2ea1051cf87ededf",
+          "redacted-405520568142a619",
+          "redacted-465df3b602272b50",
+          "redacted-62f25a0b016092ea",
+          "redacted-6fbc8b07ab11476c",
+          "redacted-7120996eb795e0c6",
+          "redacted-719b292e1c93e8f6",
+          "redacted-773b881139a1ddc9",
+          "redacted-83b59abcf4e6f701",
+          "redacted-8b887d344a55fe99",
+          "redacted-8f46cfdb3cf8706d",
+          "redacted-90f367a699fee2c4",
+          "redacted-95e4e3d967aeaf37",
+          "redacted-99b15c0cd6a3e3c3",
+          "redacted-9c7da6ddcf4ff273",
+          "redacted-9ce6fc8fef82d3aa",
+          "redacted-9f358b57c93be41a",
+          "redacted-a52049736ec36716",
+          "redacted-b62b32eb023e0f57",
+          "redacted-cb73eef926a6f9e7",
+          "redacted-d8c78cdc821e3d8c",
+          "redacted-f54b96f9a8af1850"
+        ],
+        "harness": "native",
+        "provider_contract_version": "native/1",
+        "models": [
+          "kimi-k2.7-code",
+          "glm-5.3-flash",
+          "kimi-k3"
+        ],
+        "model_segments": [
+          {
+            "model": "kimi-k2.7-code",
+            "turn_count": 2,
+            "usage": {
+              "input_tokens": 7390,
+              "output_tokens": 473,
+              "cache_read_tokens": 1792,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.0020412,
+            "estimated_cost_usd": 0.007205,
+            "cost_source": "mixed"
+          },
+          {
+            "model": "glm-5.3-flash",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 4822,
+              "output_tokens": 503,
+              "cache_read_tokens": 6080,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.00051885,
+            "estimated_cost_usd": 0.001158,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "kimi-k3",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 5203,
+              "output_tokens": 1627,
+              "cache_read_tokens": 14592,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.0397302,
+            "estimated_cost_usd": 0.044391,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "glm-5.3-flash",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 5305,
+              "output_tokens": 759,
+              "cache_read_tokens": 7424,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.000107388,
+            "estimated_cost_usd": 0.00057,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "kimi-k3",
+            "turn_count": 2,
+            "usage": {
+              "input_tokens": 5024,
+              "output_tokens": 699,
+              "cache_read_tokens": 4352,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.004459632,
+            "estimated_cost_usd": 0.008991,
+            "cost_source": "mixed"
+          },
+          {
+            "model": "kimi-k2.7-code",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 2381,
+              "output_tokens": 224,
+              "cache_read_tokens": 3840,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.00388755,
+            "estimated_cost_usd": 0.003887,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "glm-5.3-flash",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 2935,
+              "output_tokens": 532,
+              "cache_read_tokens": 2368,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.00077729,
+            "estimated_cost_usd": 0.000777,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "kimi-k2.7-code",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 2542,
+              "output_tokens": 449,
+              "cache_read_tokens": 2784,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.00320628,
+            "estimated_cost_usd": 0.003206,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "glm-5.3-flash",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 2745,
+              "output_tokens": 329,
+              "cache_read_tokens": 6400,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.000314445,
+            "estimated_cost_usd": 0.000315,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "kimi-k2.7-code",
+            "turn_count": 3,
+            "usage": {
+              "input_tokens": 16122,
+              "output_tokens": 2702,
+              "cache_read_tokens": 75008,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.03703252,
+            "estimated_cost_usd": 0.037033,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "glm-5.3-flash",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 4891,
+              "output_tokens": 1937,
+              "cache_read_tokens": 17600,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.00223015,
+            "estimated_cost_usd": 0.002229,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "kimi-k2.7-code",
+            "turn_count": 3,
+            "usage": {
+              "input_tokens": 13726,
+              "output_tokens": 2871,
+              "cache_read_tokens": 83936,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.03018923,
+            "estimated_cost_usd": 0.03019,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "glm-5.3-flash",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 6671,
+              "output_tokens": 1523,
+              "cache_read_tokens": 11776,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.000849067,
+            "estimated_cost_usd": 0.000849,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "kimi-k2.7-code",
+            "turn_count": 7,
+            "usage": {
+              "input_tokens": 21692,
+              "output_tokens": 8498,
+              "cache_read_tokens": 288352,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.08572727,
+            "estimated_cost_usd": 0.085728,
+            "cost_source": "provider_reported"
+          }
+        ],
+        "turn_count": 26,
+        "turns_truncated": false,
+        "usage": {
+          "input_tokens": 101449,
+          "output_tokens": 23126,
+          "cache_read_tokens": 526304,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": null
+        },
+        "actual_cost_usd": 0.211071072,
+        "estimated_cost_usd": 0.226529,
+        "total_cost_usd": 0.218960072,
+        "cost_source": "mixed",
+        "cost_basis": "per_token_api",
+        "coverage": "partial",
+        "field_availability": {
+          "usage": "partial",
+          "actual_cost": "partial",
+          "estimated_cost": "available",
+          "pricing": "available"
+        },
+        "pricing_source": "local_estimate",
+        "join_confidence": "unattributed",
+        "collected_at": "2026-11-16T21:31:40.900Z",
+        "event_count": 26,
+        "event_ids": [
+          "native.0.0",
+          "native.1.0",
+          "native.2.0",
+          "native.4.0",
+          "native.3.0",
+          "native.5.0",
+          "native.6.0",
+          "native.7.0",
+          "native.22.0",
+          "native.8.0",
+          "native.23.0",
+          "native.9.0",
+          "native.10.0",
+          "native.11.0",
+          "native.24.0",
+          "native.12.0",
+          "native.13.0",
+          "native.14.0",
+          "native.25.0",
+          "native.15.0",
+          "native.16.0",
+          "native.17.0",
+          "native.18.0",
+          "native.19.0",
+          "native.20.0",
+          "native.21.0"
+        ],
+        "diagnostics": [
+          "mixed_coverage",
+          "provider_reported_cost"
+        ]
+      }
+    ]
+  }
+}
