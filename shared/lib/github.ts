@@ -130,16 +130,6 @@ export interface PrReview {
 }
 
 /**
- * Pull request diff result.
- */
-export interface PullRequestDiff {
-  /** PR number */
-  prNumber: number;
-  /** Unified diff content */
-  diff: string;
-}
-
-/**
  * Build a shell command from an array of arguments, properly escaping each one.
  *
  * @param args - Array of command arguments
@@ -355,56 +345,6 @@ export const getPullRequest = (prNumber: number | string, options: PullRequestVi
       throw new Error('GitHub CLI (gh) is not available or not authenticated. Please install and authenticate with: gh auth login');
     }
     throw new Error(`Failed to get pull request #${prNumber}: ${err.message}`);
-  }
-};
-
-/**
- * Fetches the diff content for a pull request.
- *
- * @param prNumber - The PR number
- * @param options - Options
- * @returns Object containing PR number and diff content
- * @throws {Error} If PR is not found or diff is unavailable
- *
- * @example
- * ```typescript
- * // Get diff for PR #42
- * const { diff } = getPullRequestDiff(42);
- * console.log(diff); // Unified diff format
- * ```
- */
-export const getPullRequestDiff = (prNumber: number | string, options: PullRequestViewOptions = {}): PullRequestDiff => {
-  const { repo } = options;
-
-  if (!prNumber) {
-    throw new Error('PR number is required');
-  }
-
-  try {
-    const args: Array<string | number> = ['gh', 'pr', 'diff', prNumber.toString()];
-
-    // Add repo if provided
-    if (repo) {
-      args.push('--repo', repo);
-    }
-
-    const diff = execShellCommand(buildShellCommand(args), { encoding: 'utf-8' });
-
-    return {
-      prNumber: parseInt(prNumber.toString(), 10),
-      diff,
-    };
-  } catch (error) {
-    const err = error as Error;
-    if (err.message.includes('could not find pull request') ||
-        err.message.includes('HTTP 404') ||
-        err.message.includes('Could not resolve to a PullRequest')) {
-      throw new Error(`Pull request #${prNumber} not found`);
-    }
-    if (err.message.includes('gh:')) {
-      throw new Error('GitHub CLI (gh) is not available or not authenticated. Please install and authenticate with: gh auth login');
-    }
-    throw new Error(`Failed to get diff for pull request #${prNumber}: ${err.message}`);
   }
 };
 

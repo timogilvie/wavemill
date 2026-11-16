@@ -42,7 +42,7 @@ The tool resolves workflow context in priority order:
 
 It then fetches:
 - Linear issue details (identifier, title, description)
-- PR diff via `gh pr diff`, falling back to a local `git diff` when GitHub refuses an oversized PR diff
+- PR diff via a local `git diff` against the PR head (which honours `.gitattributes -diff`, so generated files arrive as git's binary line), falling back to `gh pr diff` only when the local objects cannot be fetched
 - Review comments from GitHub API
 
 ### 2) Intervention Detection
@@ -133,7 +133,9 @@ Context is sent to the LLM judge (default: `claude-sonnet-5`):
 
 If a PR number is present but the PR diff cannot be retrieved, Wavemill does not invoke the judge. It emits an unscored fast-fail eval record with `failureReason: "pr_diff_unavailable"`, `score: 0`, `scoreBand: "Failure"`, and `trainingEligible: false`. Challenge comparisons also refuse to judge a pair when either side has an unavailable diff or an unscored eval; they persist `comparisonOutcome: "inconclusive"` with `noComparisonReason: "diff_unavailable"` or `"eval_unscored"`.
 
-The PR diff byte cap defaults to 64 MiB. Override it with `WAVEMILL_PR_DIFF_MAX_BYTES` when operating on unusually large repositories.
+The PR diff read has a 64 MiB stdout bound. Override it with `WAVEMILL_PR_DIFF_MAX_BYTES` when operating on unusually large repositories; it bounds the read, not the prompt.
+
+The diff then enters the judge prompt through the shared change-input builder (`shared/lib/review-input-budget.ts`), sized to the judge adapter's context window: source and tests stay verbatim, and docs/data/generated files that do not fit are summarised. Each eval logs one `[eval] change_input {"files":…,"summarised":…,"withinBudget":…,"promptTokens":…,"maxTokens":…}` line. If source and tests alone cannot fit, the eval is refused with the adapter's typed `context-window-exceeded` — a terminal failure, never an identical retry.
 
 ### 6) Scoring Formula
 

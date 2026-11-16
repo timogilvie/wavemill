@@ -2,7 +2,9 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { readJsonlFile } from '../jsonl-utils.ts';
-import { buildCappedComparisonPrompt, runBlindJudge, type BlindJudgeCall, type PresentationOrder } from '../pr-comparison.ts';
+import { buildBudgetedComparisonPrompt, runBlindJudge, type BlindJudgeCall, type PresentationOrder } from '../pr-comparison.ts';
+import { adapterForProvider } from '../model-adapters/resolve-adapter.ts';
+import type { TransportAdapter } from '../model-adapters/transport-adapter.ts';
 import { formatRubricForJudgePrompt } from '../rubric.ts';
 import { hashString } from '../prompt-hash.ts';
 import { errorMessage } from '../error-utils.ts';
@@ -13,7 +15,6 @@ export interface SwapTestRunManifest {
   runId: string;
   judge_model: string;
   judge_template_hash: string;
-  maxPromptBytes: number;
   pairIds: string[];
   harnessGitSha: string | null;
   startedAt: string;
@@ -45,11 +46,10 @@ export interface SwapTestResultRow {
     outputTokens: number;
     totalTokens: number;
   };
-  promptBytes: {
-    original: number;
-    final: number;
-  };
-  truncated: boolean;
+  /** Judge prompt size in bytes. */
+  promptBytes: number;
+  /** Change files summarised rather than shown verbatim. */
+  summarisedFiles: number;
   durationMs: number;
   error?: string;
   timestamp: string;
@@ -61,7 +61,6 @@ export interface SwapTestRunOptions {
   pairIds: string[];
   judgeModel: string;
   promptTemplate: string;
-  maxPromptBytes: number;
   orders?: PresentationOrder[];
   concurrency?: number;
   maxCostUsd?: number;
@@ -71,6 +70,8 @@ export interface SwapTestRunOptions {
   onlyOrder?: PresentationOrder;
   deps?: {
     callLlm?: BlindJudgeCall;
+    /** The judge's transport adapter; defaults to the Claude CLI adapter for the judge model. */
+    adapter?: TransportAdapter | null;
     now?: () => Date;
   };
 }
@@ -162,7 +163,6 @@ export async function runSwapTest(options: SwapTestRunOptions): Promise<SwapTest
       runId: options.runId,
       judge_model: options.judgeModel,
       judge_template_hash: judgeTemplateHash,
-      maxPromptBytes: options.maxPromptBytes,
       pairIds,
       harnessGitSha: gitSha(),
       startedAt: now().toISOString(),
@@ -190,6 +190,12 @@ export async function runSwapTest(options: SwapTestRunOptions): Promise<SwapTest
   let costUsd = 0;
   let stoppedForCost = false;
   const concurrency = Math.max(1, Math.min(8, options.concurrency ?? 2));
+  // Keep dry-run estimates on the exact same budget as the real judge. An
+  // explicit null remains an opt-out for tests; an omitted adapter gets the
+  // judge's normal Claude transport adapter, just like runBlindJudge.
+  const judgeAdapter = options.deps?.adapter === undefined
+    ? adapterForProvider('claude', { model: options.judgeModel })
+    : options.deps.adapter;
 
   async function worker(): Promise<void> {
     while (true) {
@@ -206,7 +212,7 @@ export async function runSwapTest(options: SwapTestRunOptions): Promise<SwapTest
       try {
         const input = promptInput(pair, task.order, options.promptTemplate);
         if (options.dryRun) {
-          const capped = buildCappedComparisonPrompt(input, options.maxPromptBytes);
+          const built = buildBudgetedComparisonPrompt(input, judgeAdapter);
           row = {
             pairId: task.pairId,
             order: task.order,
@@ -214,11 +220,10 @@ export async function runSwapTest(options: SwapTestRunOptions): Promise<SwapTest
             judgeTemplateHash,
             judgeModel: options.judgeModel,
             costUsd: null,
-            promptBytes: {
-              original: capped.originalBytes,
-              final: capped.finalBytes,
-            },
-            truncated: capped.truncated,
+            promptBytes: Buffer.byteLength(built.prompt, 'utf8'),
+            summarisedFiles:
+              built.inputs.primary.summarisedCount + built.inputs.challenger.summarisedCount
+              + (built.inputs.shared?.summarisedCount ?? 0),
             durationMs: Date.now() - started,
             timestamp: now().toISOString(),
           };
@@ -226,9 +231,9 @@ export async function runSwapTest(options: SwapTestRunOptions): Promise<SwapTest
           const outcome = await runBlindJudge({
             ...input,
             model: options.judgeModel,
-            maxPromptBytes: options.maxPromptBytes,
             deps: {
               callLlm: options.deps?.callLlm,
+              adapter: options.deps?.adapter,
             },
           });
           row = {
@@ -246,7 +251,7 @@ export async function runSwapTest(options: SwapTestRunOptions): Promise<SwapTest
             costUsd: outcome.costUsd,
             usage: outcome.usage,
             promptBytes: outcome.promptBytes,
-            truncated: outcome.truncated,
+            summarisedFiles: outcome.summarisedFiles,
             durationMs: Date.now() - started,
             timestamp: now().toISOString(),
           };
@@ -260,8 +265,8 @@ export async function runSwapTest(options: SwapTestRunOptions): Promise<SwapTest
           judgeTemplateHash,
           judgeModel: options.judgeModel,
           costUsd: null,
-          promptBytes: { original: 0, final: 0 },
-          truncated: false,
+          promptBytes: 0,
+          summarisedFiles: 0,
           durationMs: Date.now() - started,
           error: errorMessage(error),
           timestamp: now().toISOString(),

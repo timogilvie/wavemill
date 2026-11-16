@@ -16,3 +16,19 @@ if [[ "${JOURNEY_RECOVERY_CONTRACT_REPLAY:-0}" == 1 && ! -f "$FEATURE_DIR/.journ
 fi
 [[ ! -f recovery-preserved.txt ]] || git add recovery-preserved.txt
 default_coding
+
+# HOK-3493: a PR that regenerates a large generated file. The path is the
+# builder's data/fixture/generated tier, so the change input summarises it
+# instead of carrying its text into the judge prompt. ~180 KB is well over the
+# 50 KB summary threshold while staying inside the comparison's own diff-read
+# buffer, which is not part of this invariant.
+if [[ "${JOURNEY_LARGE_GENERATED_FILE:-0}" == 1 ]]; then
+  mkdir -p generated
+  awk 'BEGIN{
+    print "JOURNEY_GENERATED_SENTINEL"
+    for (i = 1; i <= 2000; i++)
+      printf "validator payload line %05d xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n", i
+  }' > generated/huge.validator.cjs
+  git add generated/huge.validator.cjs
+  git -c user.name=fake-agent -c user.email=fake-agent@example.invalid commit -q -m "$WAVEMILL_ISSUE: regenerate generated/huge.validator.cjs"
+fi

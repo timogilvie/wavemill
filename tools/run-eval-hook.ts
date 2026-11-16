@@ -14,6 +14,7 @@ import { runTool } from '../shared/lib/tool-runner.ts';
 import { runPostCompletionEval } from '../shared/lib/post-completion-hook.ts';
 import { EvalValidationError } from '../shared/lib/eval-persistence.ts';
 import { shouldSkipAbortedTaskEval } from '../shared/lib/eval-skip-guard.ts';
+import { isChangeInputRefusedError } from '../shared/lib/review-input-budget.ts';
 
 runTool({
   name: 'run-eval-hook',
@@ -107,6 +108,7 @@ runTool({
     let persisted = false;
     let exitCode = 0;
     let failureMessage = '';
+    let failureReason: string | undefined;
     let quarantinePath: string | undefined;
     const writeResultFile = (code: number) => {
       if (!resultFile) {
@@ -116,7 +118,7 @@ runTool({
         ok: persisted,
         persisted,
         exitCode: code,
-        reason: persisted ? undefined : 'eval_not_persisted',
+        reason: persisted ? undefined : (failureReason ?? 'eval_not_persisted'),
         error: failureMessage || undefined,
         quarantinePath,
       });
@@ -156,6 +158,13 @@ runTool({
       console.warn(`Post-completion eval hook: unexpected error — ${message}`);
       exitCode = 1;
       failureMessage = message;
+      // HOK-3493: a change that cannot fit the judge carries the adapter's
+      // typed refusal. Record its policy kind so the failure policy sees a
+      // terminal `context-window-exceeded` instead of retrying the same
+      // oversize prompt.
+      if (isChangeInputRefusedError(err)) {
+        failureReason = err.adapterError.policyKind;
+      }
       if (err instanceof EvalValidationError && err.quarantinePath) {
         quarantinePath = err.quarantinePath;
       }

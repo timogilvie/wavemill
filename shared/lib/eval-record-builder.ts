@@ -40,7 +40,6 @@ import type {
   EvalPhaseDurations,
   EvalRouting,
   ManifestRef,
-  PromptSizeDiagnostic,
   RoutingDecision,
   RubricCriterion,
   RubricDeterminativeBoundary,
@@ -323,12 +322,6 @@ export function attachReviewExecutedIdentity(
   }
 }
 
-function finiteNonNegative(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0
-    ? value
-    : 0;
-}
-
 /**
  * HOK-2081: Attach counterfactual/replay lineage to an eval record.
  *
@@ -376,40 +369,6 @@ export function attachCounterfactualLineage(
   if (typeof input.policySource === 'string' && input.policySource.trim()) {
     record.policy_source = input.policySource.trim();
   }
-}
-
-export function attachPromptSizeDiagnostic(
-  record: EvalRecord,
-  diagnostic?: PromptSizeDiagnostic | null,
-): void {
-  if (!diagnostic) {
-    return;
-  }
-
-  const perComponentBytes = Object.fromEntries(
-    Object.entries(diagnostic.perComponentBytes).map(([name, bytes]) => [
-      name,
-      finiteNonNegative(bytes),
-    ]),
-  ) as PromptSizeDiagnostic['perComponentBytes'];
-
-  record.promptSizeDiagnostic = {
-    totalBytes: finiteNonNegative(diagnostic.totalBytes),
-    limitBytes: finiteNonNegative(diagnostic.limitBytes),
-    perComponentBytes,
-    policy: diagnostic.policy,
-    action: diagnostic.action,
-    ...(diagnostic.truncatedComponents
-      ? {
-          truncatedComponents: diagnostic.truncatedComponents.map((component) => ({
-            name: component.name,
-            originalBytes: finiteNonNegative(component.originalBytes),
-            finalBytes: finiteNonNegative(component.finalBytes),
-            removedBytes: finiteNonNegative(component.removedBytes),
-          })),
-        }
-      : {}),
-  };
 }
 
 function toEvalChallengeRouteContext(
