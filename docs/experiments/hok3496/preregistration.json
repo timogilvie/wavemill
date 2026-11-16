@@ -1,0 +1,304 @@
+{
+  "capturedAt": "2026-11-16T16:53:07.487Z",
+  "model": "kimi-k3",
+  "modelSubject": {
+    "registryKey": "kimi-k3",
+    "nativeProvider": "openrouter",
+    "providerId": "moonshotai",
+    "providerModelId": "kimi-k3",
+    "providerNativeId": "moonshotai/kimi-k3",
+    "identityRevision": 1,
+    "identityFingerprint": "ac897e834eb8b64cec7bc77d3dece043356e90791c59558f497ceb571faa81fe",
+    "catalogHash": "1dcf75b9f3729162a47e90c7154847db0391e20acc0f00cead833dd0318cb339"
+  },
+  "plan": {
+    "schemaVersion": "endpoint-comparison-plan/v1",
+    "policy": {
+      "maxSpendUsd": 25,
+      "maxCompletionRegression": 0.05,
+      "confidence": 0.95,
+      "maxP95LatencyRatio": 2
+    },
+    "referenceTag": "moonshotai",
+    "subjects": [
+      {
+        "tag": "moonshotai",
+        "providerName": "Moonshot AI",
+        "quantization": "unknown",
+        "deploymentRevision": null
+      },
+      {
+        "tag": "wafer",
+        "providerName": "Wafer",
+        "quantization": "mxfp4",
+        "deploymentRevision": null
+      },
+      {
+        "tag": "relace/fp4",
+        "providerName": "Relace",
+        "quantization": "fp4",
+        "deploymentRevision": null
+      }
+    ],
+    "requiredPairs": 73,
+    "profiles": [
+      "workflow",
+      "cache-heavy"
+    ],
+    "reservePerRunUsd": 1,
+    "runs": [
+      {
+        "pair": -1,
+        "profile": "standard",
+        "endpoint": {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": -1,
+        "profile": "standard",
+        "endpoint": {
+          "tag": "wafer",
+          "providerName": "Wafer",
+          "quantization": "mxfp4",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": -1,
+        "profile": "standard",
+        "endpoint": {
+          "tag": "relace/fp4",
+          "providerName": "Relace",
+          "quantization": "fp4",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 0,
+        "profile": "workflow",
+        "endpoint": {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 0,
+        "profile": "workflow",
+        "endpoint": {
+          "tag": "wafer",
+          "providerName": "Wafer",
+          "quantization": "mxfp4",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 0,
+        "profile": "workflow",
+        "endpoint": {
+          "tag": "relace/fp4",
+          "providerName": "Relace",
+          "quantization": "fp4",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 0,
+        "profile": "cache-heavy",
+        "endpoint": {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 0,
+        "profile": "cache-heavy",
+        "endpoint": {
+          "tag": "wafer",
+          "providerName": "Wafer",
+          "quantization": "mxfp4",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 0,
+        "profile": "cache-heavy",
+        "endpoint": {
+          "tag": "relace/fp4",
+          "providerName": "Relace",
+          "quantization": "fp4",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 1,
+        "profile": "workflow",
+        "endpoint": {
+          "tag": "wafer",
+          "providerName": "Wafer",
+          "quantization": "mxfp4",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 1,
+        "profile": "workflow",
+        "endpoint": {
+          "tag": "relace/fp4",
+          "providerName": "Relace",
+          "quantization": "fp4",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 1,
+        "profile": "workflow",
+        "endpoint": {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 1,
+        "profile": "cache-heavy",
+        "endpoint": {
+          "tag": "wafer",
+          "providerName": "Wafer",
+          "quantization": "mxfp4",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 1,
+        "profile": "cache-heavy",
+        "endpoint": {
+          "tag": "relace/fp4",
+          "providerName": "Relace",
+          "quantization": "fp4",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 1,
+        "profile": "cache-heavy",
+        "endpoint": {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 2,
+        "profile": "workflow",
+        "endpoint": {
+          "tag": "relace/fp4",
+          "providerName": "Relace",
+          "quantization": "fp4",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 2,
+        "profile": "workflow",
+        "endpoint": {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 2,
+        "profile": "workflow",
+        "endpoint": {
+          "tag": "wafer",
+          "providerName": "Wafer",
+          "quantization": "mxfp4",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 2,
+        "profile": "cache-heavy",
+        "endpoint": {
+          "tag": "relace/fp4",
+          "providerName": "Relace",
+          "quantization": "fp4",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 2,
+        "profile": "cache-heavy",
+        "endpoint": {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 2,
+        "profile": "cache-heavy",
+        "endpoint": {
+          "tag": "wafer",
+          "providerName": "Wafer",
+          "quantization": "mxfp4",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 3,
+        "profile": "workflow",
+        "endpoint": {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 3,
+        "profile": "workflow",
+        "endpoint": {
+          "tag": "wafer",
+          "providerName": "Wafer",
+          "quantization": "mxfp4",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 3,
+        "profile": "workflow",
+        "endpoint": {
+          "tag": "relace/fp4",
+          "providerName": "Relace",
+          "quantization": "fp4",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 3,
+        "profile": "cache-heavy",
+        "endpoint": {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      }
+    ],
+    "plannedRunCount": 441,
+    "qualificationScope": "exact requested tag with observed host; deployment/quantization not independently attested"
+  }
+}

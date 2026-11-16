@@ -40,6 +40,25 @@ export const PROVIDER_IDENTITY_GUARD: GuardSpec = {
       re: /--arg(?:json)?\s+executedModel\s+"?\$\{?(?:model|[a-z_]*(?:requested|intended|wire)[a-z_]*)\b|executedModel:\s*\(?\$(?:model|intendedModel|requestedModel)\b/,
     },
   ],
+  structuralChecks: [
+    {
+      name: 'endpoint-qualification-gate',
+      description: 'Endpoint qualification must resolve and load the exact endpoint subject through the common gate',
+      paths: ['shared/lib/native-agent/certification/eligibility-gate.ts'],
+      find(source) {
+        return /endpoint:\s*input\.endpoint/.test(source) && /endpoint:\s*input\.endpoint[\s\S]*checkGlobalCertificationEligibility/.test(source)
+          ? [] : [{ line: 1, detail: 'endpoint identity was lost before certification lookup' }];
+      },
+    },
+    {
+      name: 'endpoint-canary-request',
+      description: 'Endpoint canaries must use the canonical exact-tag restriction and disable automatic fallback',
+      paths: ['shared/lib/native-agent/certification/live-coding-canary.ts'],
+      find(source) {
+        return /options\.subject\.endpoint\s*\?\s*endpointRouting\(/.test(source) ? [] : [{ line: 1, detail: 'endpoint request bypasses the shared restriction' }];
+      },
+    },
+  ],
   remediation: [
     'A stage result\'s executedModel is the provider-reported identity with',
     'executionEvidence.source: \'provider-response\' (HOK-3143). Never trust the requested',

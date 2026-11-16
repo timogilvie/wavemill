@@ -239,3 +239,44 @@ export function pricingUsedFor(
   }
   return used;
 }
+
+/** Reprice retained provider facts through the same SDK bridge, never a private cost reducer. */
+export async function measureProviderExecutionEvidence(input: {
+  taskId: string;
+  observations: readonly import('@hokusai/core').NativeProviderExecution[];
+  collectedAt?: string;
+  priceOverrides: readonly HostPriceOverride[];
+  registryLookup?: (model: string) => string | undefined;
+}) {
+  const collectedAt = input.collectedAt ?? new Date().toISOString();
+  const groups = new Map<string, NativeSessionUsageRecord>();
+  const rows: SessionOwnershipRow[] = [];
+  const exactGenerations = new Map<string, OpenRouterGenerationCost>();
+  for (const observation of input.observations) {
+    const model = observation.responseModel ?? observation.requestedModel ?? 'unknown';
+    const key = JSON.stringify([observation.sessionRef, observation.transport, model]);
+    let session = groups.get(key);
+    if (!session) {
+      session = { sessionId: observation.sessionRef, filePath: 'retained-provider-evidence.jsonl', provider: observation.transport,
+        modelId: model, requestedModel: observation.requestedModel ?? undefined, turns: [], responseIds: [], turnCount: 0,
+        usageAvailable: false, invalidUsage: false };
+      groups.set(key, session);
+      rows.push({ sessionRef: observation.sessionRef, model, harness: 'native', kind: 'coding', stage: 'coding', attemptId: observation.ownershipAttemptIds[0] ?? observation.sessionRef, launchedAt: collectedAt });
+    }
+    const usage = observation.usage;
+    const usageAvailable = usage?.input_tokens != null && usage?.output_tokens != null;
+    session.turns.push({ responseId: observation.responseId ?? undefined, responseModel: observation.responseModel ?? undefined,
+      inputTokens: usage?.input_tokens ?? undefined, outputTokens: usage?.output_tokens ?? undefined,
+      cacheReadTokens: usage?.cache_read_tokens ?? undefined, cacheCreationTokens: usage?.cache_write_tokens ?? undefined,
+      usageAvailable, invalidUsage: false });
+    session.usageAvailable ||= usageAvailable;
+    session.turnCount++;
+    if (observation.responseId) {
+      session.responseIds.push(observation.responseId);
+      if (observation.generation) exactGenerations.set(observation.responseId, observation.generation);
+    }
+  }
+  return measureOwnedSessions({ taskId: input.taskId, rows, nativeSessions: [...groups.values()], claudeRoots: [], codexRoots: [],
+    priceOverrides: input.priceOverrides, registryLookup: input.registryLookup, exactGenerations,
+    window: { startedAt: collectedAt, endedAt: collectedAt } });
+}

@@ -52,3 +52,18 @@ describe('provider-identity guard — repository', () => {
     assert.deepEqual(result.findings, [], formatGuardResult(PROVIDER_IDENTITY_GUARD, result));
   });
 });
+
+
+describe('provider-identity guard — endpoint qualification wiring', () => {
+  it('rejects a gate that drops the endpoint before lookup', () => {
+    const check = PROVIDER_IDENTITY_GUARD.structuralChecks!.find(check => check.name === 'endpoint-qualification-gate')!;
+    assert.equal(check.find('checkGlobalCertificationEligibility(options)').length, 1);
+    assert.equal(check.find('endpoint: input.endpoint; checkGlobalCertificationEligibility(options)').length, 0);
+  });
+
+  it('rejects a canary that uses production routing instead of the exact endpoint restriction', () => {
+    const check = PROVIDER_IDENTITY_GUARD.structuralChecks!.find(check => check.name === 'endpoint-canary-request')!;
+    assert.equal(check.find('getOpenRouterRouting(model)').length, 1);
+    assert.equal(check.find('options.subject.endpoint ? endpointRouting(options.subject.endpoint) : routing').length, 0);
+  });
+});

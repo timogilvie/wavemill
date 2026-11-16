@@ -1,6 +1,7 @@
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { isValidCertificationPathSegment, resolveCertificationStorageIdentity } from './identity.ts';
+import { isValidCertificationPathSegment, resolveCertificationStorageIdentity, endpointIdentity } from './identity.ts';
+import type { CertificationEndpoint } from './schema.ts';
 import { CERTIFICATION_BASE_PATH } from './schema.ts';
 
 export type CertificationStorageScope = 'global' | 'legacy-repo';
@@ -14,6 +15,7 @@ export interface CertificationStorageOptions {
   repoDir?: string;
   root?: string;
   scope?: CertificationStorageScope;
+  endpoint?: CertificationEndpoint;
 }
 
 export const GLOBAL_CERTIFICATION_ROOT_ENV = 'WAVEMILL_NATIVE_CERTIFICATION_ROOT';
@@ -68,6 +70,7 @@ export function buildCertificationPathFromRoot(
   provider: string,
   model: string,
   suiteVersion: string,
+  endpoint?: CertificationEndpoint,
 ): string {
   const identity = resolveCertificationStorageIdentity(provider, model);
 
@@ -81,7 +84,7 @@ export function buildCertificationPathFromRoot(
     }
   }
 
-  return join(root, identity.provider, identity.model, `${suiteVersion}.json`);
+  return join(root, identity.provider, identity.model, `${suiteVersion}${endpoint ? `--endpoint-${endpointIdentity(endpoint)}` : ''}.json`);
 }
 
 export function buildScopedCertificationPath(
@@ -95,5 +98,10 @@ export function buildScopedCertificationPath(
     provider,
     model,
     suiteVersion,
+    options.endpoint,
   );
+}
+
+export function buildLegacyRepoCertificationPath(repoDir: string, provider: string, model: string, suiteVersion: string, endpoint?: CertificationEndpoint): string {
+  return buildScopedCertificationPath({ repoDir, scope: 'legacy-repo', endpoint }, provider, model, suiteVersion);
 }

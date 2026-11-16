@@ -1,4 +1,8 @@
 #!/usr/bin/env -S npx tsx
+import { endpointFromCatalog, endpointRates } from '../shared/lib/native-agent/certification/endpoint-comparison.ts';
+import { endpointIdentity } from '../shared/lib/native-agent/certification/identity.ts';
+import type { CertificationEndpoint } from '../shared/lib/native-agent/certification/schema.ts';
+import { fetchOpenRouterModelEndpoints } from '../shared/lib/openrouter-catalog.ts';
 
 /**
  * native-agent-certify — run the certification scenario harness for a
@@ -31,7 +35,7 @@ import {
   type ResolvedCertificationTarget,
 } from '../shared/lib/native-agent/certification/schema.ts';
 import { carryForwardLegacyCatalogHashCanary } from '../shared/lib/native-agent/certification/catalog-hash-migration.ts';
-import { runLiveCodingCanary } from '../shared/lib/native-agent/certification/live-coding-canary.ts';
+import { runLiveCodingCanary, type RunLiveCodingCanaryOptions } from '../shared/lib/native-agent/certification/live-coding-canary.ts';
 import { loadGlobalCertification } from '../shared/lib/native-agent/certification/loader.ts';
 import { isRevisionAwareArtifact } from '../shared/lib/native-agent/certification/schema.ts';
 import {
@@ -59,12 +63,17 @@ import { runOpenRouterSmoke, type SmokeReport } from '../shared/lib/openrouter-s
 
 const NATIVE_PROVIDERS: NativeProviderName[] = ['openai', 'openrouter'];
 
+type ModelPricing = NonNullable<RunLiveCodingCanaryOptions['endpointPricing']>;
+
 export interface CertifyOptions {
   provider: NativeProviderName;
   model: string;
   phase: CertificationPhase;
   repoDir: string;
   dryRun?: boolean;
+  endpoint?: CertificationEndpoint;
+  endpointPricing?: ModelPricing;
+  certificationRoot?: string;
   /**
    * Opt into the credentialed live coding canary. Never runs during dry-run.
    * Without it, patch/workflow certification still publishes deterministic
@@ -134,6 +143,7 @@ export interface CertifyAllOptions {
   runScenariosFn?: typeof runScenarios;
   runOpenRouterSmokeFn?: typeof runOpenRouterSmoke;
   runLiveCanaryFn?: typeof runLiveCodingCanary;
+  certificationRoot?: string;
   loadPreviousArtifactFn?: CertifyOptions['loadPreviousArtifactFn'];
   writeCertificationFn?:
     typeof writeGlobalCertification | ((repoDir: string, record: NativeCertificationArtifact) => string);
@@ -214,10 +224,18 @@ export async function certifyNativeAgent(opts: CertifyOptions): Promise<CertifyR
     provider: opts.provider,
     model: registryModelId,
     registry: baseRegistry,
+    endpoint: opts.endpoint,
   });
 
+  let endpointPricing = opts.endpointPricing;
+  if (opts.endpoint && opts.liveCodingCanary && !dryRun && !opts.runLiveCanaryFn && !endpointPricing) {
+    const current = (await fetchOpenRouterModelEndpoints(resolvedSubject.subject.providerNativeId)).find(entry => entry.tag === opts.endpoint!.tag);
+    if (!current || endpointIdentity(endpointFromCatalog(current)) !== endpointIdentity(opts.endpoint)) throw new Error('Endpoint catalog identity changed; discover the current subject before refreshing');
+    endpointPricing = endpointRates(current);
+  }
+
   // Filter scenarios to those whose phase is satisfied by the requested phase
-  const allScenarios = getDefaultScenarios();
+  const allScenarios = getDefaultScenarios(Boolean(opts.endpoint));
   const phaseScenarios = allScenarios.filter(
     (s) => opts.phase === s.phase || PHASE_ORDER.indexOf(s.phase) <= PHASE_ORDER.indexOf(opts.phase),
   );
@@ -249,7 +267,7 @@ export async function certifyNativeAgent(opts: CertifyOptions): Promise<CertifyR
 
   // The live coding canary applies whenever the certified phase can satisfy
   // coding (`patch` or `workflow`). It never runs during dry-run.
-  const canaryApplicable = phaseSatisfies(opts.phase, 'patch');
+  const canaryApplicable = phaseSatisfies(opts.phase, 'patch') || Boolean(opts.endpoint);
 
   let resolvedTarget: ResolvedCertificationTarget | undefined;
   const subjectIsAlias = isRollingProviderAlias(resolvedSubject.subject.providerNativeId);
@@ -258,6 +276,7 @@ export async function certifyNativeAgent(opts: CertifyOptions): Promise<CertifyR
     const needsLiveSmokeForAlias = opts.provider === 'openrouter' && subjectIsAlias;
     const needsLiveSmokeForProvisional =
       opts.provider === 'openrouter' && modelEntry?.identity?.status === 'provisional';
+    if (opts.endpoint && (needsLiveSmokeForAlias || needsLiveSmokeForProvisional)) throw new Error('Endpoint qualification for provisional/rolling aliases requires an endpoint-attested model target; refusing production-pinned smoke');
     if (needsLiveSmokeForAlias || needsLiveSmokeForProvisional) {
       liveSmokeEvidence = await requireFreshOpenRouterSmokeEvidence({
         subject: resolvedSubject.subject,
@@ -289,7 +308,10 @@ export async function certifyNativeAgent(opts: CertifyOptions): Promise<CertifyR
 
     if (canaryApplicable) {
       const previousCanary = loadPreviousEligibleCanary({
-        loadPreviousArtifactFn: opts.loadPreviousArtifactFn,
+        loadPreviousArtifactFn: opts.loadPreviousArtifactFn ?? ((provider, model, version) => {
+          const loaded = loadGlobalCertification(provider, model, version, { root: opts.certificationRoot, endpoint: opts.endpoint });
+          return loaded.ok && isRevisionAwareArtifact(loaded.artifact) ? loaded.artifact : undefined;
+        }),
         provider: resolvedSubject.storageIdentity.provider,
         model: resolvedSubject.storageIdentity.model,
         suiteVersion,
@@ -310,8 +332,9 @@ export async function certifyNativeAgent(opts: CertifyOptions): Promise<CertifyR
           env,
           now,
           ...(opts.canaryLimits ? { limits: opts.canaryLimits } : {}),
+          endpointPricing,
         });
-        if (run.status === 'inconclusive' && previousCanary) {
+        if (run.status === 'inconclusive' && previousCanary && (!opts.endpoint || run.reason === 'provider_transient_error')) {
           // A transient attempt never overwrites a fresh identity-matching
           // pass; it is recorded as non-authoritative attempt evidence.
           liveCanary = {
@@ -363,10 +386,10 @@ export async function certifyNativeAgent(opts: CertifyOptions): Promise<CertifyR
             opts.repoDir,
             artifact,
           )
-        : (writeCertificationFn as typeof writeGlobalCertification)(artifact);
+        : (writeCertificationFn as typeof writeGlobalCertification)(artifact, { root: opts.certificationRoot });
 
     codingEligible =
-      canaryApplicable &&
+      phaseSatisfies(opts.phase, 'patch') &&
       evaluateLiveCodingCanaryEligibility(artifact, suiteVersion, now(), resolvedSubject.subject).eligible;
   }
 
@@ -507,6 +530,7 @@ export async function certifySelectedNativeAgents(opts: CertifySelectedOptions):
         runLiveCanaryFn: opts.runLiveCanaryFn,
         loadPreviousArtifactFn: opts.loadPreviousArtifactFn,
         writeCertificationFn: opts.writeCertificationFn,
+        certificationRoot: opts.certificationRoot,
         now: opts.now,
         env: opts.env,
       });
@@ -666,6 +690,8 @@ export function runCertifyCommand(argv = process.argv.slice(2)): Promise<void> {
       description:
         'Run the certification scenario harness for a native provider/model/phase and persist the artifact on success.',
       options: {
+        endpoint: { type: 'string', description: 'Exact catalog endpoint tag to qualify independently (OpenRouter only; fallback disabled).' },
+        'certification-root': { type: 'string', description: 'Explicit certification evidence store for isolated qualification.' },
         provider: {
           type: 'string',
           description: `Provider to certify. One of: ${NATIVE_PROVIDERS.join(', ')}.`,
@@ -768,6 +794,7 @@ export function runCertifyCommand(argv = process.argv.slice(2)): Promise<void> {
             repoDir,
             certifyFn: certifyNativeAgent,
             respectAttemptGuard: args['respect-attempt-guard'] === true,
+            certificationRoot: args['certification-root'] as string | undefined,
             ...(canaryLimits.limits ? { canaryLimits: canaryLimits.limits } : {}),
             log: (line) => console.error(line),
           });
@@ -820,10 +847,24 @@ export function runCertifyCommand(argv = process.argv.slice(2)): Promise<void> {
         }
 
         const provider = rawProvider as NativeProviderName | undefined;
+        const endpointTag = args.endpoint as string | undefined;
+        if (endpointTag && (provider !== 'openrouter' || all || args['refresh-canary-cohort'])) throw new Error('--endpoint requires one OpenRouter model');
+        let endpoint: CertificationEndpoint | undefined;
+        let endpointPricing: ModelPricing | undefined;
+        if (endpointTag) {
+          const registry = getEffectiveRegistry(repoDir);
+          const subject = resolveCertificationSubject({ provider: 'openrouter', model: rawModel!, registry }).subject;
+          const candidates = await fetchOpenRouterModelEndpoints(subject.providerNativeId);
+          const match = candidates.find(candidate => candidate.tag === endpointTag);
+          if (!match?.provider_name) throw new Error('Endpoint tag must exist in the current model catalog with an observed provider name');
+          endpoint = endpointFromCatalog(match);
+          endpointPricing = endpointRates(match);
+        }
 
         if (all) {
           const result = await certifyAllNativeAgents({
             provider,
+            certificationRoot: args['certification-root'] as string | undefined,
             phase,
             repoDir,
             dryRun,
@@ -846,6 +887,7 @@ export function runCertifyCommand(argv = process.argv.slice(2)): Promise<void> {
           result = await certifyNativeAgent({
             provider: provider!,
             model: rawModel!,
+            endpoint, endpointPricing, certificationRoot: args['certification-root'] as string | undefined,
             phase,
             repoDir,
             dryRun,
@@ -921,6 +963,7 @@ export function refreshCohortFlagError(args: Record<string, unknown>): string | 
   if (args.all === true) {
     return '--refresh-canary-cohort cannot be combined with --all (the refresh is bounded to the configured cohort).';
   }
+  if (args.endpoint !== undefined) return '--refresh-canary-cohort targets configured endpoint subjects; --endpoint cannot be combined with it.';
   if (args.model !== undefined || args.provider !== undefined) {
     return '--refresh-canary-cohort targets the configured cohort; --provider/--model cannot be combined with it.';
   }
