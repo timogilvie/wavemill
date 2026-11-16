@@ -8,6 +8,7 @@ import {
   NATIVE_STAGE_TIME_SPLIT_VERSION,
   formatTimeSplit,
   nativeStageTimeSplit,
+  openHarnessToolCall,
   resolveNativeStageTimeSplit,
   type NativeStageTimeSplitWindow,
 } from './stage-time-split.ts';
@@ -315,5 +316,99 @@ describe('formatTimeSplit', () => {
     assert.match(text, /model/);
     assert.match(text, /provider wait/);
     assert.match(text, /unknown/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOK-3382: the open harness tool call (a hung harness, not a model stall)
+// ---------------------------------------------------------------------------
+
+describe('openHarnessToolCall', () => {
+  // protects: a wedged tool past its per-call timeout being read as the model "working"
+  it('returns the hold for a trailing unpaired tool_started', () => {
+    const events = [
+      sessionStarted(1_000),
+      turnStarted(1_100, 1),
+      assistantMessage(1_200),
+      toolStarted(1_300, 'call-1', 'run_tests'),
+    ];
+    assert.deepEqual(openHarnessToolCall(events), {
+      toolName: 'run_tests',
+      toolCallId: 'call-1',
+      startedAtMs: 1_300,
+    });
+  });
+
+  it('returns null once the tool call has a result', () => {
+    const events = [
+      sessionStarted(1_000),
+      turnStarted(1_100, 1),
+      assistantMessage(1_200),
+      toolStarted(1_300, 'call-1', 'run_tests'),
+      toolResult(1_400, 'call-1', 'run_tests'),
+    ];
+    assert.equal(openHarnessToolCall(events), null);
+  });
+
+  it('returns null when a later turn proves the loop resumed', () => {
+    const events = [
+      sessionStarted(1_000),
+      turnStarted(1_100, 1),
+      assistantMessage(1_200),
+      toolStarted(1_300, 'call-1', 'run_tests'),
+      turnStarted(1_500, 2),
+    ];
+    assert.equal(openHarnessToolCall(events), null);
+  });
+
+  it('returns null when a later assistant message proves the loop resumed', () => {
+    const events = [
+      sessionStarted(1_000),
+      turnStarted(1_100, 1),
+      assistantMessage(1_200),
+      toolStarted(1_300, 'call-1', 'run_tests'),
+      assistantMessage(1_500),
+    ];
+    assert.equal(openHarnessToolCall(events), null);
+  });
+
+  it('ignores an old unpaired call followed by more turns (a crashed batch, not a hold)', () => {
+    const events = [
+      sessionStarted(1_000),
+      turnStarted(1_100, 1),
+      toolStarted(1_200, 'call-old', 'run_tests'),
+      turnStarted(1_400, 2),
+      assistantMessage(1_500),
+      turnStarted(1_600, 3),
+      toolStarted(1_700, 'call-new', 'git_status'),
+    ];
+    assert.deepEqual(openHarnessToolCall(events), {
+      toolName: 'git_status',
+      toolCallId: 'call-new',
+      startedAtMs: 1_700,
+    });
+  });
+
+  it('returns null for an empty stream', () => {
+    assert.equal(openHarnessToolCall([]), null);
+  });
+
+  it('returns null when the hold started outside the attempt window', () => {
+    const events = [
+      sessionStarted(1_000),
+      turnStarted(1_100, 1),
+      assistantMessage(1_200),
+      toolStarted(1_300, 'call-1', 'run_tests'),
+    ];
+    assert.equal(openHarnessToolCall(events, { fromMs: 2_000, toMs: 3_000 }), null);
+  });
+
+  it('returns the newest of two unpaired calls', () => {
+    const events = [
+      sessionStarted(1_000),
+      toolStarted(1_100, 'call-a', 'grep'),
+      toolStarted(1_200, 'call-b', 'run_tests'),
+    ];
+    assert.equal(openHarnessToolCall(events)?.toolCallId, 'call-b');
   });
 });

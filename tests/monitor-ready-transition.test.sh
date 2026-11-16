@@ -583,6 +583,20 @@ JSON
 {"stage":"ready","status":"completed","artifacts":{"verdict":"pass","readyBaseSha":"current-main-sha","queueState":"merge-needed","mergeExecutor":"operator"}}
 JSON
         ;;
+      # HOK-3453: tend arrives with the merge queue off and main unmoved. The
+      # merge-needed pass published no handoff, so Ready must re-run now.
+      ready_merge_needed_tend_arrives_reruns_ready)
+        CURRENT_PHASE="ready"
+        READY_STATUS="completed"
+        MAIN_SHA_RETURN="current-main-sha"
+        MERGE_QUEUE_ON="false"
+        QUEUE_STATE="merge-needed"
+        SESSION_EXECUTOR_OVERRIDE="tend"
+        READY_LAUNCH_RC=0
+        cat > "$READY_DIR/.ready-result.json" <<JSON
+{"stage":"ready","status":"completed","artifacts":{"verdict":"pass","readyBaseSha":"current-main-sha","queueState":"merge-needed","mergeExecutor":"none"}}
+JSON
+        ;;
       # HOK-3110: primary whose merged PR was landed by tend before monitor
       # discovered it must bind the PR via lineage and cleanup, even if its
       # challenger was aborted. This exercises the early merged-PR discovery
@@ -733,6 +747,7 @@ JSON
     surface_merge_needed() { :; }
     ready_queue_state() { printf "%s\n" "$QUEUE_STATE"; }
     mark_ready_stale() { :; }
+    log_ready_stale_merge_lane_once() { :; }
     ready_candidate_selected() { return 1; }
     closed_pr_resource_policy() { printf "%s\n" "full-cleanup"; }
     wavemill_release_terminal_pane() { return 0; }
@@ -1027,6 +1042,13 @@ check_not_contains "merge-needed operator never logs waiting in merge lane" "$re
 ready_merge_needed_tend_arrives_output="$(run_monitor_case ready_merge_needed_tend_arrives_marks_stale)"
 check_contains "merge-needed tend arrival logs the handoff transition" "$ready_merge_needed_tend_arrives_output" "merge executor is now tend"
 check_contains "merge-needed tend arrival keeps the arm active" "$ready_merge_needed_tend_arrives_output" "active_count=1"
+check_contains "merge-needed tend arrival with the queue on waits for selection" "$ready_merge_needed_tend_arrives_output" "ready_launches=0"
+
+# HOK-3453: with the queue off and main unmoved, tend arrival re-runs Ready
+# itself; before, the arm sat at ready-stale with no handoff for tend to claim.
+ready_merge_needed_tend_reruns_output="$(run_monitor_case ready_merge_needed_tend_arrives_reruns_ready)"
+check_contains "merge-needed tend arrival (queue off) re-runs ready once" "$ready_merge_needed_tend_reruns_output" "ready_launches=1"
+check_contains "merge-needed tend arrival (queue off) keeps the arm active" "$ready_merge_needed_tend_reruns_output" "active_count=1"
 
 echo ""
 echo "=== HOK-3110 merged-PR lineage discovery ==="

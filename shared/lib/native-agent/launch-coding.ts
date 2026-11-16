@@ -145,7 +145,7 @@ const CODING_LOOP_BUDGET: LoopBudget = Object.freeze({
   maxToolCalls: 1200,
   // HOK-3381: model-attributable time, not elapsed wall time — the loop's
   // clock pauses while a harness tool (e.g. run_tests) executes.
-  maxWallClockMs: 60 * 60 * 1000,
+  maxModelTimeMs: 60 * 60 * 1000,
   stagnation: toToolCallProgressPolicy(DEFAULT_NATIVE_PLANNING_LIMITS.toolStagnation),
 });
 

@@ -520,6 +520,9 @@ export interface NativePayloadCaptureConfig {
 export interface NativePlanningConfig {
   maxTurns?: number;
   maxToolCalls?: number;
+  /** HOK-3382: model-attributable time budget. */
+  maxModelTimeMs?: number;
+  /** @deprecated legacy spelling; read as an alias for `maxModelTimeMs`. */
   maxWallClockMs?: number;
   toolStagnation?: {
     maxRepeatedSignatureCalls?: number;

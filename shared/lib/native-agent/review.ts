@@ -551,7 +551,7 @@ function cleanupReasonForStopReason(stopReason: LoopStopReason): CleanupReason |
   if (stopReason === 'aborted') {
     return 'aborted';
   }
-  if (budgetKindForStopReason(stopReason) === 'wall_clock') {
+  if (budgetKindForStopReason(stopReason) === 'model_time') {
     return 'timeout';
   }
   return null;
@@ -1017,7 +1017,7 @@ export async function runNativeReview(
     // One additional turn is reserved for tool-free terminal synthesis.
     maxTurns: analysisTurnLimit + 1,
     maxToolCalls: REVIEW_TOOL_CALL_LIMIT,
-    maxWallClockMs: effectiveNativeTimeoutMs,
+    maxModelTimeMs: effectiveNativeTimeoutMs,
   };
   let loopResult;
   try {

@@ -3031,7 +3031,9 @@
       "additionalProperties": false,
       "properties": {
         "kind": {
+          "description": "Which budget the run exhausted. `model_time` is model-attributable time (HOK-3382); `wall_clock` is the deprecated pre-rename spelling, still accepted for historical rows.",
           "enum": [
+            "model_time",
             "wall_clock",
             "turn",
             "tool_call",
@@ -3041,6 +3043,7 @@
         },
         "stopReason": {
           "enum": [
+            "model_time_limit",
             "wall_clock_limit",
             "turn_limit",
             "tool_call_limit",
@@ -3852,7 +3855,13 @@
           "type": "number",
           "minimum": 0
         },
+        "maxModelTimeMs": {
+          "description": "Model-attributable time budget (HOK-3382).",
+          "type": "number",
+          "minimum": 0
+        },
         "maxWallClockMs": {
+          "description": "Deprecated pre-rename spelling of `maxModelTimeMs`, still parsed.",
           "type": "number",
           "minimum": 0
         }
@@ -3871,6 +3880,11 @@
           "minimum": 0
         },
         "wallClockMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "modelTimeMs": {
+          "description": "Model-attributable elapsed time, excluding paused harness tool execution.",
           "type": "number",
           "minimum": 0
         },
@@ -3932,6 +3946,7 @@
           "enum": [
             "turn_limit",
             "tool_call_limit",
+            "model_time_limit",
             "wall_clock_limit",
             "token_limit",
             "cost_limit",

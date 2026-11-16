@@ -11,7 +11,8 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -22,6 +23,8 @@ import {
   type IncidentReplayFault,
 } from './incident-replay-harness.ts';
 import { loadIncidentFixture } from './incident-fixture-converter.ts';
+import { classifyArmFault } from './arm-failure-taxonomy.ts';
+import { buildBudgetExhaustions } from './stage-eval-evidence.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -159,6 +162,49 @@ async function main(): Promise<void> {
     } catch (err: unknown) {
       failures.push({ fixture: label, reason: err instanceof Error ? err.message : String(err) });
       console.error(`  FAIL  ${label} — ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // HOK-3382: the hung-harness replay must retry through the controller,
+  // attribute the failure to the harness, and never write a model-fault row.
+  {
+    runs += 1;
+    const hungPath = join(FIXTURES_DIR, 'native-harness-hang.json');
+    try {
+      const { fixture, run, assertion } = runFixture(hungPath);
+      const hold = fixture.failure?.harnessHold;
+      const faultClass = classifyArmFault({
+        failureKind: 'coding-exited-without-result',
+        exitEvidence: hold ? { reason: 'harness-hung', harnessHold: hold } : null,
+      });
+      const emptyFeatureDir = mkdtempSync(join(tmpdir(), 'wm-hang-eval-'));
+      let budgetRows: unknown;
+      try {
+        budgetRows = buildBudgetExhaustions({ stageResultsDir: emptyFeatureDir });
+      } finally {
+        rmSync(emptyFeatureDir, { recursive: true, force: true });
+      }
+      const reason = !assertion.ok
+        ? assertion.reason ?? 'assertion failed'
+        : run.actions?.[0] !== 'bounded-relaunch'
+          ? `expected the first action to be bounded-relaunch, got ${run.actions?.join(',')}`
+          : run.outcome !== 'merged'
+            ? `expected merged, got ${run.outcome}`
+            : faultClass !== 'harness-fault'
+              ? `expected harness-fault attribution, got ${faultClass}`
+              : budgetRows !== undefined
+                ? 'a hung harness produced a budget-exhaustion (model-fault) row'
+                : null;
+      if (reason) {
+        failures.push({ fixture: 'native-harness-hang.json', reason });
+        console.error(`  FAIL  native-harness-hang.json — ${reason}`);
+      } else {
+        passed += 1;
+        console.log(`  PASS  native-harness-hang.json — retried=${run.actions?.join(',')} faultClass=${faultClass} modelRows=none`);
+      }
+    } catch (err: unknown) {
+      failures.push({ fixture: 'native-harness-hang.json', reason: err instanceof Error ? err.message : String(err) });
+      console.error(`  FAIL  native-harness-hang.json — ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

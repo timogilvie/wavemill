@@ -16,14 +16,15 @@ export interface ToolStagnationPolicy {
 export interface NativePlanningLimits {
   maxTurns: number;
   maxToolCalls: number;
-  maxWallClockMs: number;
+  /** HOK-3382: model-attributable time budget (renamed from `maxWallClockMs`). */
+  maxModelTimeMs: number;
   toolStagnation: Required<ToolStagnationPolicy>;
 }
 
 export const DEFAULT_NATIVE_PLANNING_LIMITS: NativePlanningLimits = {
   maxTurns: 40,
   maxToolCalls: 120,
-  maxWallClockMs: 20 * 60 * 1000,
+  maxModelTimeMs: 20 * 60 * 1000,
   toolStagnation: {
     maxRepeatedSignatureCalls: 8,
     maxNoNovelProgressCalls: 4,
@@ -33,6 +34,9 @@ export const DEFAULT_NATIVE_PLANNING_LIMITS: NativePlanningLimits = {
 export type PlanningFailureReason =
   | 'turn_limit'
   | 'tool_call_limit'
+  // HOK-3382: `model_time_limit` is the current spelling; `wall_clock_limit`
+  // stays so historical eval rows and results still type-check.
+  | 'model_time_limit'
   | 'wall_clock_limit'
   // HOK-3362: every budget stop reason is a planning terminal reason.
   | 'token_limit'
@@ -77,6 +81,9 @@ function positiveInteger(value: unknown): number | undefined {
 export function resolveNativePlanningLimits(config: {
   maxTurns?: number;
   maxToolCalls?: number;
+  /** HOK-3382: model-attributable time budget. */
+  maxModelTimeMs?: number;
+  /** @deprecated legacy spelling; read as an alias for `maxModelTimeMs`. */
   maxWallClockMs?: number;
   toolStagnation?: ToolStagnationPolicy;
 } | undefined): NativePlanningLimits {
@@ -84,7 +91,9 @@ export function resolveNativePlanningLimits(config: {
   return {
     maxTurns: positiveInteger(config?.maxTurns) ?? defaults.maxTurns,
     maxToolCalls: positiveInteger(config?.maxToolCalls) ?? defaults.maxToolCalls,
-    maxWallClockMs: positiveInteger(config?.maxWallClockMs) ?? defaults.maxWallClockMs,
+    maxModelTimeMs: positiveInteger(config?.maxModelTimeMs)
+      ?? positiveInteger(config?.maxWallClockMs)
+      ?? defaults.maxModelTimeMs,
     toolStagnation: {
       maxRepeatedSignatureCalls:
         positiveInteger(config?.toolStagnation?.maxRepeatedSignatureCalls)
@@ -108,7 +117,7 @@ export function toLoopBudget(limits: NativePlanningLimits): LoopBudget {
   return {
     maxTurns: limits.maxTurns,
     maxToolCalls: limits.maxToolCalls,
-    maxWallClockMs: limits.maxWallClockMs,
+    maxModelTimeMs: limits.maxModelTimeMs,
     stagnation: toToolCallProgressPolicy(limits.toolStagnation),
   };
 }

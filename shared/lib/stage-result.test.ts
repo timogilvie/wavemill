@@ -14,6 +14,8 @@ import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
 import { appendOwnershipRow } from './session-ownership.ts';
+import { fileURLToPath } from 'node:url';
+import { MERGE_QUEUE_STATES } from './merge-queue.ts';
 
 import {
   appendReviewIteration,
@@ -615,7 +617,7 @@ describe('artifacts round-trip', () => {
       bounds: {
         maxTurns: 40,
         maxToolCalls: 120,
-        maxWallClockMs: 1200000,
+        maxModelTimeMs: 1200000,
       },
       usage: {
         turnsCompleted: 12,
@@ -671,6 +673,29 @@ describe('artifacts round-trip', () => {
 
     const read = await readStageResult(testDir, 'ready');
     assert.deepEqual(read?.artifacts, artifacts);
+  });
+
+  it('round-trips a Ready result parked at merge-needed (HOK-3453)', async () => {
+    const artifacts: ReadyArtifacts = { type: 'ready', verdict: 'pass', prNumber: 304, queueState: 'merge-needed' };
+    await writeStageResult(testDir, makeResult({ stage: 'ready', status: 'completed', artifacts }));
+
+    const read = await readStageResult(testDir, 'ready');
+    assert.equal(read?.artifacts?.type, 'ready');
+    assert.equal((read?.artifacts as ReadyArtifacts).queueState, 'merge-needed');
+  });
+
+  it('rejects a Ready queueState outside the declared list (HOK-3453)', async () => {
+    const artifacts = { type: 'ready', verdict: 'pass', queueState: 'merged' } as unknown as ReadyArtifacts;
+    await assert.rejects(
+      writeStageResult(testDir, makeResult({ stage: 'ready', status: 'completed', artifacts })),
+      /Invalid stage result/,
+    );
+  });
+
+  it('schema declares exactly the merge-queue vocabulary (HOK-3453)', async () => {
+    const schemaPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'schemas', 'stage-result.schema.json');
+    const schema = JSON.parse(await fs.readFile(schemaPath, 'utf-8'));
+    assert.deepEqual(schema.properties.artifacts.properties.queueState.enum, [...MERGE_QUEUE_STATES]);
   });
 
   it('handles result without artifacts (backward compat)', async () => {

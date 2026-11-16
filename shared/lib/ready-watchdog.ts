@@ -32,6 +32,7 @@ import { findCachedPullRequest } from './session-gh-cache.ts';
 import { mutateJsonState } from './state-mutex.ts';
 import { mutateWorkflowState, readWorkflowState as readWorkflowStateFile, type WorkflowState } from './workflow-state.ts';
 import { readStageResult, updateStageResult, type ReadyArtifacts, type StageResult } from './stage-result.ts';
+import { mergeLanePosition } from './merge-queue.ts';
 import {
   writeMarker,
   clearMarker,
@@ -89,8 +90,7 @@ export function setReadyWatchdogUnconfirmedEntryTtlMsForTest(ttlMs: number | nul
 }
 
 /**
- * A PR in the merge lane (queueState 'ready-stale', 'merge-candidate', or
- * 'ready' with a completed result) is idle on purpose: it already passed ready
+ * A PR in the tend merge lane (`mergeLanePosition` → 'tend-lane') is idle on purpose: it already passed ready
  * and is waiting its turn to merge. We only escalate such a PR to needs-user
  * once it has been idle for this multiple of the idle threshold without the
  * lane advancing, which indicates the queue itself is stalled rather than this
@@ -1268,16 +1268,26 @@ export function classifyReadyTask(
     // Treat normal lane-waiting as benign; only escalate to needs-user once the
     // wait is long enough to signal the lane itself is stalled.
     //
-    // Three queue states represent legitimate lane-waiting:
-    //   ready-stale      — passed ready, main advanced before it was selected
-    //   merge-candidate  — selected as the next PR to merge, waiting for the merge
-    //   ready (completed)— passed ready against the current base, not yet selected
-    const queueState = snapshot.readyArtifacts?.queueState;
-    const inMergeLane = queueState === 'ready-stale'
-      || queueState === 'merge-candidate'
-      || (queueState === 'ready' && snapshot.readyResultStatus === 'completed');
+    // `mergeLanePosition` (merge-queue.ts) is the one answer to "is this PR in
+    // the merge lane?". A `tend-lane` PR is waiting on tend; a `merge-needed`
+    // PR passed ready in a session with no tend merge consumer (HOK-3102), so
+    // no lane exists to wait on and nothing will merge it without a person.
+    // It is neither lane-waiting nor a stuck Ready run: re-running Ready only
+    // re-parks it, so it goes straight to the operator (HOK-3453).
+    const lanePosition = mergeLanePosition(
+      snapshot.readyArtifacts?.queueState,
+      snapshot.readyResultStatus ?? undefined,
+    );
 
-    if (inMergeLane) {
+    if (lanePosition === 'merge-needed') {
+      const executor = snapshot.readyArtifacts?.mergeExecutor;
+      return {
+        kind: 'needs-user',
+        detail: `Merge needed: PR #${snapshot.prNumber} passed ready but this session has no tend merge consumer${executor ? ` (merge executor: ${executor})` : ''}. Merge it by hand, or enable tend and the monitor will re-run Ready (idle ${snapshot.idleMinutes}m).`,
+      };
+    }
+
+    if (lanePosition === 'tend-lane') {
       // Before reporting a merge-lane wait, check if the tend challenge gate would block
       // this PR. A PR blocked by a missing challenge comparison will never be selected by
       // the merge controller, so reporting waiting-on-merge-lane is misleading.

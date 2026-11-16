@@ -99,7 +99,17 @@ runTool({
         getProgress,
       });
       if (progressCache) writeProgressCache(session, issue, progressCache);
-      console.log(JSON.stringify(disposition));
+      // HOK-3382: forward the shared stall fact additively so the recovery
+      // controller reassesses from it instead of re-deriving progress. The
+      // disposition object and its rules are unchanged.
+      const progress = progressCache
+        ? {
+          stalled: progressCache.stalled,
+          lastProgressAt: progressCache.lastProgressAt,
+          stallMinutes: progressCache.stallMinutes,
+        }
+        : null;
+      console.log(JSON.stringify(progress ? { ...disposition, progress } : disposition));
     } catch {
       console.log(JSON.stringify({ kind: 'in-flight', reason: 'progress-unavailable', currentHead, stage: stageArg ?? null }));
     }

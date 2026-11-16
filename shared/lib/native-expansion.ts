@@ -353,7 +353,7 @@ export async function runNativeExpansion(options: NativeExpansionOptions): Promi
     budget: {
       maxTurns: 8,
       maxToolCalls: 20,
-      maxWallClockMs: 600_000,
+      maxModelTimeMs: 600_000,
       maxCostUsd: getMaxCostUsd(options.repoDir) ?? 5,
     },
     compatRegistry: options.registry,

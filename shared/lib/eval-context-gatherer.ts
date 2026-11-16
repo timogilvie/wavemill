@@ -1121,6 +1121,9 @@ const PLANNING_STATUSES = new Set(['running', 'awaiting_user', 'completed', 'abo
 const PLANNING_TERMINAL_REASONS = new Set([
   'turn_limit',
   'tool_call_limit',
+  // HOK-3382: `model_time_limit` is the current spelling; `wall_clock_limit`
+  // stays so historical rows parse.
+  'model_time_limit',
   'wall_clock_limit',
   // HOK-3362: every budget stop reason is a planning terminal reason (eval schema 1.57.0).
   'token_limit',
@@ -1157,12 +1160,17 @@ function parsePlanningExecutionOutcome(parsed: Record<string, unknown>): Plannin
   const bounds = {
     ...(isFiniteNonNegativePlanningNumber(boundsInput.maxTurns) ? { maxTurns: boundsInput.maxTurns } : {}),
     ...(isFiniteNonNegativePlanningNumber(boundsInput.maxToolCalls) ? { maxToolCalls: boundsInput.maxToolCalls } : {}),
-    ...(isFiniteNonNegativePlanningNumber(boundsInput.maxWallClockMs) ? { maxWallClockMs: boundsInput.maxWallClockMs } : {}),
+    ...(isFiniteNonNegativePlanningNumber(boundsInput.maxModelTimeMs)
+      ? { maxModelTimeMs: boundsInput.maxModelTimeMs }
+      : isFiniteNonNegativePlanningNumber(boundsInput.maxWallClockMs)
+        ? { maxModelTimeMs: boundsInput.maxWallClockMs }
+        : {}),
   };
   const usage = {
     ...(isFiniteNonNegativePlanningNumber(usageInput.turnsCompleted) ? { turnsCompleted: usageInput.turnsCompleted } : {}),
     ...(isFiniteNonNegativePlanningNumber(usageInput.toolCallsExecuted) ? { toolCallsExecuted: usageInput.toolCallsExecuted } : {}),
     ...(isFiniteNonNegativePlanningNumber(usageInput.wallClockMs) ? { wallClockMs: usageInput.wallClockMs } : {}),
+    ...(isFiniteNonNegativePlanningNumber(usageInput.modelTimeMs) ? { modelTimeMs: usageInput.modelTimeMs } : {}),
     ...(isFiniteNonNegativePlanningNumber(usageInput.totalInputTokens) ? { totalInputTokens: usageInput.totalInputTokens } : {}),
     ...(isFiniteNonNegativePlanningNumber(usageInput.totalOutputTokens) ? { totalOutputTokens: usageInput.totalOutputTokens } : {}),
     ...(isFiniteNonNegativePlanningNumber(usageInput.totalCostUsd) ? { totalCostUsd: usageInput.totalCostUsd } : {}),

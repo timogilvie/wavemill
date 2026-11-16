@@ -363,7 +363,9 @@ export function flattenRecord(
     planning_outcome_turns_completed: planningOutcome?.usage?.turnsCompleted ?? null,
     planning_outcome_max_tool_calls: planningOutcome?.bounds?.maxToolCalls ?? null,
     planning_outcome_tool_calls_executed: planningOutcome?.usage?.toolCallsExecuted ?? null,
-    planning_outcome_max_wall_clock_ms: planningOutcome?.bounds?.maxWallClockMs ?? null,
+    // External CSV column name is kept for downstream consumers (HOK-3382);
+    // the value is the current model-time bound, falling back to the legacy spelling.
+    planning_outcome_max_wall_clock_ms: planningOutcome?.bounds?.maxModelTimeMs ?? planningOutcome?.bounds?.maxWallClockMs ?? null,
     planning_outcome_wall_clock_ms: planningOutcome?.usage?.wallClockMs ?? null,
     planning_outcome_input_tokens: planningOutcome?.usage?.totalInputTokens ?? null,
     planning_outcome_output_tokens: planningOutcome?.usage?.totalOutputTokens ?? null,

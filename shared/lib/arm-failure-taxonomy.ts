@@ -89,6 +89,25 @@ export type ArmFaultClass =
   | 'model-fault'
   | 'unknown-fault';
 
+/**
+ * The `artifacts.exitEvidence` shape attribution reads (HOK-3382). Structural,
+ * so a stage-result reader can pass its evidence without this module
+ * depending on the heavy stage-result module.
+ */
+export interface ArmFaultExitEvidence {
+  reason?: string | null;
+  harnessHold?: unknown;
+}
+
+/** True only for a fully-formed harness hold (`toolName`/`toolCallId`/`startedAt`). */
+export function isHarnessHoldEvidence(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const hold = value as Record<string, unknown>;
+  return typeof hold.toolName === 'string' && hold.toolName.length > 0
+    && typeof hold.toolCallId === 'string' && hold.toolCallId.length > 0
+    && typeof hold.startedAt === 'string' && hold.startedAt.length > 0;
+}
+
 export type ChallengeArmSide = 'primary' | 'challenger';
 
 export interface ChallengeArmFailure {
@@ -103,16 +122,17 @@ export interface ChallengeArmFailure {
 /**
  * Share thresholds for the budget-exhaustion fault rule (HOK-3362, extended
  * HOK-3380). Each share is `bucket / split.totalMs` (or, for the two
- * provider-wait rules before a split exists, `providerWaitMs / wallClockMs`).
+ * provider-wait rules before a split exists, `providerWaitMs / wallClockMs`);
+ * `wallClockMs` here is the elapsed measurement on the fact, not a deadline.
  */
 export const BUDGET_FAULT_SHARE_THRESHOLDS = Object.freeze({
   /** Wait share at or above which a budget run that also hit provider errors is charged to the provider. */
   providerDominatedWait: 0.5,
-  /** Wait share at or above which a wall-clock run that never got past its first turn is charged to the provider. */
+  /** Wait share at or above which a model-time run that never got past its first turn is charged to the provider. */
   stalledRequestWait: 0.9,
-  /** Harness-tool-time share of a wall-clock stop at or above which the run is charged to the harness, not the model. */
+  /** Harness-tool-time share of a model-time stop at or above which the run is charged to the harness, not the model. */
   harnessDominatedTool: 0.5,
-  /** Unknown-time share of a wall-clock stop at or above which whose time it was cannot be told. */
+  /** Unknown-time share of a model-time stop at or above which whose time it was cannot be told. */
   unknownDominated: 0.5,
 });
 
@@ -123,7 +143,7 @@ export const STALLED_REQUEST_WAIT_SHARE = BUDGET_FAULT_SHARE_THRESHOLDS.stalledR
 
 /**
  * The one budget-exhaustion fault rule (HOK-3362, extended HOK-3380). The
- * class is derived from the fact's progress evidence and — for a wall-clock
+ * class is derived from the fact's progress evidence and — for a model-time
  * stop — the {@link NativeStageTimeSplit} derived from the session
  * transcript, never stored as primary (HOK-3338 rule 3), so every stage —
  * planning, coding, review — gets the same answer for the same evidence:
@@ -132,18 +152,18 @@ export const STALLED_REQUEST_WAIT_SHARE = BUDGET_FAULT_SHARE_THRESHOLDS.stalledR
  * |---|------------------------------------------------------------------------------|----------------|
  * | 1 | no fact / no progress                                                        | unknown-fault  |
  * | 2 | split, retries > 0 and provider share ≥ 0.5                                  | provider-fault |
- * | 3 | split, wall_clock, ≤ 1 turn and provider share ≥ 0.9                         | provider-fault |
- * | 4 | split, wall_clock and harness-tool share ≥ 0.5                               | harness-fault  |
- * | 5 | wall_clock and (no split, or unknown share ≥ 0.5)                            | unknown-fault  |
+ * | 3 | split, model_time, ≤ 1 turn and provider share ≥ 0.9                        | provider-fault |
+ * | 4 | split, model_time and harness-tool share ≥ 0.5                              | harness-fault  |
+ * | 5 | model_time and (no split, or unknown share ≥ 0.5)                           | unknown-fault  |
  * | 6 | ≥ 1 turn and ≥ 1 tool call (the agent kept making progress)                  | model-fault    |
  * | 7 | otherwise                                                                     | unknown-fault  |
  *
- * Rules 4–5 (the time-split rules) apply only to `wall_clock`: tool execution
+ * Rules 4–5 (the time-split rules) apply only to `model_time`: tool execution
  * does not consume a turn, tool-call, token or cost budget, so those kinds
  * keep the progress rule (6) whatever the split says.
  *
- * Rule 5 is a deliberate behaviour change (HOK-3380): a historical wall-clock
- * fact with no stream pointer moves from `model-fault` to `unknown-fault` —
+ * Rule 5 is a deliberate behaviour change (HOK-3380): a historical
+ * model-time fact with no stream pointer moves from `model-fault` to `unknown-fault` —
  * the "missing input gives unknown" rule, and exactly the rows HOK-3374
  * showed were mis-charged (harness tool time charged to the model because
  * nothing distinguished it from "the model kept going"). Count budgets
@@ -166,10 +186,10 @@ export function deriveBudgetExhaustionFaultClass(
     if ((progress.providerErrorRetries ?? 0) > 0 && providerShare >= BUDGET_FAULT_SHARE_THRESHOLDS.providerDominatedWait) {
       return 'provider-fault';
     }
-    if (fact.kind === 'wall_clock' && progress.turnsCompleted <= 1 && providerShare >= BUDGET_FAULT_SHARE_THRESHOLDS.stalledRequestWait) {
+    if (fact.kind === 'model_time' && progress.turnsCompleted <= 1 && providerShare >= BUDGET_FAULT_SHARE_THRESHOLDS.stalledRequestWait) {
       return 'provider-fault';
     }
-    if (fact.kind === 'wall_clock') {
+    if (fact.kind === 'model_time') {
       // allow-failure-policy: same as providerShare above — threshold share over an already-derived split bucket (HOK-3380)
       const harnessShare = split.harnessToolMs / split.totalMs;
       if (harnessShare >= BUDGET_FAULT_SHARE_THRESHOLDS.harnessDominatedTool) {
@@ -177,7 +197,7 @@ export function deriveBudgetExhaustionFaultClass(
       }
     }
   }
-  if (fact.kind === 'wall_clock') {
+  if (fact.kind === 'model_time') {
     const unknownShare = split && split.totalMs > 0 ? split.unknownMs / split.totalMs : 1;
     if (!split || unknownShare >= BUDGET_FAULT_SHARE_THRESHOLDS.unknownDominated) {
       return 'unknown-fault';
@@ -205,6 +225,12 @@ export function classifyArmFault(input: {
   budgetExhausted?: BudgetExhaustedFact | null;
   /** HOK-3380: the derived transcript time split for a budget-exhaustion failure. */
   timeSplit?: NativeStageTimeSplit | null;
+  /**
+   * HOK-3382: the attempt's `artifacts.exitEvidence`. Typed evidence, never a
+   * detail-string sniff — a settled-without-result failure that carries a
+   * harness hold is the harness's, not the model's.
+   */
+  exitEvidence?: ArmFaultExitEvidence | null;
 }): ArmFaultClass {
   const failureKind = input.failureKind ?? '';
   const detail = (input.detail ?? '').toLowerCase();
@@ -302,8 +328,14 @@ export function classifyArmFault(input: {
     // Both are model-attributable (the provider delivered output; the model
     // failed to produce usable content).
     case 'review-no-output':
-    case 'coding-exited-without-result':
       return 'model-fault';
+    // HOK-3382: a settled-without-result coding attempt is model-fault *unless*
+    // its typed exit evidence proves a harness hold (an open tool call the
+    // recovery controller settled). The class is derived from evidence, the
+    // same move HOK-3362 made for `native-stage-timeout` — never a detail
+    // substring, so the mill stops charging a wedged harness to the model.
+    case 'coding-exited-without-result':
+      return isHarnessHoldEvidence(input.exitEvidence?.harnessHold) ? 'harness-fault' : 'model-fault';
     // HOK-3129: the planning artifact failed structural validation (both the
     // base variant and the pre-suffix startsWith branch above). Model-fault
     // only reaches this arm when the suffixed form was not emitted.

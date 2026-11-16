@@ -581,7 +581,7 @@ export async function runNativeAgentLive(
     budget: {
       maxTurns: 3,
       maxToolCalls: 5,
-      maxWallClockMs: 60_000,
+      maxModelTimeMs: 60_000,
     },
     compatRegistry: buildSmokeCompatRegistry(readyEntry.modelId, provider),
   };

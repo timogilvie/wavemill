@@ -22,7 +22,7 @@
  * One budget-exhaustion outcome (HOK-3362): "a native stage ran out of
  * budget" is defined once, in shared/lib/native-agent/budget-exhaustion.ts.
  * Also caught:
- * - a private budget stop-reason switch (`case 'wall_clock_limit':`,
+ * - a private budget stop-reason switch (`case 'model_time_limit':`,
  *   `=== 'turn_limit'`, `new Set<LoopStopReason>(`) — use
  *   `isBudgetStopReason` / `budgetKindForStopReason` / `budgetExhaustionFromLoop`;
  * - a private final-assistant `errorMessage` scan — use
@@ -117,7 +117,7 @@ export const FAILURE_POLICY_GUARD: GuardSpec = {
       name: 'private-budget-stop-switch',
       description: 'private budget stop-reason switch — use isBudgetStopReason / budgetKindForStopReason / budgetExhaustionFromLoop (budget-exhaustion.ts, HOK-3362)',
       lang: 'ts',
-      re: /\bcase\s+['"](?:turn|token|tool_call|wall_clock|cost)_limit['"]\s*:|[!=]==\s*['"](?:turn|token|tool_call|wall_clock|cost)_limit['"]|['"](?:turn|token|tool_call|wall_clock|cost)_limit['"]\s*[!=]==|\bnew\s+Set<LoopStopReason>\((?:\[[^\]]*_limit|\[\s*$)/,
+      re: /\bcase\s+['"](?:turn|token|tool_call|model_time|wall_clock|cost)_limit['"]\s*:|[!=]==\s*['"](?:turn|token|tool_call|model_time|wall_clock|cost)_limit['"]|['"](?:turn|token|tool_call|model_time|wall_clock|cost)_limit['"]\s*[!=]==|\bnew\s+Set<LoopStopReason>\((?:\[[^\]]*_limit|\[\s*$)/,
     },
     {
       name: 'private-final-error-scan',

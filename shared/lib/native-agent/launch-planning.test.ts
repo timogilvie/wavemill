@@ -377,7 +377,7 @@ describe('launchNativePlanning', () => {
       assert.equal(artifacts.approvalReady, true);
       assert.equal(typeof artifacts.bounds?.maxTurns, 'number');
       assert.equal(typeof artifacts.bounds?.maxToolCalls, 'number');
-      assert.equal(typeof artifacts.bounds?.maxWallClockMs, 'number');
+      assert.equal(typeof artifacts.bounds?.maxModelTimeMs, 'number');
       assert.equal(artifacts.usage?.turnsCompleted, 1);
       assert.equal(artifacts.usage?.toolCallsExecuted, 0);
       assert.equal(typeof artifacts.usage?.wallClockMs, 'number');
@@ -492,7 +492,7 @@ describe('launchNativePlanning', () => {
         planning: {
           maxTurns: 1,
           maxToolCalls: 120,
-          maxWallClockMs: 60_000,
+          maxModelTimeMs: 60_000,
         },
       },
     });
@@ -926,7 +926,7 @@ describe('launchNativePlanning', () => {
         planning: {
           maxTurns: 10,
           maxToolCalls: 10,
-          maxWallClockMs: 60_000,
+          maxModelTimeMs: 60_000,
           toolStagnation: {
             maxRepeatedSignatureCalls: 3,
             maxNoNovelProgressCalls: 2,

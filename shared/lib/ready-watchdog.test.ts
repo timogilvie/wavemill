@@ -314,6 +314,31 @@ test('a completed-ready PR (queueState=ready) with clean green classifies as wai
   assert.notEqual(classification.autoRecoverable, true);
 });
 
+for (const idleMinutes of [15, 120]) {
+  test(`a merge-needed PR (no tend consumer) goes to the operator at ${idleMinutes}m, never lane-waiting or auto-recovered (HOK-3453)`, () => {
+    const classification = classifyReadyTask(
+      makeSnapshot({
+        idleMinutes,
+        readyResultStatus: 'completed',
+        readyArtifacts: { type: 'ready', verdict: 'pass', queueState: 'merge-needed', mergeExecutor: 'operator' },
+        backstageHealth: {
+          updatedAt: '2026-05-05T12:20:00.000Z',
+          status: 'missing-tend-loop',
+          detail: 'no tend executor pane',
+        },
+      }),
+      makeTruth(),
+      new Date('2026-05-05T12:30:00.000Z'),
+      WATCHDOG_CONFIG,
+    );
+
+    assert.equal(classification.kind, 'needs-user');
+    assert.notEqual(classification.autoRecoverable, true);
+    assert.match(classification.detail, /^Merge needed: PR #\d+ passed ready but this session has no tend merge consumer \(merge executor: operator\)/);
+    assert.doesNotMatch(classification.detail, /tend loop|merge lane/i);
+  });
+}
+
 test('a running-ready PR with queueState=ready and clean green still classifies as stuck', () => {
   const classification = classifyReadyTask(
     makeSnapshot({
