@@ -1,0 +1,8 @@
+# Ratcheting allowlist for tools/check-model-input.ts. Each line is
+# `<path> <count>  # <reason>`; the list only shrinks.
+#
+# These two names are prompt *content* slice sizes for the planner/router
+# prompt (a task packet body and a task description), not fit rules for a
+# prompt that carries a PR change. They are not the invariant's target.
+shared/lib/grounded-planner.ts 2  # PROMPT_DESCRIPTION_MAX_CHARS slices a task description; not a change-carrying prompt
+shared/lib/task-size.ts 2  # SLICE_PROMPT_MAX_CHARS slices a task packet body; not a change-carrying prompt

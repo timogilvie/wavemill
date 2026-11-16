@@ -56,6 +56,7 @@ import {
   withBodyFile,
   type ForkCommitValidationResult,
 } from '../shared/lib/pr-comparison.ts';
+import { isChangeInputRefusedError } from '../shared/lib/review-input-budget.ts';
 import { writeJobResultFile } from '../shared/lib/job-tracker.ts';
 import type { ChallengeStage } from '../shared/lib/challenge-mode.ts';
 import { loadPromptTemplate } from '../shared/lib/prompt-utils.ts';
@@ -818,7 +819,6 @@ runTool({
         `[compare-prs] pair=${pairId} presentation_order=${presentationOrder} primary_pr=${primaryNumber} challenger_pr=${challengerNumber}`
       );
 
-      const promptLimit = Number.parseInt(process.env.CHALLENGE_COMPARISON_MAX_PROMPT_BYTES || '500000', 10);
       const judgePromptTemplate = await loadPromptTemplate(ARBITER_JUDGE_PROMPT_TEMPLATE_FILE, { dir: evalsDir });
       const judgeOutcome = await runBlindJudge({
         issuePrompt,
@@ -827,7 +827,6 @@ runTool({
         presentationOrder,
         promptTemplate: judgePromptTemplate,
         model: comparisonModel,
-        maxPromptBytes: Number.isFinite(promptLimit) ? promptLimit : 500000,
         primaryRouting,
         challengerRouting,
         challengeType,
@@ -837,9 +836,9 @@ runTool({
         challengerExecution,
         sharedContext,
       });
-      if (judgeOutcome.truncated) {
-        console.warn(
-          `Comparison prompt truncated from ${judgeOutcome.promptBytes.original} to ${judgeOutcome.promptBytes.final} bytes`,
+      if (judgeOutcome.summarisedFiles > 0) {
+        console.log(
+          `[compare-prs] pair=${pairId} summarised=${judgeOutcome.summarisedFiles} file(s); prompt_bytes=${judgeOutcome.promptBytes}`,
         );
       }
       if (judgeOutcome.retriedStricterJson) {
@@ -1063,7 +1062,12 @@ runTool({
         writeJobResultFile(resultFile, {
           ok: false,
           exitCode,
-          reason: error instanceof Error ? error.message : 'comparison_failed',
+          // HOK-3493: a change that cannot fit the judge carries the adapter's
+          // typed refusal. Record its policy kind so the failure policy sees a
+          // terminal `context-window-exceeded` instead of a generic failure.
+          reason: isChangeInputRefusedError(error)
+            ? error.adapterError.policyKind
+            : error instanceof Error ? error.message : 'comparison_failed',
           error: error instanceof Error ? error.message : String(error),
         });
       }

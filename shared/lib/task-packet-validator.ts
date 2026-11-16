@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { callClaude, callLLM, parseJsonFromLLM } from './llm-cli.ts';
 import { fillPromptSlots } from './prompt-utils.ts';
+import { extractReleaseReadiness, type ReleaseReadinessField } from './task-packet-utils.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -456,6 +457,10 @@ export function validateAcceptanceCriteria(taskPacket: string): ValidationIssue[
 /**
  * Layer 1: Release readiness metadata validation
  *
+ * Parses the section through the single shared grammar in
+ * `task-packet-utils.ts` (HOK-3499), so this validator and the planning gate
+ * can never disagree about what a plan declares.
+ *
  * When the `## Release Readiness` section is present, validates that
  * field values are well-formed. When absent, produces no issues
  * (the section is optional for backward compatibility).
@@ -463,23 +468,32 @@ export function validateAcceptanceCriteria(taskPacket: string): ValidationIssue[
 export function validateReleaseReadiness(taskPacket: string): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
 
-  const section = extractSection(taskPacket, 'Release Readiness');
-  if (!section) {
+  const readiness = extractReleaseReadiness(taskPacket);
+  if (!readiness) {
     return issues; // Section is optional
   }
 
-  // Check database_change_risk value
-  const dbRiskMatch = section.match(/\*\*database_change_risk\*\*:\s*(\S+)/);
-  if (!dbRiskMatch) {
+  const suggestedFixes: Record<ReleaseReadinessField, string> = {
+    database_change_risk: 'Add `- **database_change_risk**: none` (or `possible` / `required`)',
+    env_changes: 'Add `- **env_changes**: none`',
+    config_changes: 'Add `- **config_changes**: none`',
+    manual_steps: 'Add `- **manual_steps**: none`',
+  };
+  for (const field of readiness.missingFields) {
     issues.push({
       type: 'invalid-release-readiness',
       severity: 'warning',
       section: 'Release Readiness',
-      description: 'Missing database_change_risk field',
-      suggestedFix: 'Add `- **database_change_risk**: none` (or `possible` / `required`)',
+      description: `Missing ${field} field`,
+      suggestedFix: suggestedFixes[field],
     });
-  } else {
-    const value = dbRiskMatch[1];
+  }
+
+  // Check database_change_risk value. The raw declaration is used so an
+  // unrecognized enum value is still reported (the parser normalizes it).
+  const rawDbRisk = readiness.rawFields.database_change_risk;
+  if (rawDbRisk !== undefined) {
+    const value = rawDbRisk.split(/\s/)[0];
     if (!['none', 'possible', 'required'].includes(value)) {
       issues.push({
         type: 'invalid-release-readiness',
@@ -487,21 +501,6 @@ export function validateReleaseReadiness(taskPacket: string): ValidationIssue[] 
         section: 'Release Readiness',
         description: `database_change_risk must be one of: none, possible, required (got: "${value}")`,
         suggestedFix: 'Use exactly one of: none, possible, required',
-      });
-    }
-  }
-
-  // Check that expected field names are present
-  const expectedFields = ['env_changes', 'config_changes', 'manual_steps'];
-  for (const field of expectedFields) {
-    const fieldRegex = new RegExp(`\\*\\*${field}\\*\\*:`);
-    if (!fieldRegex.test(section)) {
-      issues.push({
-        type: 'invalid-release-readiness',
-        severity: 'warning',
-        section: 'Release Readiness',
-        description: `Missing ${field} field`,
-        suggestedFix: `Add \`- **${field}**: none\` to the Release Readiness section`,
       });
     }
   }

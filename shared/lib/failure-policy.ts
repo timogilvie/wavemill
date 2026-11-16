@@ -491,7 +491,9 @@ const TRANSIENT_OVERRIDES: ReadonlyArray<RegExp> = [
   /\bECONNRESET\b|\bETIMEDOUT\b|\bEAI_AGAIN\b|socket hang up/,
   /connection (?:reset|refused|closed)/i,
   /not acquired by Runner|hosted runner encountered an error|runner (?:lost|has lost|was lost|disconnected)/i,
-  /(?:^|\D)(?:502|503|504)(?:\D|$)|bad gateway|service unavailable|gateway timeout/i,
+  // Alphanumeric-bounded so a hex commit SHA (`could not apply 502f14d...`)
+  // never reads as an HTTP status.
+  /(?<![0-9a-z])(?:502|503|504)(?![0-9a-z])|bad gateway|service unavailable|gateway timeout/i,
 ];
 
 function firstMatchingLine(text: string, patterns: ReadonlyArray<RegExp>): string | null {

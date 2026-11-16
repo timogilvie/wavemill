@@ -13,6 +13,11 @@ for reason in no_result_file timed_out eval_not_persisted unknown_fault; do
   decision="$(eval_failure_disposition HOK-3076 "$reason" 1 'module load failed' true)"
   jq -e '.class == "retryable" and .attribution == "unattributed" and .attempt == true' <<<"$decision" >/dev/null
 done
+# HOK-3493: the typed refusal a change that cannot fit the judge carries is
+# terminal, so eval and the comparison settlement (which branches on .class)
+# escalate instead of re-running the identical oversize prompt.
+refused="$(eval_failure_disposition HOK-3493 context-window-exceeded 1 'Model input refused: prompt exceeds window' true)"
+jq -e '.class == "terminal" and .failureKind == "context-window-exceeded" and .attribution == "unattributed"' <<<"$refused" >/dev/null
 # The policy bridge must preserve whether this is a challenge arm.
 single="$(eval_failure_disposition HOK-3076 ready-exhausted 1 '' false)"
 pair="$(eval_failure_disposition HOK-3076 ready-exhausted 1 '' true)"

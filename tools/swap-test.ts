@@ -84,7 +84,6 @@ runTool({
     const judgeModel = (args['judge-model'] as string | undefined)
       ?? config.challenge?.comparisonModel
       ?? 'claude-opus-4-7';
-    const maxPromptBytes = Number.parseInt(process.env.CHALLENGE_COMPARISON_MAX_PROMPT_BYTES || '500000', 10);
     const promptTemplate = await loadPromptTemplate(ARBITER_JUDGE_PROMPT_TEMPLATE_FILE, { dir: evalsDir });
 
     if (args.hydrate) {
@@ -99,7 +98,6 @@ runTool({
         pairIds,
         judgeModel,
         promptTemplate,
-        maxPromptBytes: Number.isFinite(maxPromptBytes) ? maxPromptBytes : 500000,
         concurrency: Number.parseInt((args.concurrency as string | undefined) ?? '2', 10),
         maxCostUsd: args['max-cost-usd'] ? parseNumber(args['max-cost-usd'] as string, Number.POSITIVE_INFINITY) : undefined,
         dryRun: args['dry-run'] === true,
@@ -110,8 +108,12 @@ runTool({
         ? readFileSync(join(evalsDir, 'swap-test', 'runs', runId, 'results.jsonl'), 'utf-8')
           .split('\n')
           .filter(Boolean)
-          .map((line) => JSON.parse(line) as { promptBytes?: { final?: number } })
-          .reduce((sum, row) => sum + Math.ceil((row.promptBytes?.final ?? 0) / 4), 0)
+          .map((line) => JSON.parse(line) as { promptBytes?: number | { final?: number } })
+          // `promptBytes.final` predates HOK-3493; old dry-run rows still sum.
+          .reduce((sum, row) => {
+            const bytes = typeof row.promptBytes === 'number' ? row.promptBytes : row.promptBytes?.final ?? 0;
+            return sum + Math.ceil(bytes / 4);
+          }, 0)
         : undefined;
       console.log(JSON.stringify({ ...summary, estimatedTokens: estimateTokens }, null, 2));
     }

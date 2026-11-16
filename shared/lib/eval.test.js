@@ -31,6 +31,43 @@ async function withMockSession(fn) {
   }
 }
 
+/** A `git diff` chunk that adds `path` with `content` (HOK-3493 fixtures). */
+function addedSource(path, content) {
+  const lines = content.endsWith('\n') ? content.slice(0, -1).split('\n') : content.split('\n');
+  return [
+    `diff --git a/${path} b/${path}`,
+    'new file mode 100644',
+    'index 0000000..1111111',
+    '--- /dev/null',
+    `+++ b/${path}`,
+    `@@ -0,0 +1,${lines.length} @@`,
+    ...lines.map((line) => `+${line}`),
+    '',
+  ].join('\n');
+}
+
+/**
+ * A stub judge adapter (HOK-3493): a fixed context window and a preflight that
+ * either mirrors the limits (`preflightFromLimits`) or accepts everything.
+ */
+function stubAdapter({ contextWindowTokens, preflightFromLimits }) {
+  return {
+    kind: 'claude-cli',
+    model: 'stub-judge',
+    limits: { contextWindowTokens, reservedOutputTokens: 0, cliHarnessOverheadTokens: 0 },
+    countTokens: (text) => Buffer.byteLength(text, 'utf8'),
+    preflight: (prompt) => {
+      if (!preflightFromLimits) return undefined;
+      const tokens = Buffer.byteLength(prompt, 'utf8');
+      return tokens > contextWindowTokens
+        ? { kind: 'context-exceeded', message: `prompt ${tokens} > ${contextWindowTokens}`, policyKind: 'context-window-exceeded' }
+        : undefined;
+    },
+    invoke: async () => ({ text: '', reportedModel: 'unverified' }),
+    parseResult: () => ({ text: '', reportedModel: 'unverified' }),
+  };
+}
+
 describe('evaluateTask', () => {
   it('returns a valid EvalRecord conforming to eval-schema', async () => {
     const validResponse = JSON.stringify({
@@ -1080,96 +1117,62 @@ describe('evaluateTask', () => {
     );
   });
 
-  it('fast-fails oversized prompts without calling the judge', async () => {
-    const callFn = mockCallFn(JSON.stringify({
-      score: 1,
-      rationale: 'Should not be called.',
-      interventionFlags: [],
-    }));
-    const warn = mock.method(console, 'warn', () => {});
-    try {
-      const result = await evaluateTask(
+  it('refuses a change that cannot fit the judge, before any judge call (HOK-3493)', async () => {
+    const callFn = mockCallFn(JSON.stringify({ score: 1, rationale: 'Should not be called.', interventionFlags: [] }));
+    const adapter = stubAdapter({ contextWindowTokens: 2_000, preflightFromLimits: true });
+    await assert.rejects(
+      evaluateTask(
         {
-          taskPrompt: 'Oversized eval prompt task',
-          prReviewOutput: 'x'.repeat(30_000),
-          issueId: 'HOK-1706',
+          taskPrompt: 'Oversized change task',
+          prReviewOutput: addedSource('src/huge.ts', 'export const y = 2;\n'.repeat(2_000)),
+          issueId: 'HOK-3493',
         },
         undefined,
-        {
-          _callFn: callFn,
-          _promptSizeConfig: { maxPromptBytes: 25_000, oversizePolicy: 'fail' },
-        }
-      );
-
-      assert.equal(callFn.mock.callCount(), 0);
-      assert.equal(result.score, 0);
-      assert.equal(result.scoreBand, 'Failure');
-      assert.equal(result.failureReason, 'eval_prompt_too_large');
-      assert.equal(result.promptSizeDiagnostic.action, 'rejected');
-      assert.equal(result.promptSizeDiagnostic.policy, 'fail');
-      assert.ok(result.promptSizeDiagnostic.perComponentBytes.prReviewOutput >= 30_000);
-    } finally {
-      warn.mock.restore();
-    }
+        { _callFn: callFn, _judgeAdapter: adapter }
+      ),
+      (error) => {
+        assert.equal(error.name, 'ChangeInputRefusedError');
+        assert.equal(error.adapterError.policyKind, 'context-window-exceeded');
+        return true;
+      }
+    );
+    assert.equal(callFn.mock.callCount(), 0);
   });
 
-  it('truncates oversized prompts before calling the judge when configured', async () => {
-    const validResponse = JSON.stringify({
-      score: 0.8,
-      rationale: 'Prompt was truncated and evaluated.',
-      interventionFlags: [],
-    });
+  it('sends a change over its per-part budget when the whole prompt still passes preflight (HOK-3493)', async () => {
+    const validResponse = JSON.stringify({ score: 0.8, rationale: 'Sent.', interventionFlags: [] });
     const callFn = mockCallFn(validResponse);
-    const warn = mock.method(console, 'warn', () => {});
-    try {
-      const result = await evaluateTask(
-        {
-          taskPrompt: 'Truncate oversized eval prompt',
-          prReviewOutput: 'x'.repeat(30_000),
-        },
-        undefined,
-        {
-          _callFn: callFn,
-          _promptSizeConfig: { maxPromptBytes: 28_000, oversizePolicy: 'truncate' },
-        }
-      );
-
-      assert.equal(callFn.mock.callCount(), 1);
-      const sentPrompt = callFn.mock.calls[0].arguments[0];
-      assert.ok(Buffer.byteLength(sentPrompt, 'utf8') <= 28_000);
-      assert.match(sentPrompt, /TRUNCATED \d+ bytes from prReviewOutput/);
-      assert.equal(result.promptSizeDiagnostic.action, 'truncated');
-      assert.equal(result.failureReason, undefined);
-    } finally {
-      warn.mock.restore();
-    }
+    // The budget is tiny, but preflight (the transport's own check) accepts
+    // the prompt: nothing was cut, so the judge runs.
+    const adapter = stubAdapter({ contextWindowTokens: 2_000, preflightFromLimits: false });
+    const result = await evaluateTask(
+      { taskPrompt: 'Over per-part budget task', prReviewOutput: addedSource('src/huge.ts', 'export const y = 2;\n'.repeat(2_000)) },
+      undefined,
+      { _callFn: callFn, _judgeAdapter: adapter }
+    );
+    assert.equal(callFn.mock.callCount(), 1);
+    assert.equal(result.failureReason, undefined);
+    assert.ok(result.score > 0);
   });
 
-  it('attaches pass diagnostics for under-limit prompts and logs the size', async () => {
-    const validResponse = JSON.stringify({
-      score: 0.9,
-      rationale: 'Under limit.',
-      interventionFlags: [],
-    });
+  it('logs a change_input line for under-budget changes and leaves prompt_size behind', async () => {
+    const validResponse = JSON.stringify({ score: 0.9, rationale: 'Under budget.', interventionFlags: [] });
     const callFn = mockCallFn(validResponse);
     const log = mock.method(console, 'log', () => {});
     try {
-      const result = await evaluateTask(
-        {
-          taskPrompt: 'Small eval prompt',
-          prReviewOutput: 'Clean diff',
-        },
+      await evaluateTask(
+        { taskPrompt: 'Small eval prompt', prReviewOutput: 'Clean diff' },
         undefined,
-        {
-          _callFn: callFn,
-          _promptSizeConfig: { maxPromptBytes: 80_000, oversizePolicy: 'fail' },
-        }
+        { _callFn: callFn, _judgeAdapter: null }
       );
-
-      assert.equal(callFn.mock.callCount(), 1);
-      assert.equal(result.promptSizeDiagnostic.action, 'pass');
-      assert.equal(log.mock.callCount(), 1);
-      assert.match(log.mock.calls[0].arguments[0], /^\[eval\] prompt_size /);
+      const lines = log.mock.calls.map((call) => call.arguments[0]).filter((line) => typeof line === 'string');
+      const changeLine = lines.find((line) => line.startsWith('[eval] change_input '));
+      assert.ok(changeLine, 'logs the change-input evidence line');
+      const evidence = JSON.parse(changeLine.slice('[eval] change_input '.length));
+      assert.equal(evidence.withinBudget, true);
+      assert.equal(evidence.summarised, 0);
+      assert.ok(evidence.promptTokens > 0);
+      assert.ok(!lines.some((line) => line.startsWith('[eval] prompt_size ')), 'the byte-cap diagnostic is gone');
     } finally {
       log.mock.restore();
     }
