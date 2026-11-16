@@ -562,6 +562,23 @@ test('unknown root key is named in the validation error', () => {
   }
 });
 
+// protects: the deleted Observer repair configuration silently reappearing (HOK-3406)
+test('observer.autoFix is rejected by the schema', () => {
+  if (!hasAjv) {
+    console.log('        SKIP  Ajv not installed');
+    return;
+  }
+
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ observer: { autoFix: { enabled: true } } }));
+    assert.throws(() => loadWavemillConfig(tmp), /unknown property "observer\.autoFix"/);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
 test('evalContextUpdates accessor returns defaults when absent', () => {
   const tmp = makeTempRepo();
   try {

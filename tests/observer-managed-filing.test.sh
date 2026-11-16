@@ -39,9 +39,9 @@ live_cmd="$(wavemill_build_observer_loop_command "$SESSION" "$WORK_REPO" "$TOOLS
 
 assert_not_contains "off has no incident flag" "$off_cmd" "--file-incidents"
 # HOK-3243: launcher no longer emits the legacy generic --dry-run flag; incident-sync
-# safety is in --incidents-mode, and auto-fix dry-run is on --autofix-dry-run.
+# safety is in --incidents-mode, which does not imply a generic --dry-run.
 assert_not_contains "off does not force legacy --dry-run" "$off_cmd" "--dry-run"
-assert_not_contains "off does not force autofix dry-run" "$off_cmd" "--autofix-dry-run"
+assert_not_contains "off does not force a dry-run flag" "$off_cmd" "--autofix-dry-run"
 
 assert_contains "shadow files incidents" "$shadow_cmd" "--file-incidents"
 assert_contains "shadow uses explicit shadow mode" "$shadow_cmd" "--incidents-mode=shadow"

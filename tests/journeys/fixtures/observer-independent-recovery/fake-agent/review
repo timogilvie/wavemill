@@ -1,0 +1,31 @@
+# shellcheck shell=bash
+# Fake reviewer for the observer-independent-recovery journey (HOK-3406).
+#
+# While the task is in review, another contributor lands a change on the
+# integration branch, so the PR head is BEHIND at Ready. No agent repairs it:
+# the mill's recovery path (tend rebase / base-merge) must carry the task to a
+# merge with Observer disabled.
+contender="$FAKE_ROOT/contender-clone"
+[[ -d "$contender/.git" ]] || git clone -q "$FAKE_GH_ORIGIN" "$contender"
+(
+  cd "$contender"
+  git fetch -q origin
+  git checkout -q -B "$BASE_BRANCH" "origin/$BASE_BRANCH"
+  # Idempotent: a relaunched reviewer must not trip over its own fault.
+  if [[ ! -f base-move.txt ]]; then
+    printf 'unrelated base work\n' > base-move.txt
+    git add base-move.txt
+    git -c user.name=contender -c user.email=contender@example.invalid \
+      commit -q -m "unrelated base advance"
+    git push -q origin "$BASE_BRANCH"
+  fi
+)
+
+branch="$(git rev-parse --abbrev-ref HEAD)"
+pr_url="$(gh pr create --base "$BASE_BRANCH" --head "$branch" --label wavemill \
+  --title "$WAVEMILL_ISSUE: journey change" \
+  --body "$(printf '## Summary\n- journey\n\n## Self-review\nready\n\n<!-- wavemill-meta\ntask: %s\n-->\n' "$WAVEMILL_ISSUE")")"
+pr_number="${pr_url##*/}"
+artifacts="$(jq -cn --argjson pr "$pr_number" --arg head "$(git rev-parse HEAD)" \
+  '{type:"review",prNumber:$pr,exitCode:0,verdict:"ready",iterations:1,blockerCount:0,warningCount:0,reviewHeadSha:$head}')"
+run_tool stage-result-cli.ts update "$FEATURE_DIR" review --status completed --notes "PR #$pr_number created" --artifacts "$artifacts"

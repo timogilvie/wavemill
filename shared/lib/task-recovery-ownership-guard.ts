@@ -16,7 +16,7 @@
  * `ready_failure_classify_and_act`) are the controller's first adapters and
  * compose those same authorities; they are not a second policy.
  *
- * This guard fails on the two shapes that would answer it a second way:
+ * This guard fails on the shapes that would answer it a second way:
  *
  * 1. `recovery-decider` — a new TypeScript recovery decider declared outside
  *    the controller (`function`/`const` named `decide<...>Recovery`). Author
@@ -24,6 +24,16 @@
  * 2. `recovery-claim-writer` — writing the `.recovery-claim.json` seam outside
  *    the controller. Claim through `claimRecoveryAction`, whose atomic
  *    compare-and-set makes concurrent notifications collapse to one dispatch.
+ * 3. `observer-auto-fix-import` — re-importing the deleted Observer repair
+ *    engine (HOK-3406). Observer is evidence-only.
+ * 4. `observer-repair-bucket` — recreating Observer's private retry buckets
+ *    (`observer-update-branch`, `observer-ready-budget-reset`,
+ *    `observer-forfeit-arm`). Retries belong to `bounded-retry`; repairs to the
+ *    controller.
+ * 5. `observer-executor-call` — `tools/observer.ts` calling a repair executor
+ *    directly instead of emitting evidence for the controller.
+ * 6. `observer-autofix-surface` — the removed auto-fix configuration/flag
+ *    surface returning to `tools/observer.ts`.
  */
 import type { GuardSpec } from '../../tools/lib/source-guard.ts';
 
@@ -51,6 +61,36 @@ export const TASK_RECOVERY_OWNERSHIP_GUARD: GuardSpec = {
         'the .recovery-claim.json seam written outside the controller — claim through claimRecoveryAction so concurrent notifications collapse to one dispatch',
       lang: 'both',
       re: /\.recovery-claim\.json/,
+    },
+    {
+      name: 'observer-auto-fix-import',
+      description:
+        'the deleted Observer auto-fix engine (HOK-3406) cannot be re-imported — Observer is evidence-only; repair belongs to the recovery controller',
+      lang: 'ts',
+      re: /\bobserver-auto-fix\b/,
+    },
+    {
+      name: 'observer-repair-bucket',
+      description:
+        'Observer private repair buckets are deleted (HOK-3406) — count retries through bounded-retry and decide repairs in the recovery controller',
+      lang: 'both',
+      re: /\bobserver-(?:update-branch|ready-budget-reset|forfeit-arm)\b/,
+    },
+    {
+      name: 'observer-executor-call',
+      description:
+        'tools/observer.ts may not call a repair executor directly (HOK-3406) — emit evidence / request reconciliation and let the recovery controller execute',
+      lang: 'ts',
+      re: /\b(?:updateBranchWithBase|abortTaskInState|recordArmTermination|createStateDirRetry|runObserverAutoFixes)\s*\(/,
+      scopedPaths: ['tools/observer.ts'],
+    },
+    {
+      name: 'observer-autofix-surface',
+      description:
+        'the removed observer.autoFix configuration and --autofix-dry-run flag surface cannot return (HOK-3406)',
+      lang: 'ts',
+      re: /autoFixDryRun|getObserverAutoFixConfig|ObserverAutoFixConfig/,
+      scopedPaths: ['tools/observer.ts'],
     },
   ],
   remediation: [
