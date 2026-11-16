@@ -376,11 +376,10 @@ function readFileLines(file: string, launches: SessionOwnershipRow[], resolution
 }
 
 /**
- * Read and merge ownership files. Resolutions replace pending refs; a
- * sessionRef named by several rows (a native session id reused by a
- * relaunch) keeps its earliest launch. Rows are returned in launch order.
+ * Read lossless launch history. Resolutions replace pending refs and identical
+ * archived copies collapse; distinct launches sharing a session stay distinct.
  */
-export function readOwnershipFiles(files: readonly string[]): OwnershipReadResult {
+export function readLaunchHistory(files: readonly string[]): OwnershipReadResult {
   const launches: SessionOwnershipRow[] = [];
   const resolutions = new Map<string, string>();
   let malformedLines = 0;
@@ -388,17 +387,30 @@ export function readOwnershipFiles(files: readonly string[]): OwnershipReadResul
     if (existsSync(file)) malformedLines += readFileLines(file, launches, resolutions);
   }
 
-  const byRef = new Map<string, SessionOwnershipRow>();
+  const distinct = new Map<string, SessionOwnershipRow>();
   for (const launch of launches) {
-    const sessionRef = resolutions.get(launch.sessionRef) ?? launch.sessionRef;
-    const row = { ...launch, sessionRef };
+    const row = { ...launch, sessionRef: resolutions.get(launch.sessionRef) ?? launch.sessionRef };
+    distinct.set(JSON.stringify(row), row);
+  }
+  return { rows: [...distinct.values()].sort((a, b) => Date.parse(a.launchedAt) - Date.parse(b.launchedAt)), malformedLines };
+}
+
+/** Legacy shared sessions are billed once; execution evidence retains all launches. */
+export function getSdkMeteringProjection(rows: readonly SessionOwnershipRow[]): SessionOwnershipRow[] {
+  const byRef = new Map<string, SessionOwnershipRow>();
+  for (const row of rows) {
+    const sessionRef = row.sessionRef;
     const existing = byRef.get(sessionRef);
     if (!existing || Date.parse(row.launchedAt) < Date.parse(existing.launchedAt)) {
       byRef.set(sessionRef, row);
     }
   }
-  const rows = [...byRef.values()].sort((a, b) => Date.parse(a.launchedAt) - Date.parse(b.launchedAt));
-  return { rows, malformedLines };
+  return [...byRef.values()].sort((a, b) => Date.parse(a.launchedAt) - Date.parse(b.launchedAt));
+}
+
+export function readOwnershipFiles(files: readonly string[]): OwnershipReadResult {
+  const result = readLaunchHistory(files);
+  return { ...result, rows: getSdkMeteringProjection(result.rows) };
 }
 
 /** Rows recorded in one state directory. */
@@ -436,6 +448,11 @@ export function ownershipFileCandidates(input: LocateOwnershipInput): string[] {
 export function locateOwnershipRows(input: LocateOwnershipInput): OwnershipReadResult & { files: string[] } {
   const files = ownershipFileCandidates(input).filter((file) => existsSync(file));
   return { ...readOwnershipFiles(files), files };
+}
+
+export function locateLaunchHistory(input: LocateOwnershipInput): OwnershipReadResult & { files: string[] } {
+  const files = ownershipFileCandidates(input).filter(file => existsSync(file));
+  return { ...readLaunchHistory(files), files };
 }
 
 // ────────────────────────────────────────────────────────────────

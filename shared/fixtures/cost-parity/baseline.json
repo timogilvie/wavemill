@@ -546,6 +546,7 @@
         "nativeProviderExecutions": [
           {
             "generation": null,
+            "observationId": "462921c1742f66b916ae3ff786293976f411aca2f10922527b403a3dc31d27c2",
             "ownershipAttemptIds": [
               "coding@nohead#1735689600"
             ],
@@ -553,7 +554,14 @@
             "responseId": "gen-3237",
             "responseModel": null,
             "sessionRef": "wm-coding-HOK-3237",
-            "transport": "openrouter"
+            "transport": "openrouter",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "input_tokens": 100000,
+              "output_tokens": 20000,
+              "reasoning_tokens": null
+            }
           }
         ],
         "pricingUsed": {
@@ -631,6 +639,7 @@
         "nativeProviderExecutions": [
           {
             "generation": null,
+            "observationId": "6cb0e82f9198a1513da8271f5ba504bf8adc418f36e3e9dc4cc983e6400af011",
             "ownershipAttemptIds": [
               "coding@nohead#1735689600"
             ],
@@ -638,7 +647,14 @@
             "responseId": "resp-4",
             "responseModel": null,
             "sessionRef": "native-4",
-            "transport": "test"
+            "transport": "test",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": null
+            }
           }
         ],
         "pricingUsed": {
@@ -700,6 +716,7 @@
         "nativeProviderExecutions": [
           {
             "generation": null,
+            "observationId": "7b32cf55fd5525021c4d71e87b8f0cfef415d9f17f7922f5db7247f3aca387cb",
             "ownershipAttemptIds": [
               "coding@nohead#1735689600"
             ],
@@ -707,7 +724,14 @@
             "responseId": "resp-2",
             "responseModel": null,
             "sessionRef": "native-2",
-            "transport": "openai"
+            "transport": "openai",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "input_tokens": 0,
+              "output_tokens": 100,
+              "reasoning_tokens": null
+            }
           }
         ],
         "pricingUsed": {
@@ -770,6 +794,7 @@
         "nativeProviderExecutions": [
           {
             "generation": null,
+            "observationId": "7a6e159b6e70acbd747214aefdba16e5e4466e79db0fa7b64fc312af40922a5b",
             "ownershipAttemptIds": [
               "coding@nohead#1735689600"
             ],
@@ -777,7 +802,14 @@
             "responseId": "resp-1",
             "responseModel": null,
             "sessionRef": "native-1",
-            "transport": "openai"
+            "transport": "openai",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": null
+            }
           }
         ],
         "pricingUsed": {
@@ -840,6 +872,7 @@
         "nativeProviderExecutions": [
           {
             "generation": null,
+            "observationId": "8f671c0b831bb8f49b41716ea5cda5607e30f9645d89a3138e9c9921157992ec",
             "ownershipAttemptIds": [
               "coding@nohead#1735689600"
             ],
@@ -847,7 +880,14 @@
             "responseId": "resp-5",
             "responseModel": null,
             "sessionRef": "native-5",
-            "transport": "openai"
+            "transport": "openai",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": null
+            }
           }
         ],
         "pricingUsed": {
@@ -907,6 +947,7 @@
         "nativeProviderExecutions": [
           {
             "generation": null,
+            "observationId": "8f671c0b831bb8f49b41716ea5cda5607e30f9645d89a3138e9c9921157992ec",
             "ownershipAttemptIds": [
               "coding@nohead#1735689600"
             ],
@@ -914,7 +955,14 @@
             "responseId": "resp-5",
             "responseModel": null,
             "sessionRef": "native-5",
-            "transport": "openai"
+            "transport": "openai",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": null
+            }
           }
         ],
         "pricingUsed": {
@@ -975,6 +1023,7 @@
         "nativeProviderExecutions": [
           {
             "generation": null,
+            "observationId": "0ea8808ecf7e328b011d83d41623bd9bec5fdc97063ceb6be5eb7d3fd6e95541",
             "ownershipAttemptIds": [
               "coding@nohead#1735689600"
             ],
@@ -982,7 +1031,14 @@
             "responseId": "resp-3",
             "responseModel": null,
             "sessionRef": "native-3",
-            "transport": "anthropic"
+            "transport": "anthropic",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": null
+            }
           }
         ],
         "pricingUsed": {},

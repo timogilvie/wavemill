@@ -15,20 +15,8 @@
  */
 
 import type { ModelPricing, ModelTokenUsage } from './pricing/model-pricing.ts';
-import type { OpenRouterGenerationCost } from './pricing/openrouter-exact-pricing.ts';
-
-/** Factual turn evidence, independent of whether the stage ultimately passed. */
-export interface NativeProviderExecution {
-  sessionRef: string;
-  /** All recorded owners: legacy reused sessions cannot be split by guesswork. */
-  ownershipAttemptIds: string[];
-  responseId: string | null;
-  transport: string;
-  requestedModel: string | null;
-  responseModel: string | null;
-  /** Observed OpenRouter metadata, never inferred from a requested model/pin. */
-  generation: OpenRouterGenerationCost | null;
-}
+import type { NativeProviderExecution } from '@hokusai/core';
+export type { NativeProviderExecution } from '@hokusai/core';
 
 /** Re-enrichment may fill gaps, but a failed lookup cannot erase observations. */
 export function mergeNativeProviderExecutions(
@@ -38,11 +26,14 @@ export function mergeNativeProviderExecutions(
   const entries = new Map<string, NativeProviderExecution>();
   for (const next of [...previous, ...incoming]) {
     // Without a response id two turns cannot safely be identified as the same.
-    const key = next.responseId === null ? `anonymous:${entries.size}`
+    const key = next.responseId === null ? (next.observationId ?? `anonymous:${entries.size}`)
       : JSON.stringify([next.sessionRef, next.transport, next.responseId]);
     const old = entries.get(key);
     entries.set(key, old ? {
-      ...next,
+      ...old, ...next,
+      ...((next.requestedRouting ?? old.requestedRouting) !== undefined ? { requestedRouting: next.requestedRouting ?? old.requestedRouting } : {}),
+      ...((next.pricingSnapshot ?? old.pricingSnapshot) !== undefined ? { pricingSnapshot: next.pricingSnapshot ?? old.pricingSnapshot } : {}),
+      ...(next.usage && old.usage ? { usage: Object.fromEntries(Object.entries(next.usage).map(([key, value]) => [key, value ?? old.usage![key as keyof typeof old.usage]])) as NativeProviderExecution['usage'] } : {}),
       requestedModel: next.requestedModel ?? old.requestedModel,
       responseModel: next.responseModel ?? old.responseModel,
       ownershipAttemptIds: [...new Set([...old.ownershipAttemptIds, ...next.ownershipAttemptIds])],

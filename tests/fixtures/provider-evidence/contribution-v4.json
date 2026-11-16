@@ -1,0 +1,194 @@
+{
+  "schema_version": "technical_task_router_row/v4",
+  "task_descriptor": {
+    "task_type": "feature",
+    "language": "unknown",
+    "domain": "backend",
+    "complexity": 1,
+    "repo_size_bucket": "small",
+    "files_touched_bucket": "2_5",
+    "description_length_bucket": "short",
+    "is_greenfield": false,
+    "is_migration": false,
+    "requires_tests": false,
+    "cross_service": false,
+    "ui_heavy": false,
+    "risk_level": "low"
+  },
+  "allowed_models": [
+    "z-ai/glm-5.3",
+    "deepseek-v4-flash",
+    "claude-fable-5"
+  ],
+  "selected_models": {
+    "planner": "z-ai/glm-5.3",
+    "coder": "deepseek-v4-flash",
+    "reviewer": "claude-fable-5"
+  },
+  "available_models": {
+    "planner_models": [],
+    "coder_models": [],
+    "reviewer_models": []
+  },
+  "success_under_budget": false,
+  "completion_result": "failure",
+  "outcome_labels": {
+    "budget_label": "unknown",
+    "cost_label": "low",
+    "time_label": "unknown",
+    "success_label": "failure"
+  },
+  "candidate_pool": {
+    "scenario_id": "unknown",
+    "scenario_kind": "unknown",
+    "pool_size": 3
+  },
+  "sparse_cell": {
+    "cell_id": "unknown",
+    "descriptor_signature": "unknown",
+    "observed_count": 0,
+    "is_sparse": false
+  },
+  "observed_at": "2026-11-08T23:31:33.572Z",
+  "actual_cost_usd": 0.02,
+  "task_id": "REPLAY-1_c",
+  "harness": "wavemill",
+  "inference_log_id": "replay-routing-decision",
+  "overrides": [
+    {
+      "role": "reviewer",
+      "source": "launchability",
+      "from": "qwen3-coder",
+      "to": "claude-fable-5",
+      "reason": "unknown-model"
+    },
+    {
+      "role": "planner",
+      "source": "challenge",
+      "from": "glm-5.3-flash",
+      "to": "z-ai/glm-5.3",
+      "reason": "challenge_varied_stage"
+    }
+  ],
+  "stage_executions": [
+    {
+      "provider_executions": [
+        {
+          "observationId": "redacted-2e28a3d2bde1e456",
+          "sessionRef": "redacted-f486a132f2966436",
+          "ownershipAttemptIds": [
+            "redacted-08a5fc1e49bbcd84"
+          ],
+          "responseId": "redacted-21093268e09a7893",
+          "transport": "openrouter",
+          "requestedModel": "z-ai/glm-5.3",
+          "usage": {
+            "input_tokens": 4677,
+            "output_tokens": 51,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": null
+          },
+          "responseModel": null,
+          "generation": {
+            "totalCostUsd": 0.01
+          }
+        },
+        {
+          "observationId": "redacted-b15d239fdf211851",
+          "sessionRef": "redacted-f486a132f2966436",
+          "ownershipAttemptIds": [
+            "redacted-08a5fc1e49bbcd84"
+          ],
+          "responseId": "redacted-44a94af3cef8d8d5",
+          "transport": "openrouter",
+          "requestedModel": "z-ai/glm-5.3",
+          "usage": {
+            "input_tokens": 296,
+            "output_tokens": 80,
+            "cache_read_tokens": 4672,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": null
+          },
+          "responseModel": null,
+          "generation": {
+            "totalCostUsd": 0.01
+          }
+        }
+      ],
+      "failure": {
+        "fault_class": "model-fault"
+      },
+      "stage": "planning",
+      "executed_model": "z-ai/glm-5.3",
+      "model_evidence": "provider_response",
+      "harness": "native",
+      "task_cost": {
+        "schema_version": "task_cost_summary/v1",
+        "task_id": "REPLAY-1_c",
+        "session_ids": [
+          "redacted-f486a132f2966436"
+        ],
+        "harness": "native",
+        "provider_contract_version": "native/1",
+        "models": [
+          "glm-5.3"
+        ],
+        "model_segments": [
+          {
+            "model": "glm-5.3",
+            "turn_count": 2,
+            "usage": {
+              "input_tokens": 4973,
+              "output_tokens": 131,
+              "cache_read_tokens": 4672,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.02,
+            "estimated_cost_usd": null,
+            "cost_source": "provider_reported"
+          }
+        ],
+        "turn_count": 2,
+        "turns_truncated": false,
+        "usage": {
+          "input_tokens": 4973,
+          "output_tokens": 131,
+          "cache_read_tokens": 4672,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": null
+        },
+        "actual_cost_usd": 0.02,
+        "estimated_cost_usd": null,
+        "total_cost_usd": 0.02,
+        "cost_source": "provider_reported",
+        "cost_basis": "per_token_api",
+        "coverage": "partial",
+        "field_availability": {
+          "usage": "partial",
+          "actual_cost": "available",
+          "estimated_cost": "unavailable",
+          "pricing": "unavailable"
+        },
+        "pricing_source": "none",
+        "join_confidence": "unattributed",
+        "collected_at": "2026-11-08T23:31:33.572Z",
+        "event_count": 2,
+        "event_ids": [
+          "redacted-2e28a3d2bde1e456",
+          "redacted-b15d239fdf211851"
+        ],
+        "diagnostics": [
+          "unpriced_model",
+          "mixed_coverage",
+          "provider_reported_cost"
+        ]
+      }
+    }
+  ],
+  "comparison_group": {
+    "id": "67f2daba-c810-8ee0-9be0-17add4dfe458",
+    "role_varied": "planner"
+  }
+}

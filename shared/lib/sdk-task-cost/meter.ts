@@ -38,13 +38,14 @@ import {
 } from '../pricing/openrouter-exact-pricing.ts';
 import type { PricingTable } from '../pricing/model-pricing.ts';
 import type { OpenRouterGenerationCost } from '../pricing/openrouter-exact-pricing.ts';
-import { NativeSessionAdapter, nativeSessionObservations, resolveClaudeProjectsDirsFor, resolveCodexSessionRoots, type NativeSessionUsageRecord } from '../session-adapters.ts';
+import { NativeSessionAdapter, nativeSessionObservations, nativeTurnUsage, resolveClaudeProjectsDirsFor, resolveCodexSessionRoots, type NativeSessionUsageRecord } from '../session-adapters.ts';
 import {
   appendSessionRefResolution,
   exactRows,
   groupByExecutionStage,
   groupByKind,
-  locateOwnershipRows,
+  locateLaunchHistory,
+  getSdkMeteringProjection,
   type ExecutionStage,
   type SessionOwnershipRow,
 } from '../session-ownership.ts';
@@ -66,6 +67,7 @@ export type WorkflowCostMeterReason =
 
 export interface MeterWorkflowCostInput {
   worktreePath: string;
+  featureDir?: string;
   branchName: string;
   repoDir?: string;
   issueId?: string;
@@ -165,7 +167,7 @@ function ownedNativeSessions(input: MeterWorkflowCostInput, rows: readonly Sessi
     branchName: input.branchName,
     repoDir: input.repoDir,
     issueId: input.issueId,
-    ...(recordFile ? { featureDir: dirname(recordFile) } : {}),
+    ...((input.featureDir || recordFile) ? { featureDir: input.featureDir ?? dirname(recordFile!) } : {}),
     sessionRefs: [...refs],
   })?.nativeSessions ?? [];
   return sessions.filter((session) => refs.has(session.sessionId));
@@ -194,12 +196,15 @@ function providerExecutions(
   owned: readonly SessionOwnershipRow[],
   generations: ReadonlyMap<string, OpenRouterGenerationCost> | undefined,
 ): NativeProviderExecution[] {
-  return nativeSessionObservations(sessions).map(({ session, turn }) => ({
+  return nativeSessionObservations(sessions).map(({ session, turn, observationId }) => ({
+    observationId,
     sessionRef: session.sessionId,
     ownershipAttemptIds: [...new Set(owned.filter(row => row.harness === 'native' && row.sessionRef === session.sessionId).map(row => row.attemptId))],
     responseId: turn.responseId ?? null,
     transport: session.provider,
     requestedModel: session.requestedModel ?? null,
+    ...turn.providerRequest,
+    usage: nativeTurnUsage(turn),
     responseModel: turn.responseModel ?? null,
     generation: session.provider === 'openrouter' && turn.responseId ? generations?.get(turn.responseId) ?? null : null,
   }));
@@ -235,7 +240,7 @@ export async function meterWorkflowCost(input: MeterWorkflowCostInput): Promise<
     if (input.ownership) {
       owned = [...input.ownership];
     } else {
-      const located = locateOwnershipRows({
+      const located = locateLaunchHistory({
         repoDir: input.repoDir,
         issueId: input.issueId,
         slug: input.slug,
@@ -254,8 +259,8 @@ export async function meterWorkflowCost(input: MeterWorkflowCostInput): Promise<
     return { ...empty, owned: [], outcome: failure('adapter_error', `Session ownership unreadable: ${message}`, input), reason: 'collection_failed' };
   }
 
-  const measured = exactRows(owned);
-  const pending = owned.length - measured.length;
+  const measured = exactRows(getSdkMeteringProjection(owned));
+  const pending = owned.length - exactRows(owned).length;
   if (pending > 0) {
     logger.warn(`${input.label}: ${pending} owned Codex session(s) never resolved to a thread id; not costed`);
   }

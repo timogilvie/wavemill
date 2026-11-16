@@ -1,3 +1,4 @@
+import { evalTaskStateKey } from './eval-skip-guard.ts';
 /** Recover completion feedback from retained execution facts, never launch intent. */
 import { readFileSync } from 'node:fs';
 import { dirname, basename, resolve } from 'node:path';
@@ -38,7 +39,7 @@ export async function prepareTerminalArmFeedback(
   const unchanged = { record, meteredCost: options.meteredCost };
   if (record.nonRewardReason?.code !== 'arm-terminated' || record.outcomes?.success !== false || !record.issueId) return unchanged;
   try {
-    const lookup = { issueId: record.issueId, repoDir: options.repoDir, slug: options.featureDir ? basename(options.featureDir) : undefined, worktreeDir: options.worktreePath ?? (options.featureDir ? resolve(options.featureDir, '../..') : undefined) };
+    const lookup = { issueId: evalTaskStateKey(record.issueId, record.challengeSide), repoDir: options.repoDir, slug: options.featureDir ? basename(options.featureDir) : undefined, worktreeDir: options.worktreePath ?? (options.featureDir ? resolve(options.featureDir, '../..') : undefined) };
     const artifact = resolveTaskArtifact({ ...lookup, artifactName: '.challenge-aborted.json' });
     if (!artifact) return unchanged;
     const featureDir = dirname(artifact.path);
@@ -54,7 +55,6 @@ export async function prepareTerminalArmFeedback(
     const exitEvidence = readStageResultSync(featureDir, ownershipStage)?.artifacts?.exitEvidence ?? null;
     const faultClass = classifyArmFault({ failureKind, detail: termination.detail, budgetExhausted,
       timeSplit: resolveNativeStageTimeSplit(budgetExhausted, { featureDir }) ?? undefined, exitEvidence });
-    if (!isModelQualitySignal(faultClass)) return unchanged;
     const worktreePath = lookup.worktreeDir ?? options.repoDir;
     const branchName = options.branchName ?? '';
     const evidence = resolveStageExecutedModel({ featureDir, stage: ownershipStage, worktreePath, branchName, repoDir: options.repoDir });
@@ -71,7 +71,7 @@ export async function prepareTerminalArmFeedback(
     const packet = resolveTaskArtifact({ ...lookup, artifactName: 'task-packet.md' });
     if (!packet) return unchanged;
     const meteredCost = options.meteredCost ?? await meterWorkflowCost({ worktreePath, branchName,
-      repoDir: options.repoDir, issueId: record.issueId, slug: lookup.slug, label: 'Terminal arm feedback', exactPricing: {} });
+      repoDir: options.repoDir, issueId: evalTaskStateKey(record.issueId, record.challengeSide), slug: lookup.slug, label: 'Terminal arm feedback', exactPricing: {} });
     const measured = meteredCost.outcome;
     if (measured.status !== 'success') return unchanged;
     const executionRoute = { ...active, ...(routes.expanded ? { planner: routes.expanded.planner ?? active.planner, coder: routes.expanded.coder, reviewer: routes.expanded.reviewer } : {}), [role]: evidence.executedModel };
@@ -82,6 +82,7 @@ export async function prepareTerminalArmFeedback(
     }, record.challengeSide ?? 'primary', record.timestamp);
     const recovered: EvalRecord = {
       ...record,
+      metadata: { ...record.metadata, arm_termination: { ...(record.metadata?.arm_termination as object ?? {}), faultClass, qualitySignalEligible: isModelQualitySignal(faultClass) } },
       originalPrompt: readFileSync(packet.path, 'utf8'),
       challengeStage: stage,
       routingDecision: convertToRoutingDecision(executionRoute),

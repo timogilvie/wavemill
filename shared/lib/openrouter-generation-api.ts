@@ -6,16 +6,8 @@
  * null so workflow-cost accounting can fall back to local pricing.
  */
 
-export interface OpenRouterGenerationCost {
-  /** Unknown charges remain null; host evidence can arrive before billing. */
-  totalCostUsd: number | null;
-  cacheDiscountUsd?: number;
-  providerName?: string;
-  modelPermaslug?: string;
-  nativeTokensPrompt?: number;
-  nativeTokensCached?: number;
-  nativeTokensCompletion?: number;
-}
+export type { ProviderGenerationEvidence as OpenRouterGenerationCost } from '@hokusai/core';
+import type { ProviderGenerationEvidence as OpenRouterGenerationCost } from '@hokusai/core';
 
 export type FetchLike = typeof fetch;
 

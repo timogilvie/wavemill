@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { archivedSessionRoots, resolveTaskArtifactDirs } from './task-artifact-lookup.ts';
 import { TASK_ID_EMBEDDED_GLOBAL_RE } from './task-identity.ts';
 /**
@@ -23,6 +24,7 @@ import { isPendingSessionRef, type SessionOwnershipRow } from './session-ownersh
 import { readJsonlFile } from './jsonl-utils.ts';
 import { piUsageToSessionModelUsage } from './native-agent/pi-usage-cost.ts';
 import type { TranscriptEvent } from './native-agent/transcript.ts';
+import type { NativeProviderExecution, TaskCostTokenUsage } from '@hokusai/core';
 import { resolveProjectsDirs } from './wavemill-session-paths.ts';
 
 /**
@@ -152,6 +154,7 @@ export interface NativeSessionUsageRecord {
   turnCount: number;
   responseIds: string[];
   turns: Array<{
+    providerRequest?: Pick<NativeProviderExecution, 'requestedRouting' | 'pricingSnapshot'>;
     responseId?: string;
     responseModel?: string;
     inputTokens?: number;
@@ -179,13 +182,20 @@ export function nativeSessionObservations(sessions: readonly NativeSessionUsageR
   return sessions.flatMap(session => {
     const turns: NativeSessionUsageRecord['turns'] = session.turns.length ? session.turns : [session];
     return turns.flatMap((turn, index) => {
-      const identity = turn.responseId ?? [session.filePath, session.modelId, index];
+      const identity = turn.responseId ?? [basename(session.filePath), session.modelId, index];
       const key = JSON.stringify([session.sessionId, session.provider, identity]);
       if (seen.has(key)) return [];
       seen.add(key);
-      return [{ session, turn, index }];
+      return [{ session, turn, index, observationId: createHash('sha256').update(key).digest('hex') }];
     });
   });
+}
+
+export function nativeTurnUsage(turn: NativeSessionUsageRecord['turns'][number]): TaskCostTokenUsage {
+  const usable = turn.usageAvailable && !turn.invalidUsage ? turn : {};
+  return { input_tokens: usable.inputTokens ?? null, output_tokens: usable.outputTokens ?? null,
+    cache_read_tokens: usable.cacheReadTokens ?? null, cache_write_tokens: usable.cacheCreationTokens ?? null,
+    reasoning_tokens: null };
 }
 
 /** Result of scanning sessions for a given agent. */
@@ -347,6 +357,7 @@ export class NativeSessionAdapter implements SessionAdapter {
 
           nativeRecord.turnCount++;
           const turnRecord: NativeSessionUsageRecord['turns'][number] = {
+            ...(entry.providerRequest ? { providerRequest: entry.providerRequest } : {}),
             ...(entry.responseId ? { responseId: entry.responseId } : {}),
             ...(entry.responseModel ? { responseModel: entry.responseModel } : {}),
             usageAvailable: false,
