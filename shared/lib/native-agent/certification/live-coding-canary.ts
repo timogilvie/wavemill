@@ -316,6 +316,15 @@ async function runSingleCanaryAttempt(input: {
       };
 
       const pricing = options.endpointPricing ?? resolveModelPricing(options);
+      const budget = {
+        maxTurns: limits.maxTurns,
+        maxToolCalls: limits.maxToolCalls,
+        // Certification artifact limits are identity-hashed and keep their
+        // `maxWallClockMs` name; the loop budget is the renamed model-time one (HOK-3382).
+        maxModelTimeMs: limits.maxWallClockMs,
+        maxTotalTokens: limits.maxTotalTokens,
+        ...(limits.maxCostUsd !== undefined && pricing ? { maxCostUsd: limits.maxCostUsd } : {}),
+      };
       let result: LoopResult;
       try {
         result = await runLoopFn({
@@ -337,15 +346,7 @@ async function runSingleCanaryAttempt(input: {
               },
             },
           },
-          budget: {
-            maxTurns: limits.maxTurns,
-            maxToolCalls: limits.maxToolCalls,
-            // Certification artifact limits are identity-hashed and keep their
-            // `maxWallClockMs` name; the loop budget is the renamed model-time one (HOK-3382).
-            maxModelTimeMs: limits.maxWallClockMs,
-            maxTotalTokens: limits.maxTotalTokens,
-            ...(limits.maxCostUsd !== undefined && pricing ? { maxCostUsd: limits.maxCostUsd } : {}),
-          },
+          budget,
           ...(pricing ? { modelPricing: pricing, modelPricingScope: options.endpointPricing ? 'endpoint' as const : 'model' as const } : {}),
           maxTokens: 4096,
           signal: options.signal,
@@ -378,7 +379,7 @@ async function runSingleCanaryAttempt(input: {
       // budget outcome, never the abort message our own budget left behind.
       const budgetOutcome = classifyBudgetOutcome(result.stopReason);
       if (budgetOutcome) {
-        const fact = budgetExhaustionFromLoop(result, { maxTurns: limits.maxTurns, maxToolCalls: limits.maxToolCalls, maxModelTimeMs: limits.maxWallClockMs, maxTotalTokens: limits.maxTotalTokens, maxCostUsd: limits.maxCostUsd }, { transcriptPath: join(evidenceDir, 'native-sessions', `${sessionId}.jsonl`) });
+        const fact = budgetExhaustionFromLoop(result, budget, { transcriptPath: join(evidenceDir, 'native-sessions', `${sessionId}.jsonl`) });
         faultClass = classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: fact, timeSplit: resolveNativeStageTimeSplit(fact) });
         return { ...budgetOutcome, usage };
       }
