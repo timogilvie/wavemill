@@ -417,6 +417,10 @@ test('buildBudgetedComparisonPrompt leaves the non-fork baseline byte-identical'
   const built = buildBudgetedComparisonPrompt(input, null);
   assert.equal(built.inputs.shared, null);
   assert.equal(built.prompt, buildComparisonPrompt(input));
+  // A blank prefix is no prefix: the budget split and the render agree.
+  const blank = buildBudgetedComparisonPrompt({ ...input, sharedContext: '  \n' }, null);
+  assert.equal(blank.inputs.shared, null);
+  assert.equal(blank.prompt, buildComparisonPrompt(input));
 });
 
 test('buildBudgetedComparisonPrompt budgets a shared pre-fork prefix like an arm', () => {

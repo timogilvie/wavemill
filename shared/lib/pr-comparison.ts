@@ -748,12 +748,14 @@ export function buildBudgetedComparisonPrompt(
     sharedContext: '',
   });
   const sharedDiff = input.sharedContext ?? '';
-  const parts =
-    (input.primaryDiff ? 1 : 0) + (input.challengerDiff ? 1 : 0) + (sharedDiff ? 1 : 0);
+  // `buildComparisonPrompt` renders the shared block only for non-blank text,
+  // so the split counts the same changes it does.
+  const hasShared = sharedDiff.trim().length > 0;
+  const parts = (input.primaryDiff ? 1 : 0) + (input.challengerDiff ? 1 : 0) + (hasShared ? 1 : 0);
   const build = (diff: string) => buildBudgetedChangeInput({ diff, adapter, reservedPrompt, parts });
   const primary = build(input.primaryDiff);
   const challenger = build(input.challengerDiff);
-  const shared = sharedDiff ? build(sharedDiff) : null;
+  const shared = hasShared ? build(sharedDiff) : null;
 
   const prompt = buildComparisonPrompt({
     ...input,
