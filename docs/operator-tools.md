@@ -24,6 +24,7 @@ To add a tool, add a row. A tool that the mill, a script, a prompt or another do
 | `tools/diagnose-artifacts.ts` | Checks a task's stage artifacts for coverage, freshness and consistency | No |
 | `tools/model-launchability-doctor.ts` | Shows which models each stage can launch, and why the others are blocked | No |
 | `tools/check-parent-monitor-drift.ts` | Lists shell functions duplicated between `wavemill-mill.sh` and `wavemill-monitor.sh` | No |
+| `tools/audit-provider-endpoints.ts` | Ranks qualification opportunities from deduplicated stored SDK summaries and captured catalogs; no model calls | Writes a new JSON report |
 | `tools/native-agent-qualify-endpoints.ts` | Preregisters and optionally runs bounded fixed-model endpoint qualification; fallback disabled, isolated evidence store | Writes plan/catalog/report; `--live` calls a model (costs money) |
 | `tools/replay-native-request.ts` | Resends a captured native model request through the same transport and prints the reply shape | Calls a model (costs money) |
 | `tools/view-trajectory.ts` | Renders a searchable HTML view of a native session | Writes the HTML file |

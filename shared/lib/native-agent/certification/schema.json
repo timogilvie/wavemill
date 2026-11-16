@@ -517,6 +517,7 @@
       ],
       "additionalProperties": false,
       "properties": {
+        "failedMutationToolCalls": { "type": "integer", "minimum": 0 },
         "structuredMutationToolCalls": {
           "type": "integer",
           "minimum": 0

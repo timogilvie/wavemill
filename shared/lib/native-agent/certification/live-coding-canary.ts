@@ -157,6 +157,8 @@ export interface RunLiveCodingCanaryOptions {
   /** Test seam: temp root override (must exist). */
   tmpRootOverride?: string;
   signal?: AbortSignal;
+  /** Explicit operator evidence root, outside disposable repositories; never exported. */
+  evidenceRoot?: string;
   profile?: 'standard' | 'workflow' | 'cache-heavy';
   endpointPricing?: ModelPricing;
   exactPricing?: ExactPricingOptions;
@@ -274,6 +276,7 @@ async function runSingleCanaryAttempt(input: {
   process.once('exit', removeOnExit);
   let workspace: CanaryWorkspace | undefined;
   let transcript: TranscriptWriter | undefined;
+  let evidenceDir: string | undefined;
   const sessionId = randomUUID();
   let faultClass: ArmFaultClass = 'unknown-fault';
   try {
@@ -289,7 +292,7 @@ async function runSingleCanaryAttempt(input: {
         };
       }
 
-      const evidenceDir = join(workspace.tmpRoot, 'evidence');
+      evidenceDir = options.evidenceRoot ? join(options.evidenceRoot, sessionId) : join(workspace.tmpRoot, 'evidence');
       recordLaunch(evidenceDir, { sessionRef: sessionId, harness: 'native', kind: 'coding', model: options.registryModelId,
         attemptId: sessionId, launchedAt: input.now(), cwd: workspace.repoDir });
       transcript = new TranscriptWriter({ sessionId, model: options.registryModelId, provider: options.provider,
@@ -377,33 +380,32 @@ async function runSingleCanaryAttempt(input: {
 
       // Stop reason before error text (HOK-3362): a budget stop is the canary's
       // budget outcome, never the abort message our own budget left behind.
+      const verification = verifyCanaryRepository(workspace, evidenceRecorder.snapshot());
       const budgetOutcome = classifyBudgetOutcome(result.stopReason);
       if (budgetOutcome) {
         const fact = budgetExhaustionFromLoop(result, budget, { transcriptPath: join(evidenceDir, 'native-sessions', `${sessionId}.jsonl`) });
         faultClass = classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: fact, timeSplit: resolveNativeStageTimeSplit(fact) });
-        return { ...budgetOutcome, usage };
+        return { ...budgetOutcome, usage, evidence: verification.evidence };
       }
 
       if (result.providerError) faultClass = classifyArmFault({ failureKind: result.providerError.kind });
       const providerOutcome = classifyProviderOutcome(result);
       if (providerOutcome) {
-        return { ...providerOutcome, detail: sanitizeDetail(providerOutcome.detail, tmpRoot), usage };
+        return { ...providerOutcome, detail: sanitizeDetail(providerOutcome.detail, tmpRoot), usage, evidence: verification.evidence };
       }
 
       const stopOutcome = classifyNonBudgetStopOutcome(result.stopReason);
       if (stopOutcome) {
-        return { ...stopOutcome, usage };
+        return { ...stopOutcome, usage, evidence: verification.evidence };
       }
 
-      const verification = verifyCanaryRepository(workspace, evidenceRecorder.snapshot());
       if (verification.status === 'fail') faultClass = classifyArmFault({ failureKind: 'completion-protocol' });
       return { ...verification, usage };
     };
     const outcome = await execute();
     const attempt = { attemptId: sessionId, status: outcome.status, ...(outcome.reason ? { reason: outcome.reason } : {}) } as NonNullable<LiveCodingCanaryResult['attemptEvidence']>[number];
     try {
-      if (workspace && transcript) {
-        const evidenceDir = join(workspace.tmpRoot, 'evidence');
+      if (workspace && transcript && evidenceDir) {
         const metered = await meterWorkflowCost({ repoDir: options.repoDir, worktreePath: workspace.repoDir, featureDir: evidenceDir,
           branchName: '', issueId: sessionId, slug: 'live-canary', label: 'Certification canary',
           ...(options.endpointPricing ? { pricingTable: { [options.registryModelId]: options.endpointPricing } } : {}),
@@ -532,7 +534,7 @@ function buildCanarySystemPrompt(): string {
 
 function buildCanaryUserPrompt(profile: CanaryWorkspace['profile'] = 'standard'): string {
   return [
-    'Certification canary task. Perform exactly these two steps, then stop:',
+    profile === 'standard' ? 'Certification canary task. Perform exactly these two steps, then stop:' : 'Certification canary task. Apply both source edits, run the focused test, then create the completion marker last:',
     '',
     `1. Use the apply_patch tool to edit ${CANARY_SENTINEL_PATH} so its full content becomes exactly:`,
     '',
@@ -540,14 +542,15 @@ function buildCanaryUserPrompt(profile: CanaryWorkspace['profile'] = 'standard')
     '',
     `   (The file currently contains: ${CANARY_SENTINEL_INITIAL.trimEnd()})`,
     '',
-    `2. Use the create_marker tool to create ${CANARY_COMPLETION_PATH} with this exact content:`,
+    ...(profile === 'standard' ? [] : [
+      `2. Update src/payload.ts to export this exact string: ${JSON.stringify('quote \" slash \\ newline\nUnicode Ω')}. Use an additional NativePatch edit operation; preserve escaping.`,
+      '3. Run `node --test tests/canary.test.ts` through run_tests and obtain exit code 0 before completing.',
+    ]),
+    `${profile === 'standard' ? '2' : '4'}. Use the create_marker tool to create ${CANARY_COMPLETION_PATH} with this exact content:`,
     '',
     '{"stage":"coding","confidence":"high"}',
     '',
-    ...(profile === 'standard' ? ['Do not create, modify, or delete any other file. Do not run any other commands.'] : [
-      `3. Update src/payload.ts to export this exact string: ${JSON.stringify('quote " slash \\ newline\nUnicode Ω')}. Use an additional NativePatch edit operation; preserve escaping.`,
-      '4. Run `node --test tests/canary.test.ts` through run_tests and obtain exit code 0 before completing. Only src/canary.ts, src/payload.ts and the completion marker may change.',
-    ]),
+    profile === 'standard' ? 'Do not create, modify, or delete any other file. Do not run any other commands.' : 'Only src/canary.ts, src/payload.ts and the completion marker may change. Create the marker only after the test passes.',
     ...(profile === 'cache-heavy' ? ['Read-only context fixture (unchanged throughout the run):', 'cached-context-0123456789abcdef\n'.repeat(1100)] : []),
   ].join('\n');
 }
@@ -624,6 +627,7 @@ function resolveModelPricing(options: RunLiveCodingCanaryOptions): ModelPricing 
 // ---------------------------------------------------------------------------
 
 interface EvidenceSnapshot {
+  failedMutationToolCalls: number;
   testExecutionPassed: boolean;
   structuredMutationToolCalls: number;
   applyPatchCalls: number;
@@ -634,6 +638,7 @@ function createEvidenceRecorder(): {
   onEvent: (event: unknown) => void;
   snapshot: () => EvidenceSnapshot;
 } {
+  let failedMutationToolCalls = 0;
   let structuredMutationToolCalls = 0;
   let testExecutionPassed = false;
   let applyPatchCalls = 0;
@@ -642,6 +647,7 @@ function createEvidenceRecorder(): {
   return {
     onEvent: (event: unknown) => {
       const e = event as { type?: string; toolName?: string; isError?: boolean; result?: { details?: { exitCode?: number; command?: string } } };
+      if (e?.type === 'tool_execution_end' && e.isError && e.toolName && MUTATION_EVIDENCE_TOOLS.has(e.toolName)) failedMutationToolCalls++;
       if (e?.type !== 'tool_execution_end' || typeof e.toolName !== 'string' || e.isError) {
         return;
       }
@@ -656,6 +662,7 @@ function createEvidenceRecorder(): {
       }
     },
     snapshot: () => ({
+      failedMutationToolCalls,
       structuredMutationToolCalls,
       testExecutionPassed,
       applyPatchCalls,
@@ -738,6 +745,7 @@ function verifyCanaryRepository(
   const completion = inspectCompletionArtifact(workspace.repoDir);
 
   const evidence: LiveCodingCanaryEvidence = {
+    failedMutationToolCalls: events.failedMutationToolCalls,
     structuredMutationToolCalls: events.structuredMutationToolCalls,
     mutationToolNames: events.mutationToolNames,
     expectedSentinelHash,
