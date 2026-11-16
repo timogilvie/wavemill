@@ -1,0 +1,2144 @@
+{
+  "schemaVersion": "endpoint-comparison-report/v1",
+  "plan": {
+    "schemaVersion": "endpoint-comparison-plan/v2",
+    "policy": {
+      "maxSpendUsd": 6.99,
+      "maxCompletionRegression": 0.05,
+      "confidence": 0.95,
+      "maxP95LatencyRatio": 2
+    },
+    "referenceTag": "z-ai/fp8",
+    "subjects": [
+      {
+        "tag": "z-ai/fp8",
+        "providerName": "Z.AI",
+        "quantization": "fp8",
+        "deploymentRevision": null
+      },
+      {
+        "tag": "darkbloom/fp4",
+        "providerName": "Darkbloom",
+        "quantization": "fp4",
+        "deploymentRevision": null
+      }
+    ],
+    "requiredPairs": 73,
+    "profiles": [
+      "workflow",
+      "cache-heavy"
+    ],
+    "reservePerRunUsd": 1,
+    "admission": "sdk-accounted-spend-plus-next-run-reserve/v1",
+    "runs": [
+      {
+        "pair": -1,
+        "profile": "standard",
+        "endpoint": {
+          "tag": "z-ai/fp8",
+          "providerName": "Z.AI",
+          "quantization": "fp8",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": -1,
+        "profile": "standard",
+        "endpoint": {
+          "tag": "darkbloom/fp4",
+          "providerName": "Darkbloom",
+          "quantization": "fp4",
+          "deploymentRevision": null
+        }
+      }
+    ],
+    "schedule": "compatibility-first; pair-ascending; profile-order; endpoint-index=(index+pair)%subject-count",
+    "stoppingRules": [
+      "Missing accounting or an unaffordable next-run reserve stops the study.",
+      "A non-passing reference compatibility run stops paired testing.",
+      "A definitive candidate failure rejects it; subsequent candidate probes are skipped. All prior outcomes remain."
+    ],
+    "plannedRunCount": 294,
+    "qualificationScope": "exact requested tag with observed host; deployment/quantization not independently attested"
+  },
+  "runs": [
+    {
+      "pair": -1,
+      "profile": "standard",
+      "endpoint": {
+        "tag": "z-ai/fp8",
+        "providerName": "Z.AI",
+        "quantization": "fp8",
+        "deploymentRevision": null
+      },
+      "result": {
+        "endpoint": {
+          "tag": "z-ai/fp8",
+          "providerName": "Z.AI",
+          "quantization": "fp8",
+          "deploymentRevision": null
+        },
+        "attemptEvidence": [
+          {
+            "attemptId": "59f7694e-7333-429c-9fe7-992152897210",
+            "status": "pass",
+            "contribution": {
+              "schema_version": "technical_task_router_row/v4",
+              "task_descriptor": {
+                "task_type": "bugfix",
+                "language": "typescript",
+                "complexity": 1
+              },
+              "allowed_models": [
+                "glm-5.3-flash"
+              ],
+              "selected_models": {
+                "coder": "glm-5.3-flash",
+                "reviewer": "glm-5.3-flash"
+              },
+              "available_models": {
+                "planner_models": [],
+                "coder_models": [
+                  "glm-5.3-flash"
+                ],
+                "reviewer_models": [
+                  "glm-5.3-flash"
+                ]
+              },
+              "success_under_budget": true,
+              "completion_result": "success",
+              "outcome_labels": {
+                "budget_label": "unknown",
+                "cost_label": "low",
+                "time_label": "fast",
+                "success_label": "success"
+              },
+              "candidate_pool": {
+                "scenario_id": "unknown",
+                "scenario_kind": "unknown",
+                "pool_size": 1
+              },
+              "sparse_cell": {
+                "cell_id": "unknown",
+                "descriptor_signature": "unknown",
+                "observed_count": 0,
+                "is_sparse": false
+              },
+              "observed_at": "2026-11-16T21:27:13.248Z",
+              "actual_cost_usd": 0.00077729,
+              "wall_clock_seconds": 12.109,
+              "task_id": "redacted-cb73eef926a6f9e7",
+              "harness": "wavemill-certification",
+              "stage_executions": [
+                {
+                  "provider_executions": [
+                    {
+                      "observationId": "redacted-3655a0a156c03091",
+                      "sessionRef": "redacted-cb73eef926a6f9e7",
+                      "ownershipAttemptIds": [
+                        "redacted-cb73eef926a6f9e7"
+                      ],
+                      "responseId": "redacted-222c01c6ecfb7c35",
+                      "transport": "openrouter",
+                      "requestedModel": "glm-5.3-flash",
+                      "requestedRouting": {
+                        "only": [
+                          "z-ai/fp8"
+                        ],
+                        "allow_fallbacks": false
+                      },
+                      "pricingSnapshot": {
+                        "scope": "endpoint",
+                        "inputCostPerMTok": 0.15,
+                        "outputCostPerMTok": 0.5,
+                        "cacheReadCostPerMTok": 0.03
+                      },
+                      "usage": {
+                        "input_tokens": 2409,
+                        "output_tokens": 440,
+                        "cache_read_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": null
+                      },
+                      "responseModel": null,
+                      "generation": {
+                        "totalCostUsd": 0.00058135,
+                        "providerName": "Z.AI",
+                        "modelPermaslug": "z-ai/glm-5.3-flash-20260826",
+                        "nativeTokensPrompt": 2409,
+                        "nativeTokensCached": 0,
+                        "nativeTokensCompletion": 440
+                      }
+                    },
+                    {
+                      "observationId": "redacted-ae575a96334c5eaf",
+                      "sessionRef": "redacted-cb73eef926a6f9e7",
+                      "ownershipAttemptIds": [
+                        "redacted-cb73eef926a6f9e7"
+                      ],
+                      "responseId": "redacted-96554cd9421ad90e",
+                      "transport": "openrouter",
+                      "requestedModel": "glm-5.3-flash",
+                      "requestedRouting": {
+                        "only": [
+                          "z-ai/fp8"
+                        ],
+                        "allow_fallbacks": false
+                      },
+                      "pricingSnapshot": {
+                        "scope": "endpoint",
+                        "inputCostPerMTok": 0.15,
+                        "outputCostPerMTok": 0.5,
+                        "cacheReadCostPerMTok": 0.03
+                      },
+                      "usage": {
+                        "input_tokens": 526,
+                        "output_tokens": 92,
+                        "cache_read_tokens": 2368,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": null
+                      },
+                      "responseModel": null,
+                      "generation": {
+                        "totalCostUsd": 0.00019594,
+                        "cacheDiscountUsd": 0.00028416,
+                        "providerName": "Z.AI",
+                        "modelPermaslug": "z-ai/glm-5.3-flash-20260826",
+                        "nativeTokensPrompt": 2894,
+                        "nativeTokensCached": 2368,
+                        "nativeTokensCompletion": 92
+                      }
+                    }
+                  ],
+                  "stage": "coding",
+                  "executed_model": "glm-5.3-flash",
+                  "model_evidence": "requested_only",
+                  "harness": "native",
+                  "task_cost": {
+                    "schema_version": "task_cost_summary/v1",
+                    "task_id": "redacted-cb73eef926a6f9e7",
+                    "session_ids": [
+                      "redacted-cb73eef926a6f9e7"
+                    ],
+                    "harness": "native",
+                    "provider_contract_version": "native/1",
+                    "models": [
+                      "glm-5.3-flash"
+                    ],
+                    "model_segments": [
+                      {
+                        "model": "glm-5.3-flash",
+                        "turn_count": 2,
+                        "usage": {
+                          "input_tokens": 2935,
+                          "output_tokens": 532,
+                          "cache_read_tokens": 2368,
+                          "cache_write_tokens": 0,
+                          "reasoning_tokens": null
+                        },
+                        "actual_cost_usd": 0.00077729,
+                        "estimated_cost_usd": 0.000777,
+                        "cost_source": "provider_reported"
+                      }
+                    ],
+                    "turn_count": 2,
+                    "turns_truncated": false,
+                    "usage": {
+                      "input_tokens": 2935,
+                      "output_tokens": 532,
+                      "cache_read_tokens": 2368,
+                      "cache_write_tokens": 0,
+                      "reasoning_tokens": null
+                    },
+                    "actual_cost_usd": 0.00077729,
+                    "estimated_cost_usd": 0.000777,
+                    "total_cost_usd": 0.00077729,
+                    "cost_source": "provider_reported",
+                    "cost_basis": "per_token_api",
+                    "coverage": "partial",
+                    "field_availability": {
+                      "usage": "partial",
+                      "actual_cost": "available",
+                      "estimated_cost": "available",
+                      "pricing": "available"
+                    },
+                    "pricing_source": "local_estimate",
+                    "join_confidence": "unattributed",
+                    "collected_at": "2026-11-16T21:27:13.235Z",
+                    "event_count": 2,
+                    "event_ids": [
+                      "redacted-3655a0a156c03091",
+                      "redacted-ae575a96334c5eaf"
+                    ],
+                    "diagnostics": [
+                      "mixed_coverage",
+                      "provider_reported_cost"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "scenarioId": "live.coding.mutation-canary.v1",
+        "status": "pass",
+        "isLive": true,
+        "phase": "coding",
+        "provider": "z-ai",
+        "model": "glm-5.3-flash",
+        "providerNativeId": "z-ai/glm-5.3-flash",
+        "identityFingerprint": "3c802dd32ce613afa81237cadf556fb97fa815aa9c095f69145dd4a57e331ae3",
+        "catalogHash": "d67418db91df051b391e2b498b0711bcc25f7c9ae38355c16db557c7d20d753a",
+        "suiteVersion": "v3",
+        "ranAt": "2026-11-16T21:27:13.281Z",
+        "limits": {
+          "maxWallClockMs": 240000,
+          "maxTurns": 6,
+          "maxToolCalls": 10,
+          "maxTotalTokens": 60000,
+          "maxCostUsd": 0.5
+        },
+        "usage": {
+          "turns": 2,
+          "toolCalls": 2,
+          "inputTokens": 2935,
+          "outputTokens": 532,
+          "wallClockMs": 12109,
+          "costUsd": 0.000777
+        },
+        "evidence": {
+          "failedMutationToolCalls": 0,
+          "structuredMutationToolCalls": 2,
+          "mutationToolNames": [
+            "apply_patch",
+            "create_marker"
+          ],
+          "expectedSentinelHash": "1770e9648d1d92bd2c9e3baca1cf29eee4596674794c37de6de2c54bf737f414",
+          "actualSentinelHash": "1770e9648d1d92bd2c9e3baca1cf29eee4596674794c37de6de2c54bf737f414",
+          "changedPaths": [
+            "features/live-canary/.coding-complete",
+            "src/canary.ts"
+          ],
+          "completionArtifactPresent": true,
+          "completionArtifactHash": "34706b4aa8118ebf1298c5b69b36a4f4927c795768c5ef27383ff3003ca1d55e"
+        },
+        "attempts": 1
+      }
+    },
+    {
+      "pair": -1,
+      "profile": "standard",
+      "endpoint": {
+        "tag": "darkbloom/fp4",
+        "providerName": "Darkbloom",
+        "quantization": "fp4",
+        "deploymentRevision": null
+      },
+      "result": {
+        "endpoint": {
+          "tag": "darkbloom/fp4",
+          "providerName": "Darkbloom",
+          "quantization": "fp4",
+          "deploymentRevision": null
+        },
+        "attemptEvidence": [
+          {
+            "attemptId": "52c1d56e-5667-42ce-9b47-c4622cfa7357",
+            "status": "pass",
+            "contribution": {
+              "schema_version": "technical_task_router_row/v4",
+              "task_descriptor": {
+                "task_type": "bugfix",
+                "language": "typescript",
+                "complexity": 1
+              },
+              "allowed_models": [
+                "glm-5.3-flash"
+              ],
+              "selected_models": {
+                "coder": "glm-5.3-flash",
+                "reviewer": "glm-5.3-flash"
+              },
+              "available_models": {
+                "planner_models": [],
+                "coder_models": [
+                  "glm-5.3-flash"
+                ],
+                "reviewer_models": [
+                  "glm-5.3-flash"
+                ]
+              },
+              "success_under_budget": true,
+              "completion_result": "success",
+              "outcome_labels": {
+                "budget_label": "unknown",
+                "cost_label": "low",
+                "time_label": "fast",
+                "success_label": "success"
+              },
+              "candidate_pool": {
+                "scenario_id": "unknown",
+                "scenario_kind": "unknown",
+                "pool_size": 1
+              },
+              "sparse_cell": {
+                "cell_id": "unknown",
+                "descriptor_signature": "unknown",
+                "observed_count": 0,
+                "is_sparse": false
+              },
+              "observed_at": "2026-11-16T21:27:34.302Z",
+              "actual_cost_usd": 0.000314445,
+              "wall_clock_seconds": 14.529,
+              "task_id": "redacted-168290c7a5d9a384",
+              "harness": "wavemill-certification",
+              "stage_executions": [
+                {
+                  "provider_executions": [
+                    {
+                      "observationId": "redacted-303c859b1190210b",
+                      "sessionRef": "redacted-168290c7a5d9a384",
+                      "ownershipAttemptIds": [
+                        "redacted-168290c7a5d9a384"
+                      ],
+                      "responseId": "redacted-9b6c4c75e76b3ab8",
+                      "transport": "openrouter",
+                      "requestedModel": "glm-5.3-flash",
+                      "requestedRouting": {
+                        "only": [
+                          "darkbloom/fp4"
+                        ],
+                        "allow_fallbacks": false
+                      },
+                      "pricingSnapshot": {
+                        "scope": "endpoint",
+                        "inputCostPerMTok": 0.065,
+                        "outputCostPerMTok": 0.18,
+                        "cacheReadCostPerMTok": 0.012
+                      },
+                      "usage": {
+                        "input_tokens": 95,
+                        "output_tokens": 80,
+                        "cache_read_tokens": 2048,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": null
+                      },
+                      "responseModel": null,
+                      "generation": {
+                        "totalCostUsd": 0.000045151,
+                        "cacheDiscountUsd": 0.000108544,
+                        "providerName": "Darkbloom",
+                        "modelPermaslug": "z-ai/glm-5.3-flash-20260826",
+                        "nativeTokensPrompt": 2143,
+                        "nativeTokensCached": 2048,
+                        "nativeTokensCompletion": 80
+                      }
+                    },
+                    {
+                      "observationId": "redacted-2a86d0f1260c5135",
+                      "sessionRef": "redacted-168290c7a5d9a384",
+                      "ownershipAttemptIds": [
+                        "redacted-168290c7a5d9a384"
+                      ],
+                      "responseId": "redacted-a4454d079c4027f1",
+                      "transport": "openrouter",
+                      "requestedModel": "glm-5.3-flash",
+                      "requestedRouting": {
+                        "only": [
+                          "darkbloom/fp4"
+                        ],
+                        "allow_fallbacks": false
+                      },
+                      "pricingSnapshot": {
+                        "scope": "endpoint",
+                        "inputCostPerMTok": 0.065,
+                        "outputCostPerMTok": 0.18,
+                        "cacheReadCostPerMTok": 0.012
+                      },
+                      "usage": {
+                        "input_tokens": 2236,
+                        "output_tokens": 102,
+                        "cache_read_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": null
+                      },
+                      "responseModel": null,
+                      "generation": {
+                        "totalCostUsd": 0.0001637,
+                        "providerName": "Darkbloom",
+                        "modelPermaslug": "z-ai/glm-5.3-flash-20260826",
+                        "nativeTokensPrompt": 2236,
+                        "nativeTokensCached": 0,
+                        "nativeTokensCompletion": 102
+                      }
+                    },
+                    {
+                      "observationId": "redacted-bdbc580782a4bee7",
+                      "sessionRef": "redacted-168290c7a5d9a384",
+                      "ownershipAttemptIds": [
+                        "redacted-168290c7a5d9a384"
+                      ],
+                      "responseId": "redacted-80c23fcebe584024",
+                      "transport": "openrouter",
+                      "requestedModel": "glm-5.3-flash",
+                      "requestedRouting": {
+                        "only": [
+                          "darkbloom/fp4"
+                        ],
+                        "allow_fallbacks": false
+                      },
+                      "pricingSnapshot": {
+                        "scope": "endpoint",
+                        "inputCostPerMTok": 0.065,
+                        "outputCostPerMTok": 0.18,
+                        "cacheReadCostPerMTok": 0.012
+                      },
+                      "usage": {
+                        "input_tokens": 312,
+                        "output_tokens": 32,
+                        "cache_read_tokens": 2048,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": null
+                      },
+                      "responseModel": null,
+                      "generation": {
+                        "totalCostUsd": 0.000050616,
+                        "cacheDiscountUsd": 0.000108544,
+                        "providerName": "Darkbloom",
+                        "modelPermaslug": "z-ai/glm-5.3-flash-20260826",
+                        "nativeTokensPrompt": 2360,
+                        "nativeTokensCached": 2048,
+                        "nativeTokensCompletion": 32
+                      }
+                    },
+                    {
+                      "observationId": "redacted-e07918e0bf21f5df",
+                      "sessionRef": "redacted-168290c7a5d9a384",
+                      "ownershipAttemptIds": [
+                        "redacted-168290c7a5d9a384"
+                      ],
+                      "responseId": "redacted-92cda6a1b02cf383",
+                      "transport": "openrouter",
+                      "requestedModel": "glm-5.3-flash",
+                      "requestedRouting": {
+                        "only": [
+                          "darkbloom/fp4"
+                        ],
+                        "allow_fallbacks": false
+                      },
+                      "pricingSnapshot": {
+                        "scope": "endpoint",
+                        "inputCostPerMTok": 0.065,
+                        "outputCostPerMTok": 0.18,
+                        "cacheReadCostPerMTok": 0.012
+                      },
+                      "usage": {
+                        "input_tokens": 102,
+                        "output_tokens": 115,
+                        "cache_read_tokens": 2304,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": null
+                      },
+                      "responseModel": null,
+                      "generation": {
+                        "totalCostUsd": 0.000054978,
+                        "cacheDiscountUsd": 0.000122112,
+                        "providerName": "Darkbloom",
+                        "modelPermaslug": "z-ai/glm-5.3-flash-20260826",
+                        "nativeTokensPrompt": 2406,
+                        "nativeTokensCached": 2304,
+                        "nativeTokensCompletion": 115
+                      }
+                    }
+                  ],
+                  "stage": "coding",
+                  "executed_model": "glm-5.3-flash",
+                  "model_evidence": "requested_only",
+                  "harness": "native",
+                  "task_cost": {
+                    "schema_version": "task_cost_summary/v1",
+                    "task_id": "redacted-168290c7a5d9a384",
+                    "session_ids": [
+                      "redacted-168290c7a5d9a384"
+                    ],
+                    "harness": "native",
+                    "provider_contract_version": "native/1",
+                    "models": [
+                      "glm-5.3-flash"
+                    ],
+                    "model_segments": [
+                      {
+                        "model": "glm-5.3-flash",
+                        "turn_count": 4,
+                        "usage": {
+                          "input_tokens": 2745,
+                          "output_tokens": 329,
+                          "cache_read_tokens": 6400,
+                          "cache_write_tokens": 0,
+                          "reasoning_tokens": null
+                        },
+                        "actual_cost_usd": 0.000314445,
+                        "estimated_cost_usd": 0.000315,
+                        "cost_source": "provider_reported"
+                      }
+                    ],
+                    "turn_count": 4,
+                    "turns_truncated": false,
+                    "usage": {
+                      "input_tokens": 2745,
+                      "output_tokens": 329,
+                      "cache_read_tokens": 6400,
+                      "cache_write_tokens": 0,
+                      "reasoning_tokens": null
+                    },
+                    "actual_cost_usd": 0.000314445,
+                    "estimated_cost_usd": 0.000315,
+                    "total_cost_usd": 0.000314445,
+                    "cost_source": "provider_reported",
+                    "cost_basis": "per_token_api",
+                    "coverage": "partial",
+                    "field_availability": {
+                      "usage": "partial",
+                      "actual_cost": "available",
+                      "estimated_cost": "available",
+                      "pricing": "available"
+                    },
+                    "pricing_source": "local_estimate",
+                    "join_confidence": "unattributed",
+                    "collected_at": "2026-11-16T21:27:34.287Z",
+                    "event_count": 4,
+                    "event_ids": [
+                      "redacted-303c859b1190210b",
+                      "redacted-2a86d0f1260c5135",
+                      "redacted-bdbc580782a4bee7",
+                      "redacted-e07918e0bf21f5df"
+                    ],
+                    "diagnostics": [
+                      "mixed_coverage",
+                      "provider_reported_cost"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "scenarioId": "live.coding.mutation-canary.v1",
+        "status": "pass",
+        "isLive": true,
+        "phase": "coding",
+        "provider": "z-ai",
+        "model": "glm-5.3-flash",
+        "providerNativeId": "z-ai/glm-5.3-flash",
+        "identityFingerprint": "3c802dd32ce613afa81237cadf556fb97fa815aa9c095f69145dd4a57e331ae3",
+        "catalogHash": "89b12a9ba68fb86a3b1b895569e820969fb8b084da6d631e2196a0bfa3e89a1f",
+        "suiteVersion": "v3",
+        "ranAt": "2026-11-16T21:27:34.310Z",
+        "limits": {
+          "maxWallClockMs": 240000,
+          "maxTurns": 6,
+          "maxToolCalls": 10,
+          "maxTotalTokens": 60000,
+          "maxCostUsd": 0.5
+        },
+        "usage": {
+          "turns": 4,
+          "toolCalls": 3,
+          "inputTokens": 2745,
+          "outputTokens": 329,
+          "wallClockMs": 14529,
+          "costUsd": 0.000315
+        },
+        "evidence": {
+          "failedMutationToolCalls": 0,
+          "structuredMutationToolCalls": 2,
+          "mutationToolNames": [
+            "apply_patch",
+            "create_marker"
+          ],
+          "expectedSentinelHash": "1770e9648d1d92bd2c9e3baca1cf29eee4596674794c37de6de2c54bf737f414",
+          "actualSentinelHash": "1770e9648d1d92bd2c9e3baca1cf29eee4596674794c37de6de2c54bf737f414",
+          "changedPaths": [
+            "features/live-canary/.coding-complete",
+            "src/canary.ts"
+          ],
+          "completionArtifactPresent": true,
+          "completionArtifactHash": "34706b4aa8118ebf1298c5b69b36a4f4927c795768c5ef27383ff3003ca1d55e"
+        },
+        "attempts": 1
+      }
+    },
+    {
+      "pair": 0,
+      "profile": "workflow",
+      "endpoint": {
+        "tag": "z-ai/fp8",
+        "providerName": "Z.AI",
+        "quantization": "fp8",
+        "deploymentRevision": null
+      },
+      "result": {
+        "endpoint": {
+          "tag": "z-ai/fp8",
+          "providerName": "Z.AI",
+          "quantization": "fp8",
+          "deploymentRevision": null
+        },
+        "attemptEvidence": [
+          {
+            "attemptId": "71c5b919-54f5-468d-9208-96cbaa0d7adc",
+            "status": "fail",
+            "reason": "budget_exceeded",
+            "contribution": {
+              "schema_version": "technical_task_router_row/v4",
+              "task_descriptor": {
+                "task_type": "bugfix",
+                "language": "typescript",
+                "complexity": 1
+              },
+              "allowed_models": [
+                "glm-5.3-flash"
+              ],
+              "selected_models": {
+                "coder": "glm-5.3-flash",
+                "reviewer": "glm-5.3-flash"
+              },
+              "available_models": {
+                "planner_models": [],
+                "coder_models": [
+                  "glm-5.3-flash"
+                ],
+                "reviewer_models": [
+                  "glm-5.3-flash"
+                ]
+              },
+              "success_under_budget": false,
+              "completion_result": "failure",
+              "outcome_labels": {
+                "budget_label": "unknown",
+                "cost_label": "low",
+                "time_label": "fast",
+                "success_label": "failure"
+              },
+              "candidate_pool": {
+                "scenario_id": "unknown",
+                "scenario_kind": "unknown",
+                "pool_size": 1
+              },
+              "sparse_cell": {
+                "cell_id": "unknown",
+                "descriptor_signature": "unknown",
+                "observed_count": 0,
+                "is_sparse": false
+              },
+              "observed_at": "2026-11-16T21:28:27.098Z",
+              "actual_cost_usd": 0.00223015,
+              "wall_clock_seconds": 46.711,
+              "task_id": "redacted-465df3b602272b50",
+              "harness": "wavemill-certification",
+              "stage_executions": [
+                {
+                  "provider_executions": [
+                    {
+                      "observationId": "redacted-41f7555578b03423",
+                      "sessionRef": "redacted-465df3b602272b50",
+                      "ownershipAttemptIds": [
+                        "redacted-465df3b602272b50"
+                      ],
+                      "responseId": "redacted-6cfa55a9ac7e45c2",
+                      "transport": "openrouter",
+                      "requestedModel": "glm-5.3-flash",
+                      "requestedRouting": {
+                        "only": [
+                          "z-ai/fp8"
+                        ],
+                        "allow_fallbacks": false
+                      },
+                      "pricingSnapshot": {
+                        "scope": "endpoint",
+                        "inputCostPerMTok": 0.15,
+                        "outputCostPerMTok": 0.5,
+                        "cacheReadCostPerMTok": 0.03
+                      },
+                      "usage": {
+                        "input_tokens": 2486,
+                        "output_tokens": 61,
+                        "cache_read_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": null
+                      },
+                      "responseModel": null,
+                      "generation": {
+                        "totalCostUsd": 0.0004034,
+                        "providerName": "Z.AI",
+                        "modelPermaslug": "z-ai/glm-5.3-flash-20260826",
+                        "nativeTokensPrompt": 2486,
+                        "nativeTokensCached": 0,
+                        "nativeTokensCompletion": 61
+                      }
+                    },
+                    {
+                      "observationId": "redacted-4cc319341e1f17ba",
+                      "sessionRef": "redacted-465df3b602272b50",
+                      "ownershipAttemptIds": [
+                        "redacted-465df3b602272b50"
+                      ],
+                      "responseId": "redacted-051d1a6c3b184353",
+                      "transport": "openrouter",
+                      "requestedModel": "glm-5.3-flash",
+                      "requestedRouting": {
+                        "only": [
+                          "z-ai/fp8"
+                        ],
+                        "allow_fallbacks": false
+                      },
+                      "pricingSnapshot": {
+                        "scope": "endpoint",
+                        "inputCostPerMTok": 0.15,
+                        "outputCostPerMTok": 0.5,
+                        "cacheReadCostPerMTok": 0.03
+                      },
+                      "usage": {
+                        "input_tokens": 392,
+                        "output_tokens": 1524,
+                        "cache_read_tokens": 2240,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": null
+                      },
+                      "responseModel": null,
+                      "generation": {
+                        "totalCostUsd": 0.000888,
+                        "cacheDiscountUsd": 0.0002688,
+                        "providerName": "Z.AI",
+                        "modelPermaslug": "z-ai/glm-5.3-flash-20260826",
+                        "nativeTokensPrompt": 2632,
+                        "nativeTokensCached": 2240,
+                        "nativeTokensCompletion": 1524
+                      }
+                    },
+                    {
+                      "observationId": "redacted-965a95a70ba8693f",
+                      "sessionRef": "redacted-465df3b602272b50",
+                      "ownershipAttemptIds": [
+                        "redacted-465df3b602272b50"
+                      ],
+                      "responseId": "redacted-b3290d1bfa2d4838",
+                      "transport": "openrouter",
+                      "requestedModel": "glm-5.3-flash",
+                      "requestedRouting": {
+                        "only": [
+                          "z-ai/fp8"
+                        ],
+                        "allow_fallbacks": false
+                      },
+                      "pricingSnapshot": {
+                        "scope": "endpoint",
+                        "inputCostPerMTok": 0.15,
+                        "outputCostPerMTok": 0.5,
+                        "cacheReadCostPerMTok": 0.03
+                      },
+                      "usage": {
+                        "input_tokens": 1574,
+                        "output_tokens": 49,
+                        "cache_read_tokens": 2624,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": null
+                      },
+                      "responseModel": null,
+                      "generation": {
+                        "totalCostUsd": 0.00033932,
+                        "cacheDiscountUsd": 0.00031488,
+                        "providerName": "Z.AI",
+                        "modelPermaslug": "z-ai/glm-5.3-flash-20260826",
+                        "nativeTokensPrompt": 4198,
+                        "nativeTokensCached": 2624,
+                        "nativeTokensCompletion": 49
+                      }
+                    },
+                    {
+                      "observationId": "redacted-7c63ba92a48b20ed",
+                      "sessionRef": "redacted-465df3b602272b50",
+                      "ownershipAttemptIds": [
+                        "redacted-465df3b602272b50"
+                      ],
+                      "responseId": "redacted-f00047d18312702e",
+                      "transport": "openrouter",
+                      "requestedModel": "glm-5.3-flash",
+                      "requestedRouting": {
+                        "only": [
+                          "z-ai/fp8"
+                        ],
+                        "allow_fallbacks": false
+                      },
+                      "pricingSnapshot": {
+                        "scope": "endpoint",
+                        "inputCostPerMTok": 0.15,
+                        "outputCostPerMTok": 0.5,
+                        "cacheReadCostPerMTok": 0.03
+                      },
+                      "usage": {
+                        "input_tokens": 106,
+                        "output_tokens": 83,
+                        "cache_read_tokens": 4160,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": null
+                      },
+                      "responseModel": null,
+                      "generation": {
+                        "totalCostUsd": 0.0001822,
+                        "cacheDiscountUsd": 0.0004992,
+                        "providerName": "Z.AI",
+                        "modelPermaslug": "z-ai/glm-5.3-flash-20260826",
+                        "nativeTokensPrompt": 4266,
+                        "nativeTokensCached": 4160,
+                        "nativeTokensCompletion": 83
+                      }
+                    },
+                    {
+                      "observationId": "redacted-e4d7acb9e917a1fe",
+                      "sessionRef": "redacted-465df3b602272b50",
+                      "ownershipAttemptIds": [
+                        "redacted-465df3b602272b50"
+                      ],
+                      "responseId": "redacted-59a267108d610ec5",
+                      "transport": "openrouter",
+                      "requestedModel": "glm-5.3-flash",
+                      "requestedRouting": {
+                        "only": [
+                          "z-ai/fp8"
+                        ],
+                        "allow_fallbacks": false
+                      },
+                      "pricingSnapshot": {
+                        "scope": "endpoint",
+                        "inputCostPerMTok": 0.15,
+                        "outputCostPerMTok": 0.5,
+                        "cacheReadCostPerMTok": 0.03
+                      },
+                      "usage": {
+                        "input_tokens": 188,
+                        "output_tokens": 71,
+                        "cache_read_tokens": 4224,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": null
+                      },
+                      "responseModel": null,
+                      "generation": {
+                        "totalCostUsd": 0.00019042,
+                        "cacheDiscountUsd": 0.00050688,
+                        "providerName": "Z.AI",
+                        "modelPermaslug": "z-ai/glm-5.3-flash-20260826",
+                        "nativeTokensPrompt": 4412,
+                        "nativeTokensCached": 4224,
+                        "nativeTokensCompletion": 71
+                      }
+                    },
+                    {
+                      "observationId": "redacted-f6bc306a5d945a66",
+                      "sessionRef": "redacted-465df3b602272b50",
+                      "ownershipAttemptIds": [
+                        "redacted-465df3b602272b50"
+                      ],
+                      "responseId": "redacted-ef845555d68c8038",
+                      "transport": "openrouter",
+                      "requestedModel": "glm-5.3-flash",
+                      "requestedRouting": {
+                        "only": [
+                          "z-ai/fp8"
+                        ],
+                        "allow_fallbacks": false
+                      },
+                      "pricingSnapshot": {
+                        "scope": "endpoint",
+                        "inputCostPerMTok": 0.15,
+                        "outputCostPerMTok": 0.5,
+                        "cacheReadCostPerMTok": 0.03
+                      },
+                      "usage": {
+                        "input_tokens": 145,
+                        "output_tokens": 149,
+                        "cache_read_tokens": 4352,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": null
+                      },
+                      "responseModel": null,
+                      "generation": {
+                        "totalCostUsd": 0.00022681,
+                        "cacheDiscountUsd": 0.00052224,
+                        "providerName": "Z.AI",
+                        "modelPermaslug": "z-ai/glm-5.3-flash-20260826",
+                        "nativeTokensPrompt": 4497,
+                        "nativeTokensCached": 4352,
+                        "nativeTokensCompletion": 149
+                      }
+                    }
+                  ],
+                  "failure": {
+                    "fault_class": "model-fault"
+                  },
+                  "stage": "coding",
+                  "executed_model": "glm-5.3-flash",
+                  "model_evidence": "requested_only",
+                  "harness": "native",
+                  "task_cost": {
+                    "schema_version": "task_cost_summary/v1",
+                    "task_id": "redacted-465df3b602272b50",
+                    "session_ids": [
+                      "redacted-465df3b602272b50"
+                    ],
+                    "harness": "native",
+                    "provider_contract_version": "native/1",
+                    "models": [
+                      "glm-5.3-flash"
+                    ],
+                    "model_segments": [
+                      {
+                        "model": "glm-5.3-flash",
+                        "turn_count": 6,
+                        "usage": {
+                          "input_tokens": 4891,
+                          "output_tokens": 1937,
+                          "cache_read_tokens": 17600,
+                          "cache_write_tokens": 0,
+                          "reasoning_tokens": null
+                        },
+                        "actual_cost_usd": 0.00223015,
+                        "estimated_cost_usd": 0.002229,
+                        "cost_source": "provider_reported"
+                      }
+                    ],
+                    "turn_count": 6,
+                    "turns_truncated": false,
+                    "usage": {
+                      "input_tokens": 4891,
+                      "output_tokens": 1937,
+                      "cache_read_tokens": 17600,
+                      "cache_write_tokens": 0,
+                      "reasoning_tokens": null
+                    },
+                    "actual_cost_usd": 0.00223015,
+                    "estimated_cost_usd": 0.002229,
+                    "total_cost_usd": 0.00223015,
+                    "cost_source": "provider_reported",
+                    "cost_basis": "per_token_api",
+                    "coverage": "partial",
+                    "field_availability": {
+                      "usage": "partial",
+                      "actual_cost": "available",
+                      "estimated_cost": "available",
+                      "pricing": "available"
+                    },
+                    "pricing_source": "local_estimate",
+                    "join_confidence": "unattributed",
+                    "collected_at": "2026-11-16T21:28:27.083Z",
+                    "event_count": 6,
+                    "event_ids": [
+                      "redacted-41f7555578b03423",
+                      "redacted-4cc319341e1f17ba",
+                      "redacted-965a95a70ba8693f",
+                      "redacted-7c63ba92a48b20ed",
+                      "redacted-e4d7acb9e917a1fe",
+                      "redacted-f6bc306a5d945a66"
+                    ],
+                    "diagnostics": [
+                      "mixed_coverage",
+                      "provider_reported_cost"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "scenarioId": "live.coding.mutation-canary.v1",
+        "status": "fail",
+        "isLive": true,
+        "phase": "coding",
+        "provider": "z-ai",
+        "model": "glm-5.3-flash",
+        "providerNativeId": "z-ai/glm-5.3-flash",
+        "identityFingerprint": "3c802dd32ce613afa81237cadf556fb97fa815aa9c095f69145dd4a57e331ae3",
+        "catalogHash": "d67418db91df051b391e2b498b0711bcc25f7c9ae38355c16db557c7d20d753a",
+        "suiteVersion": "v3",
+        "ranAt": "2026-11-16T21:28:27.106Z",
+        "limits": {
+          "maxWallClockMs": 240000,
+          "maxTurns": 6,
+          "maxToolCalls": 10,
+          "maxTotalTokens": 60000,
+          "maxCostUsd": 0.5
+        },
+        "usage": {
+          "turns": 6,
+          "toolCalls": 8,
+          "inputTokens": 4891,
+          "outputTokens": 1937,
+          "wallClockMs": 46711,
+          "costUsd": 0.002229
+        },
+        "reason": "budget_exceeded",
+        "limitExceeded": "turns",
+        "detail": "canary turn limit fired before completion",
+        "evidence": {
+          "failedMutationToolCalls": 0,
+          "structuredMutationToolCalls": 2,
+          "mutationToolNames": [
+            "apply_patch",
+            "create_marker"
+          ],
+          "expectedSentinelHash": "1770e9648d1d92bd2c9e3baca1cf29eee4596674794c37de6de2c54bf737f414",
+          "actualSentinelHash": "1770e9648d1d92bd2c9e3baca1cf29eee4596674794c37de6de2c54bf737f414",
+          "changedPaths": [
+            "features/live-canary/.coding-complete",
+            "src/canary.ts",
+            "src/payload.ts"
+          ],
+          "completionArtifactPresent": true,
+          "completionArtifactHash": "34706b4aa8118ebf1298c5b69b36a4f4927c795768c5ef27383ff3003ca1d55e"
+        },
+        "attempts": 1
+      }
+    },
+    {
+      "pair": 0,
+      "profile": "workflow",
+      "endpoint": {
+        "tag": "darkbloom/fp4",
+        "providerName": "Darkbloom",
+        "quantization": "fp4",
+        "deploymentRevision": null
+      },
+      "result": {
+        "endpoint": {
+          "tag": "darkbloom/fp4",
+          "providerName": "Darkbloom",
+          "quantization": "fp4",
+          "deploymentRevision": null
+        },
+        "attemptEvidence": [
+          {
+            "attemptId": "2d3f7285-6111-4ec0-9276-a3fa287646d2",
+            "status": "fail",
+            "reason": "budget_exceeded",
+            "contribution": {
+              "schema_version": "technical_task_router_row/v4",
+              "task_descriptor": {
+                "task_type": "bugfix",
+                "language": "typescript",
+                "complexity": 1
+              },
+              "allowed_models": [
+                "glm-5.3-flash"
+              ],
+              "selected_models": {
+                "coder": "glm-5.3-flash",
+                "reviewer": "glm-5.3-flash"
+              },
+              "available_models": {
+                "planner_models": [],
+                "coder_models": [
+                  "glm-5.3-flash"
+                ],
+                "reviewer_models": [
+                  "glm-5.3-flash"
+                ]
+              },
+              "success_under_budget": false,
+              "completion_result": "failure",
+              "outcome_labels": {
+                "budget_label": "unknown",
+                "cost_label": "low",
+                "time_label": "fast",
+                "success_label": "failure"
+              },
+              "candidate_pool": {
+                "scenario_id": "unknown",
+                "scenario_kind": "unknown",
+                "pool_size": 1
+              },
+              "sparse_cell": {
+                "cell_id": "unknown",
+                "descriptor_signature": "unknown",
+                "observed_count": 0,
+                "is_sparse": false
+              },
+              "observed_at": "2026-11-16T21:29:28.300Z",
+              "actual_cost_usd": 0.000849067,
+              "wall_clock_seconds": 50.774,
+              "task_id": "redacted-b62b32eb023e0f57",
+              "harness": "wavemill-certification",
+              "stage_executions": [
+                {
+                  "provider_executions": [
+                    {
+                      "observationId": "redacted-6e40e3ff0119727a",
+                      "sessionRef": "redacted-b62b32eb023e0f57",
+                      "ownershipAttemptIds": [
+                        "redacted-b62b32eb023e0f57"
+                      ],
+                      "responseId": "redacted-5675a4c090df1ecf",
+                      "transport": "openrouter",
+                      "requestedModel": "glm-5.3-flash",
+                      "requestedRouting": {
+                        "only": [
+                          "darkbloom/fp4"
+                        ],
+                        "allow_fallbacks": false
+                      },
+                      "pricingSnapshot": {
+                        "scope": "endpoint",
+                        "inputCostPerMTok": 0.065,
+                        "outputCostPerMTok": 0.18,
+                        "cacheReadCostPerMTok": 0.012
+                      },
+                      "usage": {
+                        "input_tokens": 2220,
+                        "output_tokens": 63,
+                        "cache_read_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": null
+                      },
+                      "responseModel": null,
+                      "generation": {
+                        "totalCostUsd": 0.00015564,
+                        "providerName": "Darkbloom",
+                        "modelPermaslug": "z-ai/glm-5.3-flash-20260826",
+                        "nativeTokensPrompt": 2220,
+                        "nativeTokensCached": 0,
+                        "nativeTokensCompletion": 63
+                      }
+                    },
+                    {
+                      "observationId": "redacted-5374c148677557b2",
+                      "sessionRef": "redacted-b62b32eb023e0f57",
+                      "ownershipAttemptIds": [
+                        "redacted-b62b32eb023e0f57"
+                      ],
+                      "responseId": "redacted-b0c7d66f1fdda79c",
+                      "transport": "openrouter",
+                      "requestedModel": "glm-5.3-flash",
+                      "requestedRouting": {
+                        "only": [
+                          "darkbloom/fp4"
+                        ],
+                        "allow_fallbacks": false
+                      },
+                      "pricingSnapshot": {
+                        "scope": "endpoint",
+                        "inputCostPerMTok": 0.065,
+                        "outputCostPerMTok": 0.18,
+                        "cacheReadCostPerMTok": 0.012
+                      },
+                      "usage": {
+                        "input_tokens": 2324,
+                        "output_tokens": 43,
+                        "cache_read_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": null
+                      },
+                      "responseModel": null,
+                      "generation": {
+                        "totalCostUsd": 0.0001588,
+                        "providerName": "Darkbloom",
+                        "modelPermaslug": "z-ai/glm-5.3-flash-20260826",
+                        "nativeTokensPrompt": 2324,
+                        "nativeTokensCached": 0,
+                        "nativeTokensCompletion": 43
+                      }
+                    },
+                    {
+                      "observationId": "redacted-cd4e6b80151c56ae",
+                      "sessionRef": "redacted-b62b32eb023e0f57",
+                      "ownershipAttemptIds": [
+                        "redacted-b62b32eb023e0f57"
+                      ],
+                      "responseId": "redacted-f37a886dec6bb4f0",
+                      "transport": "openrouter",
+                      "requestedModel": "glm-5.3-flash",
+                      "requestedRouting": {
+                        "only": [
+                          "darkbloom/fp4"
+                        ],
+                        "allow_fallbacks": false
+                      },
+                      "pricingSnapshot": {
+                        "scope": "endpoint",
+                        "inputCostPerMTok": 0.065,
+                        "outputCostPerMTok": 0.18,
+                        "cacheReadCostPerMTok": 0.012
+                      },
+                      "usage": {
+                        "input_tokens": 128,
+                        "output_tokens": 1021,
+                        "cache_read_tokens": 2304,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": null
+                      },
+                      "responseModel": null,
+                      "generation": {
+                        "totalCostUsd": 0.000219748,
+                        "cacheDiscountUsd": 0.000122112,
+                        "providerName": "Darkbloom",
+                        "modelPermaslug": "z-ai/glm-5.3-flash-20260826",
+                        "nativeTokensPrompt": 2432,
+                        "nativeTokensCached": 2304,
+                        "nativeTokensCompletion": 1021
+                      }
+                    },
+                    {
+                      "observationId": "redacted-d182bc029f34dba1",
+                      "sessionRef": "redacted-b62b32eb023e0f57",
+                      "ownershipAttemptIds": [
+                        "redacted-b62b32eb023e0f57"
+                      ],
+                      "responseId": "redacted-764fae0125f62acc",
+                      "transport": "openrouter",
+                      "requestedModel": "glm-5.3-flash",
+                      "requestedRouting": {
+                        "only": [
+                          "darkbloom/fp4"
+                        ],
+                        "allow_fallbacks": false
+                      },
+                      "pricingSnapshot": {
+                        "scope": "endpoint",
+                        "inputCostPerMTok": 0.065,
+                        "outputCostPerMTok": 0.18,
+                        "cacheReadCostPerMTok": 0.012
+                      },
+                      "usage": {
+                        "input_tokens": 1335,
+                        "output_tokens": 149,
+                        "cache_read_tokens": 2304,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": null
+                      },
+                      "responseModel": null,
+                      "generation": {
+                        "totalCostUsd": 0.000141243,
+                        "cacheDiscountUsd": 0.000122112,
+                        "providerName": "Darkbloom",
+                        "modelPermaslug": "z-ai/glm-5.3-flash-20260826",
+                        "nativeTokensPrompt": 3639,
+                        "nativeTokensCached": 2304,
+                        "nativeTokensCompletion": 149
+                      }
+                    },
+                    {
+                      "observationId": "redacted-8046b022b2bdd09e",
+                      "sessionRef": "redacted-b62b32eb023e0f57",
+                      "ownershipAttemptIds": [
+                        "redacted-b62b32eb023e0f57"
+                      ],
+                      "responseId": "redacted-625a58c72b0d7b6d",
+                      "transport": "openrouter",
+                      "requestedModel": "glm-5.3-flash",
+                      "requestedRouting": {
+                        "only": [
+                          "darkbloom/fp4"
+                        ],
+                        "allow_fallbacks": false
+                      },
+                      "pricingSnapshot": {
+                        "scope": "endpoint",
+                        "inputCostPerMTok": 0.065,
+                        "outputCostPerMTok": 0.18,
+                        "cacheReadCostPerMTok": 0.012
+                      },
+                      "usage": {
+                        "input_tokens": 246,
+                        "output_tokens": 79,
+                        "cache_read_tokens": 3584,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": null
+                      },
+                      "responseModel": null,
+                      "generation": {
+                        "totalCostUsd": 0.000073218,
+                        "cacheDiscountUsd": 0.000189952,
+                        "providerName": "Darkbloom",
+                        "modelPermaslug": "z-ai/glm-5.3-flash-20260826",
+                        "nativeTokensPrompt": 3830,
+                        "nativeTokensCached": 3584,
+                        "nativeTokensCompletion": 79
+                      }
+                    },
+                    {
+                      "observationId": "redacted-7d1a10a03f9b7c55",
+                      "sessionRef": "redacted-b62b32eb023e0f57",
+                      "ownershipAttemptIds": [
+                        "redacted-b62b32eb023e0f57"
+                      ],
+                      "responseId": "redacted-44976f1bdd8c1171",
+                      "transport": "openrouter",
+                      "requestedModel": "glm-5.3-flash",
+                      "requestedRouting": {
+                        "only": [
+                          "darkbloom/fp4"
+                        ],
+                        "allow_fallbacks": false
+                      },
+                      "pricingSnapshot": {
+                        "scope": "endpoint",
+                        "inputCostPerMTok": 0.065,
+                        "outputCostPerMTok": 0.18,
+                        "cacheReadCostPerMTok": 0.012
+                      },
+                      "usage": {
+                        "input_tokens": 418,
+                        "output_tokens": 168,
+                        "cache_read_tokens": 3584,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": null
+                      },
+                      "responseModel": null,
+                      "generation": {
+                        "totalCostUsd": 0.000100418,
+                        "cacheDiscountUsd": 0.000189952,
+                        "providerName": "Darkbloom",
+                        "modelPermaslug": "z-ai/glm-5.3-flash-20260826",
+                        "nativeTokensPrompt": 4002,
+                        "nativeTokensCached": 3584,
+                        "nativeTokensCompletion": 168
+                      }
+                    }
+                  ],
+                  "failure": {
+                    "fault_class": "model-fault"
+                  },
+                  "stage": "coding",
+                  "executed_model": "glm-5.3-flash",
+                  "model_evidence": "requested_only",
+                  "harness": "native",
+                  "task_cost": {
+                    "schema_version": "task_cost_summary/v1",
+                    "task_id": "redacted-b62b32eb023e0f57",
+                    "session_ids": [
+                      "redacted-b62b32eb023e0f57"
+                    ],
+                    "harness": "native",
+                    "provider_contract_version": "native/1",
+                    "models": [
+                      "glm-5.3-flash"
+                    ],
+                    "model_segments": [
+                      {
+                        "model": "glm-5.3-flash",
+                        "turn_count": 6,
+                        "usage": {
+                          "input_tokens": 6671,
+                          "output_tokens": 1523,
+                          "cache_read_tokens": 11776,
+                          "cache_write_tokens": 0,
+                          "reasoning_tokens": null
+                        },
+                        "actual_cost_usd": 0.000849067,
+                        "estimated_cost_usd": 0.000849,
+                        "cost_source": "provider_reported"
+                      }
+                    ],
+                    "turn_count": 6,
+                    "turns_truncated": false,
+                    "usage": {
+                      "input_tokens": 6671,
+                      "output_tokens": 1523,
+                      "cache_read_tokens": 11776,
+                      "cache_write_tokens": 0,
+                      "reasoning_tokens": null
+                    },
+                    "actual_cost_usd": 0.000849067,
+                    "estimated_cost_usd": 0.000849,
+                    "total_cost_usd": 0.000849067,
+                    "cost_source": "provider_reported",
+                    "cost_basis": "per_token_api",
+                    "coverage": "partial",
+                    "field_availability": {
+                      "usage": "partial",
+                      "actual_cost": "available",
+                      "estimated_cost": "available",
+                      "pricing": "available"
+                    },
+                    "pricing_source": "local_estimate",
+                    "join_confidence": "unattributed",
+                    "collected_at": "2026-11-16T21:29:28.282Z",
+                    "event_count": 6,
+                    "event_ids": [
+                      "redacted-6e40e3ff0119727a",
+                      "redacted-5374c148677557b2",
+                      "redacted-cd4e6b80151c56ae",
+                      "redacted-d182bc029f34dba1",
+                      "redacted-8046b022b2bdd09e",
+                      "redacted-7d1a10a03f9b7c55"
+                    ],
+                    "diagnostics": [
+                      "mixed_coverage",
+                      "provider_reported_cost"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "scenarioId": "live.coding.mutation-canary.v1",
+        "status": "fail",
+        "isLive": true,
+        "phase": "coding",
+        "provider": "z-ai",
+        "model": "glm-5.3-flash",
+        "providerNativeId": "z-ai/glm-5.3-flash",
+        "identityFingerprint": "3c802dd32ce613afa81237cadf556fb97fa815aa9c095f69145dd4a57e331ae3",
+        "catalogHash": "89b12a9ba68fb86a3b1b895569e820969fb8b084da6d631e2196a0bfa3e89a1f",
+        "suiteVersion": "v3",
+        "ranAt": "2026-11-16T21:29:28.319Z",
+        "limits": {
+          "maxWallClockMs": 240000,
+          "maxTurns": 6,
+          "maxToolCalls": 10,
+          "maxTotalTokens": 60000,
+          "maxCostUsd": 0.5
+        },
+        "usage": {
+          "turns": 6,
+          "toolCalls": 10,
+          "inputTokens": 6671,
+          "outputTokens": 1523,
+          "wallClockMs": 50774,
+          "costUsd": 0.000849
+        },
+        "reason": "budget_exceeded",
+        "limitExceeded": "turns",
+        "detail": "canary turn limit fired before completion",
+        "evidence": {
+          "failedMutationToolCalls": 1,
+          "structuredMutationToolCalls": 2,
+          "mutationToolNames": [
+            "apply_patch",
+            "create_marker"
+          ],
+          "expectedSentinelHash": "1770e9648d1d92bd2c9e3baca1cf29eee4596674794c37de6de2c54bf737f414",
+          "actualSentinelHash": "1770e9648d1d92bd2c9e3baca1cf29eee4596674794c37de6de2c54bf737f414",
+          "changedPaths": [
+            "features/live-canary/.coding-complete",
+            "src/canary.ts",
+            "src/payload.ts"
+          ],
+          "completionArtifactPresent": true,
+          "completionArtifactHash": "34706b4aa8118ebf1298c5b69b36a4f4927c795768c5ef27383ff3003ca1d55e"
+        },
+        "attempts": 1
+      }
+    }
+  ],
+  "economics": {
+    "sdkReport": {
+      "taskId": "endpoint-comparison",
+      "totalUsd": 0.004170952,
+      "actualUsd": 0.004170952,
+      "estimatedUsd": 0.00417,
+      "byModel": {
+        "glm-5.3-flash": {
+          "totalUsd": 0.004170952,
+          "actualUsd": 0.004170952,
+          "estimatedUsd": 0.00417,
+          "usage": {
+            "inputTokens": 17242,
+            "outputTokens": 4321,
+            "cacheReadTokens": 38144,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": null
+          },
+          "eventCount": 4,
+          "turnCount": 4,
+          "costSource": "provider_reported",
+          "coverage": "partial"
+        }
+      },
+      "byHarness": {
+        "native": {
+          "totalUsd": 0.004170952,
+          "actualUsd": 0.004170952,
+          "estimatedUsd": 0.00417,
+          "usage": {
+            "inputTokens": 17242,
+            "outputTokens": 4321,
+            "cacheReadTokens": 38144,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": null
+          },
+          "eventCount": 4,
+          "turnCount": 4,
+          "costSource": "provider_reported",
+          "coverage": "partial"
+        }
+      },
+      "usage": {
+        "inputTokens": 17242,
+        "outputTokens": 4321,
+        "cacheReadTokens": 38144,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": null
+      },
+      "eventCount": 4,
+      "turnCount": 4,
+      "source": {
+        "cost": "provider_reported",
+        "basis": "per_token_api",
+        "capture": [
+          "manual"
+        ],
+        "sessionFileCount": 0
+      },
+      "pricing": {
+        "source": "local_estimate",
+        "revision": null,
+        "effectiveDate": "2026-11-04",
+        "revisions": [],
+        "priceTables": [
+          "external"
+        ],
+        "builtInTableAsOf": "2026-11-04",
+        "overrideCount": 0,
+        "currency": "USD"
+      },
+      "coverage": {
+        "status": "partial",
+        "pricedEvents": 4,
+        "unpricedEvents": 0,
+        "unknownModels": []
+      },
+      "diagnostics": [
+        {
+          "code": "mixed_coverage",
+          "level": "warn",
+          "message": "coverage is partial: some events are missing cost or usage",
+          "count": 1
+        },
+        {
+          "code": "provider_reported_cost",
+          "level": "info",
+          "message": "at least one event carries a provider-reported charge",
+          "count": 1
+        }
+      ],
+      "summaries": [
+        {
+          "schema_version": "task_cost_summary/v1",
+          "task_id": "endpoint-comparison",
+          "session_ids": [
+            "redacted-168290c7a5d9a384",
+            "redacted-465df3b602272b50",
+            "redacted-b62b32eb023e0f57",
+            "redacted-cb73eef926a6f9e7"
+          ],
+          "harness": "native",
+          "provider_contract_version": "native/1",
+          "models": [
+            "glm-5.3-flash"
+          ],
+          "model_segments": [
+            {
+              "model": "glm-5.3-flash",
+              "turn_count": 4,
+              "usage": {
+                "input_tokens": 17242,
+                "output_tokens": 4321,
+                "cache_read_tokens": 38144,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": null
+              },
+              "actual_cost_usd": 0.004170952,
+              "estimated_cost_usd": 0.00417,
+              "cost_source": "provider_reported"
+            }
+          ],
+          "turn_count": 4,
+          "turns_truncated": false,
+          "usage": {
+            "input_tokens": 17242,
+            "output_tokens": 4321,
+            "cache_read_tokens": 38144,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": null
+          },
+          "actual_cost_usd": 0.004170952,
+          "estimated_cost_usd": 0.00417,
+          "total_cost_usd": 0.004170952,
+          "cost_source": "provider_reported",
+          "cost_basis": "per_token_api",
+          "coverage": "partial",
+          "field_availability": {
+            "usage": "partial",
+            "actual_cost": "available",
+            "estimated_cost": "available",
+            "pricing": "available"
+          },
+          "pricing_source": "local_estimate",
+          "join_confidence": "unattributed",
+          "collected_at": "2026-11-16T21:29:28.282Z",
+          "event_count": 4,
+          "event_ids": [
+            "native.0.0",
+            "native.1.0",
+            "native.2.0",
+            "native.3.0"
+          ],
+          "diagnostics": [
+            "mixed_coverage",
+            "provider_reported_cost"
+          ]
+        }
+      ]
+    },
+    "accountedAttempts": 4,
+    "attempts": 4
+  },
+  "subjects": [
+    {
+      "endpoint": {
+        "tag": "z-ai/fp8",
+        "providerName": "Z.AI",
+        "quantization": "fp8",
+        "deploymentRevision": null
+      },
+      "compatibility": "pass",
+      "pairedSamples": 0,
+      "losses": 0,
+      "lossInterval": {
+        "p": null,
+        "lo": null,
+        "hi": null
+      },
+      "p95LatencyMs": 46711,
+      "referenceP95LatencyMs": 46711,
+      "sdkReport": {
+        "taskId": "endpoint-comparison",
+        "totalUsd": 0.00300744,
+        "actualUsd": 0.00300744,
+        "estimatedUsd": 0.003006,
+        "byModel": {
+          "glm-5.3-flash": {
+            "totalUsd": 0.00300744,
+            "actualUsd": 0.00300744,
+            "estimatedUsd": 0.003006,
+            "usage": {
+              "inputTokens": 7826,
+              "outputTokens": 2469,
+              "cacheReadTokens": 19968,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 2,
+            "turnCount": 2,
+            "costSource": "provider_reported",
+            "coverage": "partial"
+          }
+        },
+        "byHarness": {
+          "native": {
+            "totalUsd": 0.00300744,
+            "actualUsd": 0.00300744,
+            "estimatedUsd": 0.003006,
+            "usage": {
+              "inputTokens": 7826,
+              "outputTokens": 2469,
+              "cacheReadTokens": 19968,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 2,
+            "turnCount": 2,
+            "costSource": "provider_reported",
+            "coverage": "partial"
+          }
+        },
+        "usage": {
+          "inputTokens": 7826,
+          "outputTokens": 2469,
+          "cacheReadTokens": 19968,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": null
+        },
+        "eventCount": 2,
+        "turnCount": 2,
+        "source": {
+          "cost": "provider_reported",
+          "basis": "per_token_api",
+          "capture": [
+            "manual"
+          ],
+          "sessionFileCount": 0
+        },
+        "pricing": {
+          "source": "local_estimate",
+          "revision": null,
+          "effectiveDate": "2026-11-04",
+          "revisions": [],
+          "priceTables": [
+            "external"
+          ],
+          "builtInTableAsOf": "2026-11-04",
+          "overrideCount": 0,
+          "currency": "USD"
+        },
+        "coverage": {
+          "status": "partial",
+          "pricedEvents": 2,
+          "unpricedEvents": 0,
+          "unknownModels": []
+        },
+        "diagnostics": [
+          {
+            "code": "mixed_coverage",
+            "level": "warn",
+            "message": "coverage is partial: some events are missing cost or usage",
+            "count": 1
+          },
+          {
+            "code": "provider_reported_cost",
+            "level": "info",
+            "message": "at least one event carries a provider-reported charge",
+            "count": 1
+          }
+        ],
+        "summaries": [
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-comparison",
+            "session_ids": [
+              "redacted-465df3b602272b50",
+              "redacted-cb73eef926a6f9e7"
+            ],
+            "harness": "native",
+            "provider_contract_version": "native/1",
+            "models": [
+              "glm-5.3-flash"
+            ],
+            "model_segments": [
+              {
+                "model": "glm-5.3-flash",
+                "turn_count": 2,
+                "usage": {
+                  "input_tokens": 7826,
+                  "output_tokens": 2469,
+                  "cache_read_tokens": 19968,
+                  "cache_write_tokens": 0,
+                  "reasoning_tokens": null
+                },
+                "actual_cost_usd": 0.00300744,
+                "estimated_cost_usd": 0.003006,
+                "cost_source": "provider_reported"
+              }
+            ],
+            "turn_count": 2,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 7826,
+              "output_tokens": 2469,
+              "cache_read_tokens": 19968,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.00300744,
+            "estimated_cost_usd": 0.003006,
+            "total_cost_usd": 0.00300744,
+            "cost_source": "provider_reported",
+            "cost_basis": "per_token_api",
+            "coverage": "partial",
+            "field_availability": {
+              "usage": "partial",
+              "actual_cost": "available",
+              "estimated_cost": "available",
+              "pricing": "available"
+            },
+            "pricing_source": "local_estimate",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-11-16T21:28:27.083Z",
+            "event_count": 2,
+            "event_ids": [
+              "native.0.0",
+              "native.1.0"
+            ],
+            "diagnostics": [
+              "mixed_coverage",
+              "provider_reported_cost"
+            ]
+          }
+        ]
+      },
+      "spendPerSuccessfulRunUsd": 0.00300744,
+      "exactChargeCoverage": 1,
+      "cacheMix": [
+        {
+          "input": 2409,
+          "cacheRead": 0,
+          "output": 440
+        },
+        {
+          "input": 526,
+          "cacheRead": 2368,
+          "output": 92
+        },
+        {
+          "input": 2486,
+          "cacheRead": 0,
+          "output": 61
+        },
+        {
+          "input": 392,
+          "cacheRead": 2240,
+          "output": 1524
+        },
+        {
+          "input": 1574,
+          "cacheRead": 2624,
+          "output": 49
+        },
+        {
+          "input": 106,
+          "cacheRead": 4160,
+          "output": 83
+        },
+        {
+          "input": 188,
+          "cacheRead": 4224,
+          "output": 71
+        },
+        {
+          "input": 145,
+          "cacheRead": 4352,
+          "output": 149
+        }
+      ],
+      "promotionVerdict": "rejected"
+    },
+    {
+      "endpoint": {
+        "tag": "darkbloom/fp4",
+        "providerName": "Darkbloom",
+        "quantization": "fp4",
+        "deploymentRevision": null
+      },
+      "compatibility": "pass",
+      "pairedSamples": 0,
+      "losses": 0,
+      "lossInterval": {
+        "p": null,
+        "lo": null,
+        "hi": null
+      },
+      "p95LatencyMs": 50774,
+      "referenceP95LatencyMs": 46711,
+      "sdkReport": {
+        "taskId": "endpoint-comparison",
+        "totalUsd": 0.001163512,
+        "actualUsd": 0.001163512,
+        "estimatedUsd": 0.001164,
+        "byModel": {
+          "glm-5.3-flash": {
+            "totalUsd": 0.001163512,
+            "actualUsd": 0.001163512,
+            "estimatedUsd": 0.001164,
+            "usage": {
+              "inputTokens": 9416,
+              "outputTokens": 1852,
+              "cacheReadTokens": 18176,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 2,
+            "turnCount": 2,
+            "costSource": "provider_reported",
+            "coverage": "partial"
+          }
+        },
+        "byHarness": {
+          "native": {
+            "totalUsd": 0.001163512,
+            "actualUsd": 0.001163512,
+            "estimatedUsd": 0.001164,
+            "usage": {
+              "inputTokens": 9416,
+              "outputTokens": 1852,
+              "cacheReadTokens": 18176,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 2,
+            "turnCount": 2,
+            "costSource": "provider_reported",
+            "coverage": "partial"
+          }
+        },
+        "usage": {
+          "inputTokens": 9416,
+          "outputTokens": 1852,
+          "cacheReadTokens": 18176,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": null
+        },
+        "eventCount": 2,
+        "turnCount": 2,
+        "source": {
+          "cost": "provider_reported",
+          "basis": "per_token_api",
+          "capture": [
+            "manual"
+          ],
+          "sessionFileCount": 0
+        },
+        "pricing": {
+          "source": "local_estimate",
+          "revision": null,
+          "effectiveDate": "2026-11-04",
+          "revisions": [],
+          "priceTables": [
+            "external"
+          ],
+          "builtInTableAsOf": "2026-11-04",
+          "overrideCount": 0,
+          "currency": "USD"
+        },
+        "coverage": {
+          "status": "partial",
+          "pricedEvents": 2,
+          "unpricedEvents": 0,
+          "unknownModels": []
+        },
+        "diagnostics": [
+          {
+            "code": "mixed_coverage",
+            "level": "warn",
+            "message": "coverage is partial: some events are missing cost or usage",
+            "count": 1
+          },
+          {
+            "code": "provider_reported_cost",
+            "level": "info",
+            "message": "at least one event carries a provider-reported charge",
+            "count": 1
+          }
+        ],
+        "summaries": [
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-comparison",
+            "session_ids": [
+              "redacted-168290c7a5d9a384",
+              "redacted-b62b32eb023e0f57"
+            ],
+            "harness": "native",
+            "provider_contract_version": "native/1",
+            "models": [
+              "glm-5.3-flash"
+            ],
+            "model_segments": [
+              {
+                "model": "glm-5.3-flash",
+                "turn_count": 2,
+                "usage": {
+                  "input_tokens": 9416,
+                  "output_tokens": 1852,
+                  "cache_read_tokens": 18176,
+                  "cache_write_tokens": 0,
+                  "reasoning_tokens": null
+                },
+                "actual_cost_usd": 0.001163512,
+                "estimated_cost_usd": 0.001164,
+                "cost_source": "provider_reported"
+              }
+            ],
+            "turn_count": 2,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 9416,
+              "output_tokens": 1852,
+              "cache_read_tokens": 18176,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.001163512,
+            "estimated_cost_usd": 0.001164,
+            "total_cost_usd": 0.001163512,
+            "cost_source": "provider_reported",
+            "cost_basis": "per_token_api",
+            "coverage": "partial",
+            "field_availability": {
+              "usage": "partial",
+              "actual_cost": "available",
+              "estimated_cost": "available",
+              "pricing": "available"
+            },
+            "pricing_source": "local_estimate",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-11-16T21:29:28.282Z",
+            "event_count": 2,
+            "event_ids": [
+              "native.0.0",
+              "native.1.0"
+            ],
+            "diagnostics": [
+              "mixed_coverage",
+              "provider_reported_cost"
+            ]
+          }
+        ]
+      },
+      "spendPerSuccessfulRunUsd": 0.001163512,
+      "exactChargeCoverage": 1,
+      "cacheMix": [
+        {
+          "input": 95,
+          "cacheRead": 2048,
+          "output": 80
+        },
+        {
+          "input": 2236,
+          "cacheRead": 0,
+          "output": 102
+        },
+        {
+          "input": 312,
+          "cacheRead": 2048,
+          "output": 32
+        },
+        {
+          "input": 102,
+          "cacheRead": 2304,
+          "output": 115
+        },
+        {
+          "input": 2220,
+          "cacheRead": 0,
+          "output": 63
+        },
+        {
+          "input": 2324,
+          "cacheRead": 0,
+          "output": 43
+        },
+        {
+          "input": 128,
+          "cacheRead": 2304,
+          "output": 1021
+        },
+        {
+          "input": 1335,
+          "cacheRead": 2304,
+          "output": 149
+        },
+        {
+          "input": 246,
+          "cacheRead": 3584,
+          "output": 79
+        },
+        {
+          "input": 418,
+          "cacheRead": 3584,
+          "output": 168
+        }
+      ],
+      "promotionVerdict": "rejected"
+    }
+  ]
+}

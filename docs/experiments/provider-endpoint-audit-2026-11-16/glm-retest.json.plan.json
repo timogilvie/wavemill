@@ -1,0 +1,75 @@
+{
+  "capturedAt": "2026-11-16T21:26:51.710Z",
+  "model": "glm-5.3-flash",
+  "modelSubject": {
+    "registryKey": "glm-5.3-flash",
+    "nativeProvider": "openrouter",
+    "providerId": "z-ai",
+    "providerModelId": "glm-5.3-flash",
+    "providerNativeId": "z-ai/glm-5.3-flash",
+    "identityRevision": 1,
+    "identityFingerprint": "3c802dd32ce613afa81237cadf556fb97fa815aa9c095f69145dd4a57e331ae3",
+    "catalogHash": "5d0abefe26a5104833450771a822f91383ef8d84367d80b05c9df17fd1419b00"
+  },
+  "plan": {
+    "schemaVersion": "endpoint-comparison-plan/v2",
+    "policy": {
+      "maxSpendUsd": 6.99,
+      "maxCompletionRegression": 0.05,
+      "confidence": 0.95,
+      "maxP95LatencyRatio": 2
+    },
+    "referenceTag": "z-ai/fp8",
+    "subjects": [
+      {
+        "tag": "z-ai/fp8",
+        "providerName": "Z.AI",
+        "quantization": "fp8",
+        "deploymentRevision": null
+      },
+      {
+        "tag": "darkbloom/fp4",
+        "providerName": "Darkbloom",
+        "quantization": "fp4",
+        "deploymentRevision": null
+      }
+    ],
+    "requiredPairs": 73,
+    "profiles": [
+      "workflow",
+      "cache-heavy"
+    ],
+    "reservePerRunUsd": 1,
+    "admission": "sdk-accounted-spend-plus-next-run-reserve/v1",
+    "runs": [
+      {
+        "pair": -1,
+        "profile": "standard",
+        "endpoint": {
+          "tag": "z-ai/fp8",
+          "providerName": "Z.AI",
+          "quantization": "fp8",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": -1,
+        "profile": "standard",
+        "endpoint": {
+          "tag": "darkbloom/fp4",
+          "providerName": "Darkbloom",
+          "quantization": "fp4",
+          "deploymentRevision": null
+        }
+      }
+    ],
+    "schedule": "compatibility-first; pair-ascending; profile-order; endpoint-index=(index+pair)%subject-count",
+    "stoppingRules": [
+      "Missing accounting or an unaffordable next-run reserve stops the study.",
+      "A non-passing reference compatibility run stops paired testing.",
+      "A definitive candidate failure rejects it; subsequent candidate probes are skipped. All prior outcomes remain."
+    ],
+    "plannedRunCount": 294,
+    "qualificationScope": "exact requested tag with observed host; deployment/quantization not independently attested"
+  }
+}
