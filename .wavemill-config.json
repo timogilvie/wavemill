@@ -416,6 +416,7 @@
       "Golden Journey (eval-failure-stale-terminal)": "bash tests/journeys/run-journeys.sh eval-failure-stale-terminal",
       "Golden Journey (native-ownership-recovery)": "bash tests/journeys/run-journeys.sh native-ownership-recovery",
       "Golden Journey (native-arm-evidence)": "bash tests/journeys/run-journeys.sh native-arm-evidence",
+      "Golden Journey (native-harness-hang)": "bash tests/journeys/run-journeys.sh native-harness-hang",
       "Golden Journey (defect-escalation)": "bash tests/journeys/run-journeys.sh defect-escalation",
       "Golden Journey (incident-currentness)": "bash tests/journeys/run-journeys.sh incident-currentness",
       "Golden Journey (challenger-contract-recovery)": "bash tests/journeys/run-journeys.sh challenger-contract-recovery",
