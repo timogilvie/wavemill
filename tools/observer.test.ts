@@ -4315,10 +4315,17 @@ test('HOK-3096 Detector 3: an unresolvable branch never produces a finding', () 
 test('HOK-3096 behindBaseSeverity: pure severity rule', () => {
   assert.equal(behindBaseSeverity({ hasReadyLabel: true }), 'high');
   assert.equal(behindBaseSeverity({ hasReadyLabel: false }), 'medium');
-  assert.equal(behindBaseSeverity({ hasReadyLabel: undefined, queueState: 'ready' }), 'high');
+  assert.equal(behindBaseSeverity({ hasReadyLabel: undefined, queueState: 'ready', readyStatus: 'completed' }), 'high');
+  assert.equal(behindBaseSeverity({ hasReadyLabel: undefined, queueState: 'ready', readyStatus: 'running' }), 'medium');
   assert.equal(behindBaseSeverity({ hasReadyLabel: undefined, queueState: 'ready-stale' }), 'high');
   assert.equal(behindBaseSeverity({ hasReadyLabel: undefined, queueState: 'merge-candidate' }), 'high');
   assert.equal(behindBaseSeverity({ hasReadyLabel: undefined, queueState: undefined }), 'medium');
+  assert.equal(behindBaseSeverity({ hasReadyLabel: undefined, queueState: 'bogus' }), 'medium');
+});
+
+test('HOK-3453 behindBaseSeverity: merge-needed is elevated when labels are unknown; a known label still wins', () => {
+  assert.equal(behindBaseSeverity({ hasReadyLabel: undefined, queueState: 'merge-needed', readyStatus: 'completed' }), 'high');
+  assert.equal(behindBaseSeverity({ hasReadyLabel: false, queueState: 'merge-needed', readyStatus: 'completed' }), 'medium');
 });
 
 // ---------------------------------------------------------------------------

@@ -48,6 +48,16 @@
  * failure) and calls the pure function with the pointer's window. Everything
  * else in the fault rule and summaries reads the split, never a stored
  * `providerWaitMs`.
+ *
+ * ## The open harness tool call (HOK-3382)
+ *
+ * The model-time budget pauses while a harness tool executes, so it cannot
+ * bound a wedged tool. {@link openHarnessToolCall} names the hold from the
+ * same pairing this module already does: the newest `tool_started` with no
+ * `tool_result`, and only when nothing newer (a `turn_started` or an
+ * `assistant_message`) shows the loop resumed. The recovery controller reads
+ * it to reassess a stalled native stage as a harness failure; it is a pure
+ * function here so there is still one tool-interval pairing site.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -173,6 +183,50 @@ function pairToolCalls(events: readonly TranscriptEvent[]): {
     }
   }
   return { paired, unpaired: [...pendingStarts.values()] };
+}
+
+/**
+ * A harness tool call that started and never returned: the loop is still
+ * waiting on it. `startedAtMs` is the transcript timestamp of the
+ * `tool_started` event.
+ */
+export interface OpenHarnessToolCall {
+  toolName: string;
+  toolCallId: string;
+  startedAtMs: number;
+}
+
+/**
+ * The harness tool call currently holding the loop, or `null`.
+ *
+ * The newest `tool_started` with no matching `tool_result` is a hold only when
+ * no later `turn_started` or `assistant_message` exists: those events mean the
+ * tool returned (or the turn moved on) and the loop is no longer waiting on
+ * it. Pairing reuses {@link pairToolCalls} so there is still one pairing site.
+ *
+ * When `window` is given, a hold whose start falls outside it is ignored —
+ * callers pass the stage attempt's window so an older attempt's dead call
+ * cannot be reported as the current hold.
+ */
+export function openHarnessToolCall(
+  events: readonly TranscriptEvent[],
+  window?: NativeStageTimeSplitWindow,
+): OpenHarnessToolCall | null {
+  const { unpaired } = pairToolCalls(events);
+  if (unpaired.length === 0) return null;
+  let newest: TranscriptToolStarted | undefined;
+  for (const start of unpaired) {
+    if (!newest || start.timestamp >= newest.timestamp) newest = start;
+  }
+  if (!newest) return null;
+  const resumed = events.some(
+    (event) =>
+      (event.type === 'turn_started' || event.type === 'assistant_message')
+      && event.timestamp > newest!.timestamp,
+  );
+  if (resumed) return null;
+  if (window && (newest.timestamp < window.fromMs || newest.timestamp > window.toMs)) return null;
+  return { toolName: newest.toolName, toolCallId: newest.toolCallId, startedAtMs: newest.timestamp };
 }
 
 interface TaggedInterval {
@@ -307,13 +361,23 @@ export interface ResolveNativeStageTimeSplitDirs {
  * copies every `*.jsonl` path referenced by feature-dir JSON into
  * `<archive>/native-sessions/<basename>`).
  */
-function resolveTranscriptPath(pointerPath: string, dirs: ResolveNativeStageTimeSplitDirs): string | null {
+export function resolveNativeTranscriptPath(pointerPath: string, dirs: ResolveNativeStageTimeSplitDirs = {}): string | null {
   if (existsSync(pointerPath)) return pointerPath;
   const base = basename(pointerPath);
   const candidates = [dirs.featureDir, dirs.repoDir]
     .filter((dir): dir is string => Boolean(dir))
     .map((dir) => join(dir, 'native-sessions', base));
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+/**
+ * Read a native transcript's events, fail-soft: a missing file, `null` path or
+ * malformed line never throws. This is the reader the recovery controller uses
+ * to find an open harness tool call; the split derivation uses the same one.
+ */
+export function readNativeTranscriptEvents(filePath: string | null | undefined): TranscriptEvent[] {
+  if (!filePath) return [];
+  return readTranscriptEventsTolerant(filePath);
 }
 
 /** Parse transcript JSONL tolerantly: malformed lines are skipped, never thrown. */
@@ -350,7 +414,7 @@ export function resolveNativeStageTimeSplit(
 ): NativeStageTimeSplit | null {
   const pointer = fact?.sessionStream;
   if (!pointer?.path) return null;
-  const filePath = resolveTranscriptPath(pointer.path, dirs);
+  const filePath = resolveNativeTranscriptPath(pointer.path, dirs);
   if (!filePath) return null;
   const events = readTranscriptEventsTolerant(filePath);
   if (events.length === 0) return null;

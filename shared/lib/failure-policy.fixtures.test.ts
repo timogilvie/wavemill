@@ -15,7 +15,7 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { parseAbortFailureKind } from './arm-failure-taxonomy.ts';
-import { classifyFailure, type FailureClass, type FailureEvidence } from './failure-policy.ts';
+import { classifyFailure, settledWithoutResultDetail, type FailureClass, type FailureEvidence } from './failure-policy.ts';
 
 interface Fixture {
   name: string;
@@ -126,6 +126,12 @@ const HISTORICAL_FIXTURES: Fixture[] = [
   {
     name: 'HOK-3386: generalised stage-agent disposition settled-without-result wording classifies the same as the legacy coding_stage_mark_interrupted string',
     evidence: { stage: 'coding', detail: 'Interrupted: coding agent settled without a result (agent-stalled)' },
+    expectedClass: 'retryable',
+    expectedKind: 'coding-exited-without-result',
+  },
+  {
+    name: 'HOK-3382: recovery controller settled a hung harness tool',
+    evidence: { stage: 'coding', detail: 'Interrupted: coding agent settled without a result (harness-hung)' },
     expectedClass: 'retryable',
     expectedKind: 'coding-exited-without-result',
   },
@@ -357,6 +363,10 @@ const REPLAY_FAULT_DETAILS: Record<string, { evidence: FailureEvidence; expected
     evidence: { stage: 'coding', detail: 'Interrupted: coding agent exited without recording a result - durable commits preserved at 1a2b3c4' },
     expectedClass: 'retryable',
   },
+  native_harness_hang: {
+    evidence: { stage: 'coding', detail: 'Interrupted: coding agent settled without a result (harness-hung)' },
+    expectedClass: 'retryable',
+  },
   dropped_connection_push_rebase: {
     evidence: { stage: 'tend', detail: 'fatal: the remote end hung up unexpectedly\nerror: RPC failed; curl 92 HTTP/2 stream 0 was not closed cleanly: ECONNRESET' },
     expectedClass: 'retryable',
@@ -411,6 +421,14 @@ test('incident-replay fixtures: every fault has a classified failure string', ()
     assert.ok(entry, `incident-replay fault ${fault} has no entry in REPLAY_FAULT_DETAILS`);
     assert.equal(classifyFailure(entry.evidence).class, entry.expectedClass, fault);
   }
+});
+
+test('HOK-3382: a hung harness retries under stage-failure-coding and is never model-attributed', () => {
+  const decided = classifyFailure({ stage: 'coding', detail: settledWithoutResultDetail('coding', 'harness-hung') });
+  assert.equal(decided.class, 'retryable');
+  assert.equal(decided.failureKind, 'coding-exited-without-result');
+  assert.equal(decided.retryBucket, 'stage-failure-coding');
+  assert.equal(decided.attribution, 'unattributed');
 });
 
 // protects: missing eval output and empty attribution never become model losses.

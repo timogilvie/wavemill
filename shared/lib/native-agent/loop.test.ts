@@ -533,11 +533,14 @@ describe('loop — budget stops', () => {
         await new Promise((resolve) => setTimeout(resolve, 300));
         return messages as Message[];
       },
-      budget: { maxWallClockMs: 100 },
+      budget: { maxModelTimeMs: 100 },
     });
 
-    assert.equal(result.stopReason, 'wall_clock_limit');
+    assert.equal(result.stopReason, 'model_time_limit');
     assert.ok(result.wallClockMs >= 100);
+    // The charged budget is model time, within one tick of the 100ms limit (HOK-3382).
+    assert.ok(result.modelTimeMs >= 100, `modelTimeMs=${result.modelTimeMs}`);
+    assert.ok(result.modelTimeMs <= result.wallClockMs + 200, `modelTimeMs=${result.modelTimeMs} wallClockMs=${result.wallClockMs}`);
   });
 
   // protects: HOK-3374 — 51 minutes of our own run_tests execution being charged against the model's time budget
@@ -564,12 +567,14 @@ describe('loop — budget stops', () => {
     // pre-tool loop overhead so a loaded CI host cannot fire it spuriously.
     const result = await runWavemillLoop({
       ...baseConfig(api, [tool]),
-      budget: { maxWallClockMs: 1_000 },
+      budget: { maxModelTimeMs: 1_000 },
     });
 
     assert.equal(result.stopReason, 'stop');
     assert.equal(result.toolCallsExecuted, 1);
     assert.ok(result.wallClockMs >= 2_500);
+    // The tool's 2.5s never lands in charged model time (HOK-3382).
+    assert.ok(result.modelTimeMs < result.wallClockMs, `modelTimeMs=${result.modelTimeMs} wallClockMs=${result.wallClockMs}`);
   });
 
   // protects: HOK-3381 acceptance — rerunning the same failing selection with no
@@ -614,7 +619,7 @@ describe('loop — budget stops', () => {
         // Three slow runs (~360ms of harness tool time) do not consume this
         // model-time budget: stagnation must stop the run, not the clock.
         // Generous so load-induced loop overhead cannot fire it first.
-        maxWallClockMs: 15_000,
+        maxModelTimeMs: 15_000,
         stagnation: {
           maxRepeatedSelectionCalls: 3,
           maxNoProgressCalls: 2,

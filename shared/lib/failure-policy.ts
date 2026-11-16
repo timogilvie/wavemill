@@ -335,6 +335,17 @@ const KIND_ALIASES: Readonly<Record<string, string>> = {
   'native-completion-protocol': 'completion-protocol',
 };
 
+/**
+ * The exact detail string a settled-without-result stage carries. The monitor
+ * writes it (`_stage_stamp_settled_without_result`) and the recovery
+ * controller classifies the same future stamp (HOK-3382), so both go through
+ * this one builder rather than restating the wording — the wording is what
+ * {@link detectFailureKind} matches.
+ */
+export function settledWithoutResultDetail(stage: string, reason: string): string {
+  return `Interrupted: ${stage} agent settled without a result (${reason})`;
+}
+
 export function canonicalFailureKind(kind: string | null | undefined): string {
   const trimmed = (kind ?? '').trim();
   if (!trimmed) return '';
@@ -520,7 +531,7 @@ const NEXT_ACTIONS: Readonly<Record<string, string>> = {
   'coding-dirty-handoff': 'the coding agent exited after writing .coding-complete with uncommitted output and did not repair it when relaunched (completion-protocol failure); the challenger is forfeited so the primary proceeds',
   'planning-artifact-invalid': 'the plan artifact failed structural validation after one repair turn. Inspect the recorded validationError and relaunch on a stronger planner',
   'review-no-output': 'the review model finished without emitting findings or a terminal verdict. Relaunch the review phase on a stronger reviewer',
-  'coding-exited-without-result': 'the coding agent exited without recording a terminal result (durable commits preserved). Relaunch coding to resume from the last durable commit',
+  'coding-exited-without-result': 'the coding agent settled without recording a terminal result (durable commits preserved) — either it exited, or a harness tool held the loop until the recovery controller settled it. Relaunch coding to resume from the last durable commit',
   'native-unclassified': 'unrecognised failure signature: the mill retries it with backoff and one fresh relaunch before escalating. Inspect the recorded detail if it escalates',
 };
 

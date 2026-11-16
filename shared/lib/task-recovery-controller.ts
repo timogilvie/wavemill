@@ -6,8 +6,22 @@ import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { isSameRunId } from './attempt-identity.ts';
 import type { EscalationBasis } from './operator-escalation.ts';
 import type { BoundedRetryDecision } from './bounded-retry.ts';
-import type { FailureDecision, FailureStage } from './failure-policy.ts';
+import {
+  classifyFailure,
+  nextActionFor,
+  retryBucketFor,
+  settledWithoutResultDetail,
+  type FailureDecision,
+  type FailureStage,
+} from './failure-policy.ts';
 import type { StageAgentDisposition } from './stage-agent-disposition.ts';
+import { resolveNativeSessionPath } from './task-progress.ts';
+import {
+  openHarnessToolCall,
+  readNativeTranscriptEvents,
+  resolveNativeTranscriptPath,
+  type OpenHarnessToolCall,
+} from './native-agent/stage-time-split.ts';
 import { mutateJsonStateSync } from './state-mutex.ts';
 import { acquireStateLockSync, releaseStateLock, isOwnerReclaimable } from './state-lock.ts';
 import { readWorkflowState } from './workflow-state.ts';
@@ -57,6 +71,23 @@ export type RecoveryDisposition = Pick<
   'kind' | 'reason' | 'evidenceConfidence' | 'waitingOn' | 'blockingPrompt'
 >;
 
+/**
+ * Why reassessment of a live stage is due (HOK-3277 / HOK-3382). `due` comes
+ * from the shared stall clock (`TaskProgress.stalled`); per HOK-3277 a
+ * deadline means "reassess", never automatic termination. `harnessHold` names
+ * an open native harness tool call when the transcript proves one — that is
+ * what makes the stall a *harness* hang rather than the model/provider holding
+ * the loop.
+ */
+export interface RecoveryReassessment {
+  due: boolean;
+  basis: 'no-progress';
+  /** ISO time of the newest agent-written progress, or null when the launch anchor is all there is. */
+  lastProgressAt: string | null;
+  /** The harness tool call holding the loop, or null when the loop is not waiting on one. */
+  harnessHold: { toolName: string; toolCallId: string; startedAt: string } | null;
+}
+
 export interface RecoverySnapshot {
   /** Original notifier evidence, retained on stale control without re-metering. */
   evidence?: { stageResult?: StageResult | null };
@@ -70,6 +101,8 @@ export interface RecoverySnapshot {
   outstandingEffect: RecoveryOutstandingEffect | null;
     wait: RecoveryWait | null;
     failure: RecoveryFailure | null;
+  /** HOK-3382: the shared stall clock plus any open harness tool call. */
+  reassessment?: RecoveryReassessment | null;
 }
 
 // ── Decision ─────────────────────────────────────────────────────────────────
@@ -147,6 +180,43 @@ export function decideTaskRecovery(snapshot: RecoverySnapshot): RecoveryDecision
   if (snapshot.outstandingEffect && !snapshot.outstandingEffect.acknowledged) {
     return decision(stage, 'verify-effect',
       `effect ${snapshot.outstandingEffect.kind} applied but acknowledgement is uncertain; verify observed state before acting`);
+  }
+
+  // 4a. HOK-3382: reassessment is due (HOK-3277). The shared stall clock says
+  //     the agent has written no progress for its stall window and the
+  //     disposition still reports it in flight. A due deadline means
+  //     "reassess", never terminate: the evidence decides whose time the
+  //     stall is.
+  //       - An open native harness tool call is proved by the transcript, so
+  //         the harness — not the model — is holding the loop. Settle the
+  //         stage and route it through its own retry bucket; the failure kind
+  //         comes from failure-policy, never a literal here.
+  //       - With no hold the model/provider is still working; the model-time
+  //         budget and provider timeouts own that case, so there is nothing
+  //         for the controller to do.
+  //     Stale control, human hold, valid completion and outstanding effects
+  //     all rank earlier and still win.
+  const reassessment = snapshot.reassessment;
+  if (reassessment?.due && snapshot.disposition?.kind === 'in-flight') {
+    if (unverifiableIdentity) {
+      return decision(stage, 'wait', 'reassessment due but the attempt identity is unverifiable; holding for reassessment', {
+        wait: { owner: 'tool', wake: 'attempt-identity-resolved' },
+      });
+    }
+    const since = reassessment.lastProgressAt ?? 'launch';
+    const hold = reassessment.harnessHold;
+    if (!hold) {
+      return decision(stage, 'no-action',
+        `reassessment due: no agent progress since ${since}; the model/provider holds the loop — the model-time budget owns it`);
+    }
+    const failureKind = classifyFailure({
+      stage,
+      detail: settledWithoutResultDetail(stage, 'harness-hung'),
+    }).failureKind;
+    const bucket = retryBucketFor(stage);
+    return decision(stage, 'retry-stage',
+      `reassessment due: no progress since ${since}; harness tool ${hold.toolName} (${hold.toolCallId}) has held the loop since ${hold.startedAt}; settle and route through ${bucket}`,
+      { failureKind, retryBucket: bucket, nextAction: nextActionFor(failureKind) });
   }
 
   // 4. Live disposition: healthy / in-flight / advanced / terminal.
@@ -531,6 +601,66 @@ export async function reconcileAndRecover(args: Omit<ClaimRecoveryArgs, 'decisio
   return { decision: selected, claim: claimRecoveryAction({ ...args, decision: selected, condition: args.stateFile ? {phase: observedPhase, startedAt: snapshot.evidence?.stageResult?.startedAt ?? null} : args.condition }) };
 }
 
+/**
+ * The subset of `TaskProgress` the monitor forwards on `--progress`
+ * (`tools/stage-agent-disposition.ts` adds it to the disposition JSON). The
+ * controller never re-derives progress; it consumes this shared fact.
+ */
+export interface RecoveryProgressFlag {
+  stalled?: boolean;
+  lastProgressAt?: string | null;
+  stallMinutes?: number;
+}
+
+/**
+ * Turn the shared stall fact into a reassessment, resolving the stage
+ * transcript only when the stall is due. The transcript path comes from the
+ * existing `resolveNativeSessionPath`/`resolveNativeTranscriptPath` rules —
+ * there is no second path rule here. Fail-soft: no transcript means no hold,
+ * which is `no-action`, never a false harness fault.
+ */
+export function buildReassessment(args: {
+  stage: FailureStage;
+  issue: string;
+  stateDir: string;
+  progress: RecoveryProgressFlag | null | undefined;
+  /** The stage's launch time (session-ownership `launchedAt`), when known. */
+  launchedAt?: string | null;
+  /** Fallback attempt anchor when no launch row exists. */
+  fallbackStartedAt?: string | null;
+  nowMs?: number;
+  session?: string;
+  repoDir?: string;
+}): RecoveryReassessment | null {
+  const progress = args.progress;
+  if (!progress) return null;
+  const lastProgressAt = progress.lastProgressAt ?? null;
+  if (!progress.stalled) return { due: false, basis: 'no-progress', lastProgressAt, harnessHold: null };
+
+  const nowMs = args.nowMs ?? Date.now();
+  const anchorIso = args.launchedAt ?? args.fallbackStartedAt ?? null;
+  const anchorMs = anchorIso ? Date.parse(anchorIso) : Number.NaN;
+  const featureDir = args.stateDir;
+  const repoDir = args.repoDir ?? dirname(dirname(args.stateDir));
+  const session = args.session ?? process.env.WAVEMILL_SESSION ?? 'wavemill';
+  const livePath = resolveNativeSessionPath({ issue: args.issue, phase: args.stage, repoDir, featureDir }, session);
+  const events = livePath
+    ? readNativeTranscriptEvents(resolveNativeTranscriptPath(livePath, { featureDir, repoDir }))
+    : [];
+  const hold: OpenHarnessToolCall | null = openHarnessToolCall(
+    events,
+    Number.isFinite(anchorMs) ? { fromMs: anchorMs, toMs: nowMs } : { fromMs: 0, toMs: nowMs },
+  );
+  return {
+    due: true,
+    basis: 'no-progress',
+    lastProgressAt,
+    harnessHold: hold
+      ? { toolName: hold.toolName, toolCallId: hold.toolCallId, startedAt: new Date(hold.startedAtMs).toISOString() }
+      : null,
+  };
+}
+
 export async function runControllerCli(): Promise<void> {
   const flag = (name: string): string | undefined => {
     const index = process.argv.indexOf(name);
@@ -557,19 +687,53 @@ export async function runControllerCli(): Promise<void> {
     const state = readWorkflowState(flag('--state-file') ?? '');
     const task = state?.tasks?.[issue];
     const result = await readStageResult(stateDir, stage);
+    let dispositionPayload: (RecoveryDisposition & { launch?: { launchedAt?: string | null } }) | null = null;
+    try {
+      dispositionPayload = JSON.parse(dispositionJson) as RecoveryDisposition & { launch?: { launchedAt?: string | null } };
+    } catch {
+      dispositionPayload = null;
+    }
+    let progressFlag: RecoveryProgressFlag | null = null;
+    const progressJson = flag('--progress');
+    if (progressJson) {
+      try {
+        progressFlag = JSON.parse(progressJson) as RecoveryProgressFlag;
+      } catch {
+        progressFlag = null;
+      }
+    }
+    const reassessment = buildReassessment({
+      stage, issue, stateDir,
+      progress: progressFlag,
+      launchedAt: dispositionPayload?.launch?.launchedAt ?? null,
+      fallbackStartedAt: result?.startedAt ?? null,
+    });
     const snapshot: RecoverySnapshot = {
       issue, stage, attempt: { currentRunId: task?.runId ?? null, controlRunId: flag('--run-id') ?? task?.runId ?? null },
       evidence: { stageResult: result },
-      disposition: JSON.parse(dispositionJson),
+      disposition: dispositionPayload,
       stageResult: result?.status === 'completed' || result?.status === 'awaiting_user'
         ? { kind: 'valid', status: result.status } : { kind: 'running' },
       contractAvailable: null, outstandingEffect: null,
       wait: result?.status === 'awaiting_user' ? { owner: 'human', wake: 'operator-release' } : null, failure: null,
+      reassessment,
     };
+    // The hold is part of the evidence id, so one hang gives exactly one claim
+    // (two notifiers observing the same open tool call collapse).
+    const evidenceId = `${stage}:${task?.runId ?? 'legacy'}:${result?.startedAt ?? 'unknown-launch'}:${JSON.stringify(snapshot.disposition?.blockingPrompt ?? snapshot.stageResult)}${reassessment?.harnessHold ? `:hung:${reassessment.harnessHold.toolCallId}` : ''}`;
     const outcome = await reconcileAndRecover({ stateDir, snapshot, issue, stateFile: flag('--state-file'),
       runId: snapshot.attempt.controlRunId, ownerPid: Number(flag('--owner-pid')) || process.ppid,
-      evidenceId: `${stage}:${task?.runId ?? 'legacy'}:${result?.startedAt ?? 'unknown-launch'}:${JSON.stringify(snapshot.disposition?.blockingPrompt ?? snapshot.stageResult)}` });
-    process.stdout.write(`${JSON.stringify(outcome)}\n`);
+      evidenceId });
+    // Audit the dispatched action the same way the snapshot path does.
+    if (outcome.claim.claimed || outcome.decision.action === 'verify-effect') {
+      recordRecoveryAction(stateDir, {
+        at: outcome.claim.claimed ? outcome.claim.claim.claimedAt : new Date().toISOString(),
+        issue, stage, action: outcome.decision.action,
+        runId: snapshot.attempt.currentRunId, evidenceId,
+        rationale: outcome.decision.rationale,
+      });
+    }
+    process.stdout.write(`${JSON.stringify({ ...outcome, reassessment })}\n`);
     return;
   }
   const ack = flag('--ack');

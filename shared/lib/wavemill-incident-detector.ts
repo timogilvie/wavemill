@@ -45,6 +45,9 @@ import {
 const PLANNING_TERMINAL_REASONS = new Set([
   'turn_limit',
   'tool_call_limit',
+  // HOK-3382: `model_time_limit` is the current spelling; the wall-clock one
+  // is the deprecated pre-rename spelling and is still recognised.
+  'model_time_limit',
   'wall_clock_limit',
   'tool_stagnation',
   'invalid_plan',

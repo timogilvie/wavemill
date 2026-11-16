@@ -50,6 +50,8 @@ describe('native review', () => {
         totalOutputTokens: 10,
         totalCostUsd: 0,
         wallClockMs: 5,
+        modelTimeMs: 5,
+        startedAtMs: 0,
       };
     });
 
@@ -79,6 +81,8 @@ describe('native review', () => {
         totalOutputTokens: 10,
         totalCostUsd: 0,
         wallClockMs: 5,
+        modelTimeMs: 5,
+        startedAtMs: 0,
       };
     });
 
@@ -160,6 +164,8 @@ describe('native review', () => {
         totalOutputTokens: 10,
         totalCostUsd: 0,
         wallClockMs: 5,
+        modelTimeMs: 5,
+        startedAtMs: 0,
       };
     });
 
@@ -195,6 +201,8 @@ describe('native review', () => {
         totalOutputTokens: 10,
         totalCostUsd: 0,
         wallClockMs: 5,
+        modelTimeMs: 5,
+        startedAtMs: 0,
       };
     });
 
@@ -247,6 +255,8 @@ describe('native review', () => {
         totalOutputTokens: 10,
         totalCostUsd: 0,
         wallClockMs: 5,
+        modelTimeMs: 5,
+        startedAtMs: 0,
       };
     });
 
@@ -287,6 +297,8 @@ describe('native review', () => {
         totalOutputTokens: 10,
         totalCostUsd: 0,
         wallClockMs: 5,
+        modelTimeMs: 5,
+        startedAtMs: 0,
       };
     });
 
@@ -320,6 +332,8 @@ describe('native review', () => {
         totalOutputTokens: 10,
         totalCostUsd: 0,
         wallClockMs: 5,
+        modelTimeMs: 5,
+        startedAtMs: 0,
       };
     });
 
@@ -337,7 +351,7 @@ describe('native review', () => {
     }
   });
 
-  it('maps wall-clock exits to native-review-timeout without a synthetic not_ready finding', async () => {
+  it('maps model-time exits to native-review-timeout without a synthetic not_ready finding', async () => {
     const repoDir = makeTempRepo({
       review: {
         nativeTimeoutMs: 1234,
@@ -348,16 +362,18 @@ describe('native review', () => {
     setReadyProvider();
 
     nativeReviewTestUtils.setRunWavemillLoop(async (config) => {
-      assert.equal(config.budget?.maxWallClockMs, 1234);
+      assert.equal(config.budget?.maxModelTimeMs, 1234);
       return {
         messages: [],
-        stopReason: 'wall_clock_limit',
+        stopReason: 'model_time_limit',
         turnsCompleted: 2,
         toolCallsExecuted: 1,
         totalInputTokens: 10,
         totalOutputTokens: 10,
         totalCostUsd: 0,
         wallClockMs: 1234,
+        modelTimeMs: 1234,
+        startedAtMs: 0,
       };
     });
 
@@ -366,7 +382,7 @@ describe('native review', () => {
       assert.equal(result.verdict, 'error');
       assert.equal(result.failureCategory, 'native-review-timeout');
       assert.equal(result.codeReviewFindings.length, 0);
-      assert.match(result.reviewToolError ?? '', /wall-clock budget/i);
+      assert.match(result.reviewToolError ?? '', /model time budget/i);
       assert.equal(result.metadata?.effectiveNativeTimeoutMs, 1234);
       assert.equal(result.metadata?.nativeTimeoutMaxMs, 5000);
       assert.equal(result.metadata?.reviewInputFileCount, 1);
@@ -392,6 +408,8 @@ describe('native review', () => {
         totalOutputTokens: 10,
         totalCostUsd: 0,
         wallClockMs: 5,
+        modelTimeMs: 5,
+        startedAtMs: 0,
         providerError: {
           kind: 'provider-credit-exhausted',
           retryable: false,
@@ -430,6 +448,8 @@ describe('native review', () => {
         totalOutputTokens: 10,
         totalCostUsd: 0,
         wallClockMs: 5,
+        modelTimeMs: 5,
+        startedAtMs: 0,
         providerError: {
           kind: 'context-window-exceeded',
           retryable: false,
@@ -460,7 +480,7 @@ describe('native review', () => {
       config.onEvent?.({ type: 'agent_end', messages: [] });
       return {
         messages: [],
-        stopReason: 'wall_clock_limit',
+        stopReason: 'model_time_limit',
         turnsCompleted: 1,
         toolCallsExecuted: 0,
         totalInputTokens: 10,
@@ -501,7 +521,7 @@ describe('native review', () => {
     }
   });
 
-  it('records a typed stage-timeout envelope for the HOK-3052 Kimi wall-clock incident', async () => {
+  it('records a typed stage-timeout envelope for the HOK-3052 Kimi model-time incident', async () => {
     const repoDir = makeTempRepo();
     const featureDir = mkdtempSync(join(tmpdir(), 'native-review-feature-'));
     setOpenRouterKimiProvider({ requestedModel: 'openrouter/kimi-k2' });
@@ -511,13 +531,14 @@ describe('native review', () => {
       config.onEvent?.({ type: 'agent_end', messages: [] });
       return {
         messages: [],
-        stopReason: 'wall_clock_limit',
+        stopReason: 'model_time_limit',
         turnsCompleted: 1,
         toolCallsExecuted: 0,
         totalInputTokens: 10,
         totalOutputTokens: 10,
         totalCostUsd: 0,
         wallClockMs: 300_000,
+        modelTimeMs: 300_000,
         // HOK-3380: budgetExhaustionFromLoop derives the sessionStream
         // pointer's window from startedAtMs + wallClockMs; a mock without it
         // produces NaN, which fails the envelope's strict validation.
@@ -532,7 +553,7 @@ describe('native review', () => {
       const envelope = await readEnvelope(featureDir);
       assert.equal(envelope.cause, 'stage-timeout');
       assert.equal(envelope.stage, 'review');
-      assert.equal(envelope.stopReason, 'wall_clock_limit');
+      assert.equal(envelope.stopReason, 'model_time_limit');
       // Canonical identity: one OpenRouter execution keys under openrouter, not
       // a split native/native-openrouter row.
       assert.equal(envelope.provider, 'openrouter');
@@ -579,6 +600,8 @@ describe('native review', () => {
           totalOutputTokens: 10,
           totalCostUsd: 0,
           wallClockMs: 5,
+          modelTimeMs: 5,
+          startedAtMs: 0,
         };
       });
 
@@ -644,6 +667,8 @@ describe('native review', () => {
         totalOutputTokens: 10,
         totalCostUsd: 0,
         wallClockMs: 5,
+        modelTimeMs: 5,
+        startedAtMs: 0,
       };
     });
 
@@ -688,6 +713,8 @@ describe('native review', () => {
         totalOutputTokens: 10,
         totalCostUsd: 0,
         wallClockMs: 5,
+        modelTimeMs: 5,
+        startedAtMs: 0,
       };
     });
 
@@ -754,6 +781,8 @@ describe('native review', () => {
         totalOutputTokens: 10,
         totalCostUsd: 0,
         wallClockMs: 5,
+        modelTimeMs: 5,
+        startedAtMs: 0,
       };
     });
 
@@ -783,7 +812,7 @@ describe('native review', () => {
       config.onEvent?.({ type: 'agent_end', messages: [] });
       return {
         messages: [],
-        stopReason: 'wall_clock_limit',
+        stopReason: 'model_time_limit',
         turnsCompleted: 1,
         toolCallsExecuted: 0,
         totalInputTokens: 10,
@@ -874,6 +903,8 @@ describe('native review', () => {
         totalOutputTokens: 10,
         totalCostUsd: 0,
         wallClockMs: 5,
+        modelTimeMs: 5,
+        startedAtMs: 0,
       };
     });
 

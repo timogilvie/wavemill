@@ -97,7 +97,7 @@ interface PlanningOutcomeArtifacts {
   bounds: {
     maxTurns: number;
     maxToolCalls: number;
-    maxWallClockMs: number;
+    maxModelTimeMs: number;
   };
   usage: StageExecutionUsage;
   promptRef: {
@@ -463,7 +463,7 @@ function cleanupReasonForStopReason(stopReason: string): CleanupReason | null {
   if (stopReason === 'aborted') {
     return 'aborted';
   }
-  if (budgetKindForStopReason(stopReason) === 'wall_clock') {
+  if (budgetKindForStopReason(stopReason) === 'model_time') {
     return 'timeout';
   }
   return null;
@@ -489,7 +489,7 @@ function buildPlanningOutcomeArtifacts(input: {
   modelId: string;
   providerRoute: string;
   planningLimits: ReturnType<typeof resolveNativePlanningLimits>;
-  result: LoopUsageSource;
+  result: LoopUsageSource & { modelTimeMs?: number };
   promptRef: { id: string; version: string };
 }): PlanningOutcomeArtifacts {
   const cache = input.result.promptCache ?? EMPTY_PROMPT_CACHE_SUMMARY;
@@ -512,9 +512,14 @@ function buildPlanningOutcomeArtifacts(input: {
     bounds: {
       maxTurns: input.planningLimits.maxTurns,
       maxToolCalls: input.planningLimits.maxToolCalls,
-      maxWallClockMs: input.planningLimits.maxWallClockMs,
+      maxModelTimeMs: input.planningLimits.maxModelTimeMs,
     },
-    usage: buildStageExecutionUsage(input.result, input.providerRoute, { totalCostUsd }),
+    usage: {
+      ...buildStageExecutionUsage(input.result, input.providerRoute, { totalCostUsd }),
+      ...(typeof input.result.modelTimeMs === 'number' && Number.isFinite(input.result.modelTimeMs)
+        ? { modelTimeMs: input.result.modelTimeMs }
+        : {}),
+    },
     promptRef: {
       id: input.promptRef.id,
       version: input.promptRef.version,

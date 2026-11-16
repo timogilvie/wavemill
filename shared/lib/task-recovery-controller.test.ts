@@ -101,6 +101,119 @@ test('legitimate background work continues as a wait, not a relaunch', () => {
   assert.equal(d.wait?.owner, 'tool');
 });
 
+// ── HOK-3382: reassessment of a live but stalled native stage ────────────────
+
+const HARNESS_HOLD = { toolName: 'run_tests', toolCallId: 'call-1', startedAt: '2026-11-15T00:00:00.000Z' };
+
+function inFlightDisposition(
+  reason: string,
+  waitingOn: RecoveryDisposition['waitingOn'] = null,
+): RecoveryDisposition {
+  return { kind: 'in-flight', reason, evidenceConfidence: 'high', waitingOn, blockingPrompt: null };
+}
+
+test('HOK-3382: in-flight + reassessment due + harness hold retries as a harness failure', () => {
+  const d = decideTaskRecovery(snapshot({
+    stageResult: { kind: 'running' },
+    disposition: inFlightDisposition('agent-working'),
+    reassessment: { due: true, basis: 'no-progress', lastProgressAt: '2026-11-14T23:00:00.000Z', harnessHold: HARNESS_HOLD },
+  }));
+  assert.equal(d.action, 'retry-stage');
+  assert.equal(d.controlBearing, true);
+  assert.equal(d.retryBucket, 'stage-failure-coding');
+  assert.equal(d.failureKind, 'coding-exited-without-result');
+  assert.match(d.rationale, /run_tests/);
+  assert.match(d.rationale, /no progress since 2026-11-14T23:00:00\.000Z/);
+});
+
+test('HOK-3382: a hung test runner in the background is still reassessed (rule 8 does not shield it)', () => {
+  const d = decideTaskRecovery(snapshot({
+    stageResult: { kind: 'running' },
+    disposition: inFlightDisposition('background-work', { kind: 'background' }),
+    reassessment: { due: true, basis: 'no-progress', lastProgressAt: null, harnessHold: HARNESS_HOLD },
+  }));
+  assert.equal(d.action, 'retry-stage');
+  assert.equal(d.retryBucket, 'stage-failure-coding');
+});
+
+test('HOK-3382: reassessment due without a harness hold is no-action (the model-time budget owns it)', () => {
+  const d = decideTaskRecovery(snapshot({
+    stageResult: { kind: 'running' },
+    disposition: inFlightDisposition('agent-working'),
+    reassessment: { due: true, basis: 'no-progress', lastProgressAt: '2026-11-14T23:00:00.000Z', harnessHold: null },
+  }));
+  assert.equal(d.action, 'no-action');
+  assert.equal(d.controlBearing, false);
+  assert.match(d.rationale, /model-time budget/);
+});
+
+test('HOK-3382: a long tool inside the stall window is not reassessed', () => {
+  const d = decideTaskRecovery(snapshot({
+    stageResult: { kind: 'running' },
+    disposition: inFlightDisposition('agent-working'),
+    reassessment: { due: false, basis: 'no-progress', lastProgressAt: '2026-11-14T23:59:00.000Z', harnessHold: HARNESS_HOLD },
+  }));
+  assert.equal(d.action, 'no-action');
+});
+
+test('HOK-3382: stale control, human hold and valid completion still outrank reassessment', () => {
+  const due = { due: true, basis: 'no-progress' as const, lastProgressAt: null, harnessHold: HARNESS_HOLD };
+  assert.equal(decideTaskRecovery(snapshot({
+    attempt: { currentRunId: 'HOK-1:9:200', controlRunId: 'HOK-1:9:100' },
+    disposition: inFlightDisposition('agent-working'), reassessment: due,
+  })).action, 'reject-stale-control');
+  assert.equal(decideTaskRecovery(snapshot({
+    wait: { owner: 'human', wake: 'operator-release' },
+    disposition: inFlightDisposition('agent-working'), reassessment: due,
+  })).action, 'wait');
+  assert.equal(decideTaskRecovery(snapshot({
+    stageResult: { kind: 'valid', status: 'completed' },
+    disposition: inFlightDisposition('agent-working'), reassessment: due,
+  })).action, 'consume-advance');
+});
+
+test('HOK-3382: reassessment with an unverifiable attempt identity waits rather than controlling', () => {
+  const d = decideTaskRecovery(snapshot({
+    attempt: { currentRunId: 'HOK-1:9:200', controlRunId: null },
+    disposition: inFlightDisposition('agent-working'),
+    reassessment: { due: true, basis: 'no-progress', lastProgressAt: null, harnessHold: HARNESS_HOLD },
+  }));
+  assert.equal(d.action, 'wait');
+  assert.equal(d.wait?.wake, 'attempt-identity-resolved');
+});
+
+test('HOK-3382: planning and review use their own retry bucket', () => {
+  for (const stage of ['planning', 'review'] as const) {
+    const d = decideTaskRecovery(snapshot({
+      stage,
+      stageResult: { kind: 'running' },
+      disposition: inFlightDisposition('agent-working'),
+      reassessment: { due: true, basis: 'no-progress', lastProgressAt: null, harnessHold: HARNESS_HOLD },
+    }));
+    assert.equal(d.action, 'retry-stage');
+    assert.equal(d.retryBucket, `stage-failure-${stage}`);
+  }
+});
+
+test('HOK-3382: two notifiers with the same hang evidence produce exactly one claim', () => {
+  const dir = freshDir();
+  try {
+    const decision = decideTaskRecovery(snapshot({
+      stageResult: { kind: 'running' },
+      disposition: inFlightDisposition('agent-working'),
+      reassessment: { due: true, basis: 'no-progress', lastProgressAt: null, harnessHold: HARNESS_HOLD },
+    }));
+    const evidenceId = `coding:HOK-1:launch:blocking:none:hung:${HARNESS_HOLD.toolCallId}`;
+    const first = claimRecoveryAction({ stateDir: dir, decision, runId: null, evidenceId });
+    const second = claimRecoveryAction({ stateDir: dir, decision, runId: null, evidenceId });
+    assert.equal(first.claimed, true);
+    assert.equal(second.claimed, false);
+    assert.equal(second.reason, 'already-claimed');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('an explicit human hold is preserved (wait), not overridden', () => {
   const d = decideTaskRecovery(snapshot({
     wait: { owner: 'human', wake: 'operator-release' },

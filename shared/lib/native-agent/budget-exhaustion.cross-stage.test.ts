@@ -75,7 +75,7 @@ async function runPlanning(): Promise<string> {
     'features/demo/task-packet.md': '# Task Packet\n## 1. Objective\nPlan.\n## Success Criteria\n- done\n',
   });
   writeFileSync(join(wtDir, '.wavemill-config.json'), JSON.stringify({
-    nativeAgent: { planning: { maxTurns: TURNS, maxToolCalls: 120, maxWallClockMs: 60_000 } },
+    nativeAgent: { planning: { maxTurns: TURNS, maxToolCalls: 120, maxModelTimeMs: 60_000 } },
   }));
   await assert.rejects(() => launchNativePlanning({
     session: 'budget',

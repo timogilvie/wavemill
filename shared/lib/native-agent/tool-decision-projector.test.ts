@@ -250,7 +250,7 @@ describe('projectSessionEventsToDecisions', () => {
   });
 
   describe('timeout detection at trailing unmatched call', () => {
-    it('marks trailing unmatched call as timeout when session ended with wall_clock_limit', () => {
+    it('marks trailing unmatched call as timeout when session ended with model_time_limit', () => {
       const FIXED = 1_759_000_000_000;
       const sessionId = 'sess-timeout';
       const base = (seq: number, type: SessionEvent['type']) => ({
@@ -302,7 +302,7 @@ describe('projectSessionEventsToDecisions', () => {
       } as SessionEvent);
       events.push({
         ...base(seq++, 'session_ended'),
-        stopReason: 'wall_clock_limit',
+        stopReason: 'model_time_limit',
         totalTurns: 1,
         totalToolCalls: 0,
       } as SessionEvent);

@@ -2,7 +2,7 @@
 # Fake coder for the HOK-3362 replay (sourced by tests/fakes/bin/claude).
 #
 # HOK-3329 attempt 2: a native coder ran 145 turns / 230 tool calls until the
-# loop's own wall-clock budget aborted the run. The launcher used to read the
+# loop's own model-time budget aborted the run. The launcher used to read the
 # resulting "Request was aborted" as a provider error. The first launch here
 # emulates the native launcher's on-disk contract for that stop (HOK-3362) —
 # the budget_exhausted handoff, the stage-timeout envelope, the failed stage
@@ -70,24 +70,24 @@ append_event "$(jq -cn --argjson seq "$seq" --arg sid "$session_id" --argjson ts
   '{seq:$seq, sessionId:$sid, timestamp:$ts, type:"session_ended", messageCount:290}')"
 
 fact="$(jq -cn --argjson wallClockMs "$total_ms" --arg path "$transcript_path" --argjson fromMs "$window_from_ms" --argjson toMs "$window_to_ms" '{
-  kind: "wall_clock", stopReason: "wall_clock_limit", limit: $wallClockMs, used: $wallClockMs,
+  kind: "model_time", stopReason: "model_time_limit", limit: $wallClockMs, used: $wallClockMs,
   progress: {turnsCompleted: 145, toolCallsExecuted: 230, wallClockMs: $wallClockMs, mutationFailures: 0,
              providerErrorRetries: 0, interruptedRequest: true},
   sessionStream: {path: $path, fromMs: $fromMs, toMs: $toMs}
 }')"
 total_s=$(( (total_ms + 500) / 1000 ))
-detail="native-stage-timeout: native coding exhausted its wall-clock budget (${total_s}s of ${total_s}s); time split nativeStageTimeSplit/v1: 12s harness tools, 48m20s model, 0s provider wait, 0s unknown; 145 turn(s), 230 tool call(s), 0 mutation failure(s)"
+detail="native-stage-timeout: native coding exhausted its model time budget (${total_s}s of ${total_s}s); time split nativeStageTimeSplit/v1: 12s harness tools, 48m20s model, 0s provider wait, 0s unknown; 145 turn(s), 230 tool call(s), 0 mutation failure(s)"
 now="$(date -u +%FT%TZ)"
 
 jq -n --argjson fact "$fact" --arg now "$now" '{
-  stage: "coding", reason: "budget_exhausted", stopReason: "wall_clock_limit",
+  stage: "coding", reason: "budget_exhausted", stopReason: "model_time_limit",
   mutationFailures: 0, lastToolError: null, recoveryAttempted: false,
   suggestedAction: "Relaunch native coding under the stage-failure-coding bounded retry; the budget fact and progress evidence are preserved on this handoff.",
   createdAt: $now, schemaVersion: "1.0", budgetExhausted: $fact
 }' > "$FEATURE_DIR/.coding-failure-handoff.json"
 
 jq -n --argjson fact "$fact" --arg now "$now" --arg detail "$detail" '{
-  schemaVersion: "1.0", stage: "coding", cause: "stage-timeout", stopReason: "wall_clock_limit",
+  schemaVersion: "1.0", stage: "coding", cause: "stage-timeout", stopReason: "model_time_limit",
   budgetExhausted: $fact, provider: "openrouter", model: "glm-5.3-flash", requestedModel: "glm-5.3-flash",
   agent: "native-openrouter", evidence: {source: "native-runtime", detail: $detail}, createdAt: $now
 }' > "$FEATURE_DIR/.coding-failure-envelope.json"
@@ -95,7 +95,7 @@ jq -n --argjson fact "$fact" --arg now "$now" --arg detail "$detail" '{
 result="$FEATURE_DIR/.coding-result.json"
 jq --argjson fact "$fact" --arg now "$now" --arg detail "$detail" '
   .status = "failed" | .finishedAt = $now | .notes = ("Native coding failed: " + $detail)
-  | .failureReason = "budget_exhausted:wall_clock" | .budgetExhausted = $fact
+  | .failureReason = "budget_exhausted:model_time" | .budgetExhausted = $fact
 ' "$result" > "$result.tmp"
 mv "$result.tmp" "$result"
 

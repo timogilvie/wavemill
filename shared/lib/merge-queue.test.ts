@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {
   selectMergeCandidates,
   isCandidateStuck,
-  demoteCandidate,
+  MERGE_QUEUE_STATES,
+  isMergeQueueState,
+  mergeLanePosition,
   planMergeQueueTick,
   isTerminalWorkflowStatus,
   isClosedOrMergedPrState,
@@ -99,15 +101,30 @@ test('stuck timeout boundary is deterministic', () => {
   );
 });
 
-test('demotion patch clears candidate promotion state', () => {
-  const patch = demoteCandidate(pr({ issue: 'HOK-1' }), 'stuck', '2026-05-06T12:30:00.000Z');
-  assert.equal(patch.queueState, 'ready-stale');
-  assert.equal(patch.candidatePromotedAt, null);
-  assert.equal(patch.candidateLastProgressAt, null);
-  assert.equal(patch.mergeRetryInProgressUntil, null);
-  assert.equal(patch.candidateSkipReason, 'stuck');
+test('the declared queue-state list is exactly the four monitor-written values (HOK-3453)', () => {
+  assert.deepEqual([...MERGE_QUEUE_STATES], ['ready', 'ready-stale', 'merge-candidate', 'merge-needed']);
+  assert.equal(isMergeQueueState('merge-needed'), true);
+  for (const value of ['', 'merged', 'terminal', null, undefined, 3]) {
+    assert.equal(isMergeQueueState(value), false, String(value));
+  }
 });
 
+test('mergeLanePosition names merge-needed apart from the tend lane (HOK-3453)', () => {
+  const cases: Array<[unknown, string | undefined, string]> = [
+    ['ready', 'completed', 'tend-lane'],
+    ['ready', 'running', 'not-in-lane'],
+    ['ready', undefined, 'not-in-lane'],
+    ['ready-stale', 'completed', 'tend-lane'],
+    ['merge-candidate', 'running', 'tend-lane'],
+    ['merge-needed', 'completed', 'merge-needed'],
+    ['merge-needed', undefined, 'merge-needed'],
+    [undefined, 'completed', 'not-in-lane'],
+    ['bogus', 'completed', 'not-in-lane'],
+  ];
+  for (const [queueState, status, expected] of cases) {
+    assert.equal(mergeLanePosition(queueState, status), expected, `${String(queueState)}/${String(status)}`);
+  }
+});
 test('disabled conflict grouping selects by priority up to max', () => {
   const selected = selectMergeCandidates({
     readyPrs: [

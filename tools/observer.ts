@@ -49,6 +49,7 @@ import {
 } from '../shared/lib/observer-alerts.ts';
 import { abortTaskInState } from '../shared/lib/task-abort.ts';
 import { getResultFilePath, type ReadyArtifacts, type StageResult } from '../shared/lib/stage-result.ts';
+import { mergeLanePosition } from '../shared/lib/merge-queue.ts';
 import { detectIncidentsForRepo, detectIncidentsForTask } from '../shared/lib/wavemill-incident-detector.ts';
 import { buildTendCandidates } from '../shared/lib/wavemill-incident-tend-candidates.ts';
 import { reconcileIncidentCycle } from '../shared/lib/incident-reconcile-cycle.ts';
@@ -3065,7 +3066,7 @@ function resolveTaskStateDir(repoDir: string, task: ObservedTask): string | unde
 }
 
 /** Best-effort sync read of `.ready-result.json`'s artifacts. Never throws. */
-function readReadyArtifacts(stateDir: string): { artifacts: ReadyArtifacts; mtimeMs: number } | undefined {
+function readReadyArtifacts(stateDir: string): { artifacts: ReadyArtifacts; mtimeMs: number; status?: string } | undefined {
   const resultPath = getResultFilePath(stateDir, 'ready');
   try {
     const stat = statSync(resultPath);
@@ -3073,7 +3074,7 @@ function readReadyArtifacts(stateDir: string): { artifacts: ReadyArtifacts; mtim
     if (!parsed || typeof parsed !== 'object' || parsed.stage !== 'ready') return undefined;
     const artifacts = parsed.artifacts as ReadyArtifacts | undefined;
     if (!artifacts || typeof artifacts !== 'object' || artifacts.type !== 'ready') return undefined;
-    return { artifacts, mtimeMs: stat.mtimeMs };
+    return { artifacts, mtimeMs: stat.mtimeMs, status: typeof parsed.status === 'string' ? parsed.status : undefined };
   } catch {
     return undefined;
   }
@@ -3304,14 +3305,20 @@ export function detectStuckMergeCandidates(
  * Pure severity rule for Detector 3 (REQ-F5, D6): `medium` by default, raised
  * to `high` when the PR is ready to merge. Labels win when known; when they
  * are unknown (no PR, or the `gh` call failed), the ready-stage `queueState`
- * is a state-based fallback with the same meaning — `ready`, `ready-stale`,
- * and `merge-candidate` all mean the PR has cleared the ready gate.
+ * is a state-based fallback read through `mergeLanePosition` (merge-queue.ts):
+ * a PR in the tend lane and a `merge-needed` PR (cleared Ready, no tend merge
+ * consumer, so a person must merge it — HOK-3453) have both cleared the ready
+ * gate; anything else stays `medium`.
  */
-export function behindBaseSeverity(context: { hasReadyLabel?: boolean; queueState?: string }): Severity {
-  const elevated = context.hasReadyLabel === true
-    || (context.hasReadyLabel === undefined
-      && (context.queueState === 'ready' || context.queueState === 'ready-stale' || context.queueState === 'merge-candidate'));
-  return elevated ? 'high' : 'medium';
+export function behindBaseSeverity(context: { hasReadyLabel?: boolean; queueState?: string; readyStatus?: string }): Severity {
+  if (context.hasReadyLabel !== undefined) return context.hasReadyLabel ? 'high' : 'medium';
+  switch (mergeLanePosition(context.queueState, context.readyStatus)) {
+    case 'tend-lane':
+    case 'merge-needed':
+      return 'high';
+    case 'not-in-lane':
+      return 'medium';
+  }
 }
 
 /** Best-effort PR label read; a failed/missing gh call reports unknown (undefined), never throws. */
@@ -3359,7 +3366,7 @@ export function detectBranchBehindBase(
       if (labels) hasReadyLabel = labels.includes('wm:ready');
     }
 
-    const severity = behindBaseSeverity({ hasReadyLabel, queueState });
+    const severity = behindBaseSeverity({ hasReadyLabel, queueState, readyStatus: ready?.status });
     findings.push({
       id: `branch-behind-base-${repo.session}-${task.issue}`,
       severity,

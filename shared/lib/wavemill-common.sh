@@ -8042,6 +8042,21 @@ get_task_pane_state() {
   esac
 }
 
+# HOK-3453: the one rule for a Ready result's merge-queue state. Prints the
+# recorded `.artifacts.queueState` (values declared in shared/lib/merge-queue.ts
+# MERGE_QUEUE_STATES), or `ready` when none is recorded on a completed pass/warn
+# result, or nothing otherwise (missing file, not completed, failing verdict).
+ready_result_queue_state() {
+  local result_file="$1"
+  [[ -f "$result_file" ]] || return 0
+  jq -r '
+    if (.artifacts.queueState // "") != "" then .artifacts.queueState
+    elif .status == "completed" and (.artifacts.verdict == "pass" or .artifacts.verdict == "warn") then "ready"
+    else empty
+    end
+  ' "$result_file" 2>/dev/null || true
+}
+
 set_task_queue_owned() {
   local issue="$1" capsule_digest="${2:-}" handoff_at="${3:-}"
   [[ -n "$handoff_at" ]] || handoff_at="$(date +%s)"

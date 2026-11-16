@@ -14,7 +14,7 @@ import {
   isInvalidChallengeAbort,
 } from './arm-failure-taxonomy.ts';
 import { canonicalFailureKind } from './failure-policy.ts';
-import type { BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
+import { parseBudgetExhaustedFact, type BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
 import { nativeStageTimeSplit } from './native-agent/stage-time-split.ts';
 import { parseTranscriptJsonl } from './native-agent/transcript.ts';
 import type { NativeStageTimeSplit } from './native-agent/stage-time-split.ts';
@@ -175,6 +175,32 @@ test('classifies the HOK-3129 recurring native arm-failure kinds', () => {
   assert.equal(parseAbortFailureKind('terminal_stage_failure:planning-artifact-invalid:missing_title'), 'planning-artifact-invalid:missing_title');
 });
 
+test('HOK-3382: a settled-without-result attempt with harness-hold evidence is the harness fault', () => {
+  const exitEvidence = {
+    reason: 'harness-hung',
+    stage: 'coding',
+    harnessHold: { toolName: 'run_tests', toolCallId: 'call-1', startedAt: '2026-11-15T00:00:00.000Z' },
+  };
+  const faultClass = classifyArmFault({ failureKind: 'coding-exited-without-result', exitEvidence });
+  assert.equal(faultClass, 'harness-fault');
+  assert.equal(isModelQualitySignal(faultClass), false);
+
+  // Regression pin: no evidence keeps the historical model-fault attribution.
+  assert.equal(classifyArmFault({ failureKind: 'coding-exited-without-result' }), 'model-fault');
+  assert.equal(
+    classifyArmFault({ failureKind: 'coding-exited-without-result', exitEvidence: { reason: 'agent-stalled' } }),
+    'model-fault',
+  );
+  // A malformed hold is not proof: never trust a partial record.
+  assert.equal(
+    classifyArmFault({
+      failureKind: 'coding-exited-without-result',
+      exitEvidence: { harnessHold: { toolName: 'run_tests' } },
+    }),
+    'model-fault',
+  );
+});
+
 test('classifies the HOK-3128 dirty-handoff and sibling-stalled kinds', () => {
   // The model finished coding but left its own output uncommitted and did not
   // repair it when relaunched: completion-protocol failure, model quality.
@@ -265,11 +291,11 @@ test('classifies the HOK-3156 multiple-varied-roles preflight collapse as a harn
 // ── HOK-3362: one budget-exhaustion fault rule ─────────────────────────────
 
 function budgetFact(
-  kind: 'wall_clock' | 'turn' | 'tool_call' | 'token' | 'cost',
+  kind: 'model_time' | 'turn' | 'tool_call' | 'token' | 'cost',
   progress: Partial<BudgetExhaustedFact['progress']>,
 ): BudgetExhaustedFact {
   const stopReason = ({
-    wall_clock: 'wall_clock_limit',
+    model_time: 'model_time_limit',
     turn: 'turn_limit',
     tool_call: 'tool_call_limit',
     token: 'token_limit',
@@ -307,7 +333,7 @@ test('HOK-3329: turn-budget attempts still derive model-fault from progress; a w
   // Deliberate behaviour change (HOK-3380, rule 5): a wall-clock stop with no
   // session-stream pointer can no longer tell harness tool time apart from
   // model time, so it is unknown rather than defaulting to model-fault.
-  const attempt2NoSplit = budgetFact('wall_clock', {
+  const attempt2NoSplit = budgetFact('model_time', {
     turnsCompleted: 145,
     toolCallsExecuted: 230,
     wallClockMs: 3_600_000,
@@ -340,7 +366,7 @@ test('deriveBudgetExhaustionFaultClass follows the documented table', () => {
     ],
     [
       'rule 3: wall clock stuck on the first request',
-      budgetFact('wall_clock', { turnsCompleted: 0, toolCallsExecuted: 0 }),
+      budgetFact('model_time', { turnsCompleted: 0, toolCallsExecuted: 0 }),
       timeSplit({ totalMs: 1000, providerWaitMs: 990, modelMs: 10 }),
       'provider-fault',
     ],
@@ -352,19 +378,19 @@ test('deriveBudgetExhaustionFaultClass follows the documented table', () => {
     ],
     [
       'rule 4: wall-clock stop dominated by harness tool time (HOK-3374)',
-      budgetFact('wall_clock', { turnsCompleted: 92, toolCallsExecuted: 116, providerErrorRetries: 0 }),
+      budgetFact('model_time', { turnsCompleted: 92, toolCallsExecuted: 116, providerErrorRetries: 0 }),
       timeSplit({ totalMs: 3_600_000, harnessToolMs: 3_167_438, modelMs: 431_537, unknownMs: 1025 }),
       'harness-fault',
     ],
     [
       'rule 5: wall clock with no split at all',
-      budgetFact('wall_clock', { turnsCompleted: 50, toolCallsExecuted: 60 }),
+      budgetFact('model_time', { turnsCompleted: 50, toolCallsExecuted: 60 }),
       undefined,
       'unknown-fault',
     ],
     [
       'rule 5: wall clock whose split is mostly unknown',
-      budgetFact('wall_clock', { turnsCompleted: 50, toolCallsExecuted: 60 }),
+      budgetFact('model_time', { turnsCompleted: 50, toolCallsExecuted: 60 }),
       timeSplit({ totalMs: 1000, harnessToolMs: 100, modelMs: 100, unknownMs: 800 }),
       'unknown-fault',
     ],
@@ -376,7 +402,7 @@ test('deriveBudgetExhaustionFaultClass follows the documented table', () => {
     ],
     [
       'rule 6: wall-clock turn-churn with fast tools (model-dominated split) still model-fault',
-      budgetFact('wall_clock', { turnsCompleted: 200, toolCallsExecuted: 200 }),
+      budgetFact('model_time', { turnsCompleted: 200, toolCallsExecuted: 200 }),
       timeSplit({ totalMs: 1000, modelMs: 900, harnessToolMs: 50, unknownMs: 50 }),
       'model-fault',
     ],
@@ -400,7 +426,7 @@ test('deriveBudgetExhaustionFaultClass follows the documented table', () => {
 
 // protects: classifyArmFault threading the split through to the one derivation
 test('classifyArmFault passes the split through to deriveBudgetExhaustionFaultClass', () => {
-  const fact = budgetFact('wall_clock', { turnsCompleted: 92, toolCallsExecuted: 116, providerErrorRetries: 0 });
+  const fact = budgetFact('model_time', { turnsCompleted: 92, toolCallsExecuted: 116, providerErrorRetries: 0 });
   const split = timeSplit({ totalMs: 3_600_000, harnessToolMs: 3_167_438, modelMs: 431_537, unknownMs: 1025 });
   assert.equal(classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: fact, timeSplit: split }), 'harness-fault');
   assert.equal(classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: fact }), 'unknown-fault');
@@ -418,11 +444,13 @@ test('HOK-3374 replay: the attempt-2 handoff derives harness-fault from the real
   const window = { fromMs: started.timestamp, toMs: ended.timestamp };
   const split = nativeStageTimeSplit(events, window);
 
-  const fact = budgetFact('wall_clock', {
+  const fact = budgetFact('model_time', {
     turnsCompleted: 92,
     toolCallsExecuted: 116,
     mutationFailures: handoff.mutationFailures,
   });
+  // The recorded handoff keeps the historical spelling; the fact is read
+  // through the normalizer, which is what the fault rule sees (HOK-3382).
   assert.equal(handoff.stopReason, 'wall_clock_limit');
   assert.ok(split.harnessToolMs >= 50 * 60_000 && split.harnessToolMs <= 54 * 60_000, `harnessToolMs=${split.harnessToolMs}`);
   assert.equal(
@@ -444,6 +472,25 @@ test('historical budget spellings canonicalise to the one kind and derive from t
     assert.equal(classifyArmFault({ failureKind: kind }), 'unknown-fault', `${kind} without fact`);
     assert.equal(classifyArmFault({ failureKind: kind, budgetExhausted: progressing }), 'model-fault', `${kind} with fact`);
   }
+});
+
+// protects: HOK-3382 — a pre-rename model-time fact losing its fault class after the rename
+test('a historical wall_clock fact normalizes to model_time and derives the same class', () => {
+  const legacy = {
+    kind: 'wall_clock',
+    stopReason: 'wall_clock_limit',
+    limit: 3_600_000,
+    used: 3_600_000,
+    progress: { turnsCompleted: 92, toolCallsExecuted: 116, wallClockMs: 3_600_000 },
+  };
+  const fact = parseBudgetExhaustedFact(legacy);
+  assert.ok(fact);
+  assert.equal(fact.kind, 'model_time');
+  assert.equal(fact.stopReason, 'model_time_limit');
+  assert.equal(
+    classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: fact }),
+    classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: { ...fact, kind: 'model_time' } }),
+  );
 });
 
 // protects: a genuine provider failure being reclassified by the budget rule

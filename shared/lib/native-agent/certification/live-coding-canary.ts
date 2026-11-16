@@ -307,7 +307,9 @@ async function runSingleCanaryAttempt(input: {
         budget: {
           maxTurns: limits.maxTurns,
           maxToolCalls: limits.maxToolCalls,
-          maxWallClockMs: limits.maxWallClockMs,
+          // Certification artifact limits are identity-hashed and keep their
+          // `maxWallClockMs` name; the loop budget is the renamed model-time one (HOK-3382).
+          maxModelTimeMs: limits.maxWallClockMs,
           maxTotalTokens: limits.maxTotalTokens,
           ...(limits.maxCostUsd !== undefined && pricing ? { maxCostUsd: limits.maxCostUsd } : {}),
         },
@@ -588,11 +590,12 @@ function classifyProviderOutcome(result: LoopResult): AttemptOutcome | undefined
  * inconclusive and retryable; every other exhausted budget fails the canary.
  */
 const CANARY_BUDGET_OUTCOMES: Readonly<Record<BudgetKind, AttemptOutcome>> = Object.freeze({
-  wall_clock: {
+  model_time: {
     status: 'inconclusive',
     reason: 'budget_exceeded',
+    // The artifact field keeps its identity-hashed `wall_clock` spelling.
     limitExceeded: 'wall_clock',
-    detail: 'canary wall-clock limit fired before completion',
+    detail: 'canary model-time limit fired before completion',
   },
   turn: { status: 'fail', reason: 'budget_exceeded', limitExceeded: 'turns', detail: 'canary turn limit fired before completion' },
   token: { status: 'fail', reason: 'budget_exceeded', limitExceeded: 'tokens', detail: 'canary token limit fired before completion' },

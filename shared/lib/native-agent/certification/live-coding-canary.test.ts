@@ -353,12 +353,12 @@ describe('runLiveCodingCanary', () => {
     let seenBudget: Record<string, unknown> | undefined;
     const result = await runLiveCodingCanary(baseOptions(async (config) => {
       seenBudget = config.budget as Record<string, unknown>;
-      return loopResult({ stopReason: 'wall_clock_limit' });
+      return loopResult({ stopReason: 'model_time_limit' });
     }, {
       limits: { maxWallClockMs: 5000, maxToolCalls: 3, maxTotalTokens: 999, maxCostUsd: 0.05 },
     }));
     assert.equal(result.status, 'inconclusive');
-    assert.equal(seenBudget?.maxWallClockMs, 5000);
+    assert.equal(seenBudget?.maxModelTimeMs, 5000);
     assert.equal(seenBudget?.maxToolCalls, 3);
     assert.equal(seenBudget?.maxTotalTokens, 999);
     assert.equal(seenBudget?.maxCostUsd, 0.05);

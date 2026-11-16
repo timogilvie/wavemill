@@ -7,6 +7,7 @@ import { parseBudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
 import { resolveNativeStageTimeSplit } from './native-agent/stage-time-split.ts';
 import { normalizeChallengeStage } from './challenge-route-check.ts';
 import { resolveTaskArtifact } from './task-artifact-lookup.ts';
+import { readStageResultSync } from './stage-result.ts';
 import { resolveStageExecutedModel } from './executed-model-resolver.ts';
 import { readRouteLifecycleArtifacts } from './route-artifact.ts';
 import { applyChallengeOverride } from './route-override-record.ts';
@@ -48,8 +49,11 @@ export async function prepareTerminalArmFeedback(
     const budgetExhausted = parseBudgetExhaustedFact(termination.budgetExhausted);
     const failureKind = parseAbortFailureKind(termination.reason);
     if (!failureKind) return unchanged;
+    // HOK-3382: a settled-without-result attempt's own exit evidence decides
+    // harness vs model fault; absent evidence keeps the historical fallback.
+    const exitEvidence = readStageResultSync(featureDir, ownershipStage)?.artifacts?.exitEvidence ?? null;
     const faultClass = classifyArmFault({ failureKind, detail: termination.detail, budgetExhausted,
-      timeSplit: resolveNativeStageTimeSplit(budgetExhausted, { featureDir }) ?? undefined });
+      timeSplit: resolveNativeStageTimeSplit(budgetExhausted, { featureDir }) ?? undefined, exitEvidence });
     if (!isModelQualitySignal(faultClass)) return unchanged;
     const worktreePath = lookup.worktreeDir ?? options.repoDir;
     const branchName = options.branchName ?? '';

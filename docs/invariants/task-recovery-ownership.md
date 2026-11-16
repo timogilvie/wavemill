@@ -32,6 +32,7 @@ owner — the controller composes them, never re-derives them:
 | Is this attempt the current one? Is late evidence stale control? | `attempt-identity.ts`, `task-settlement.ts` |
 | Is the stage agent in-flight, settled, or advanced? | `stage-agent-disposition.ts` |
 | Is this failure terminal / code-failure / retryable? | `failure-policy.ts` (`classifyFailure`) |
+| Is reassessment due, and was a harness tool holding the loop? | `task-progress.ts` (`stalled`) plus `openHarnessToolCall` (`stage-time-split.ts`); rule 4a composes them |
 | How many retries are left; backoff? | `bounded-retry.*` (the caller gates; the controller reads the verdict) |
 | Which model/agent does a coding retry replay? | `execution-contract.ts` + `resolveModelAgent` (replayed, never re-chosen) |
 | Raising operator attention | `operator-escalation.*` (one step) |
@@ -40,6 +41,19 @@ owner — the controller composes them, never re-derives them:
 A deadline, a missing acknowledgement, or an Observer outage is **not** a
 model/provider failure, does not steal ownership, and does not terminate work.
 Explicit human holds survive restart and retry.
+
+Native stages are a consumer (HOK-3382). `RecoverySnapshot.reassessment`
+carries the shared stall fact (`due`, `lastProgressAt`) plus the native
+transcript's open harness tool call, resolved by the monitor from
+`stage-agent-disposition`'s forwarded `progress`. Rule 4a sits before the live
+disposition rule: an in-flight stage whose stall clock has fired and whose
+transcript ends in an open tool call returns `retry-stage` with the
+`stage-failure-<stage>` bucket and the failure kind derived from
+`failure-policy` (`coding-exited-without-result` for coding, classified
+`harness-fault` from the recorded hold evidence, never a model forfeit). With
+no hold the model/provider is working and the action is `no-action` — the
+model-time budget owns that case. Per HOK-3277 a due deadline means
+"reassess", never automatic termination.
 
 ## Live hosting
 

@@ -2,7 +2,56 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { mutateJsonState } from './state-mutex.ts';
 
-export type MergeQueueState = 'ready' | 'ready-stale' | 'merge-candidate';
+/**
+ * The only declared list of Ready `queueState` values (HOK-3453). The monitor
+ * (`shared/lib/wavemill-monitor.sh`) is the sole writer; every value it writes
+ * must appear here — `tools/check-queue-state.ts` fails preflight otherwise —
+ * and `shared/schemas/stage-result.schema.json` declares the same enum.
+ *
+ * - `ready`           — Ready passed against the current base; tend may select it.
+ * - `ready-stale`     — Ready passed, then main (or the PR head) moved before selection.
+ * - `merge-candidate` — tend selected the PR as the next one to merge.
+ * - `merge-needed`    — Ready passed but the session has no tend merge consumer
+ *                       (HOK-3102); a person must merge, or tend must be enabled,
+ *                       after which the monitor re-runs Ready.
+ *
+ * An absent value is not a state: shell readers derive `ready` for a completed
+ * pass/warn result through `ready_result_queue_state` (wavemill-common.sh).
+ */
+export const MERGE_QUEUE_STATES = ['ready', 'ready-stale', 'merge-candidate', 'merge-needed'] as const;
+export type MergeQueueState = (typeof MERGE_QUEUE_STATES)[number];
+
+export function isMergeQueueState(value: unknown): value is MergeQueueState {
+  return typeof value === 'string' && (MERGE_QUEUE_STATES as readonly string[]).includes(value);
+}
+
+/**
+ * Where a Ready-passed PR sits relative to the merge lane:
+ *
+ * - `tend-lane`      — a tend consumer owns it (`ready` on a completed result,
+ *                      `ready-stale`, `merge-candidate`); waiting is expected.
+ * - `merge-needed`   — it cleared Ready but no merge consumer exists; nothing
+ *                      will advance it without a person (or tend arriving).
+ * - `not-in-lane`    — anything else, including absent/unknown values and a
+ *                      `ready` value on a result that is not completed.
+ *
+ * The one answer to "is this PR in the merge lane?"; readers branch on the
+ * position by name rather than comparing queue-state literals.
+ */
+export type MergeLanePosition = 'tend-lane' | 'merge-needed' | 'not-in-lane';
+
+export function mergeLanePosition(queueState: unknown, readyStatus: string | undefined): MergeLanePosition {
+  if (!isMergeQueueState(queueState)) return 'not-in-lane';
+  switch (queueState) {
+    case 'merge-needed':
+      return 'merge-needed';
+    case 'ready':
+      return readyStatus === 'completed' ? 'tend-lane' : 'not-in-lane';
+    case 'ready-stale':
+    case 'merge-candidate':
+      return 'tend-lane';
+  }
+}
 export type MergeQueueCiConclusion = 'pass' | 'fail' | 'pending' | 'unknown' | 'none';
 
 export interface MergeQueueCiState {
@@ -333,47 +382,6 @@ export function selectMergeCandidates(options: {
   }
 
   return selected;
-}
-
-export function markReadyStale(
-  pr: Pick<MergeQueuePr, 'readyBaseSha'>,
-  currentMainSha: string,
-  now: string,
-): Record<string, string> {
-  return {
-    queueState: 'ready-stale',
-    staleAt: now,
-    staleBaseSha: pr.readyBaseSha ?? '',
-    targetBaseSha: currentMainSha,
-  };
-}
-
-export function promoteCandidate(
-  _pr: MergeQueuePr,
-  currentMainSha: string,
-  now: string,
-): Record<string, string> {
-  return {
-    queueState: 'merge-candidate',
-    targetBaseSha: currentMainSha,
-    candidatePromotedAt: now,
-    candidateLastProgressAt: now,
-  };
-}
-
-export function demoteCandidate(
-  _pr: MergeQueuePr,
-  reason: string,
-  now: string,
-): Record<string, string | null> {
-  return {
-    queueState: 'ready-stale',
-    candidateSkippedAt: now,
-    candidateSkipReason: reason,
-    candidatePromotedAt: null,
-    candidateLastProgressAt: null,
-    mergeRetryInProgressUntil: null,
-  };
 }
 
 export function planMergeQueueTick(options: {

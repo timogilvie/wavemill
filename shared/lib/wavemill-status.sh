@@ -283,21 +283,11 @@ get_coding_approval_status() {
 
 get_ready_queue_state() {
   local worktree="$1" slug="$2"
-  local feature_dir="$worktree/features/$slug"
-  local result_file="$feature_dir/.ready-result.json"
-  local status verdict queue_state
-
-  [[ -f "$result_file" ]] || return 0
-  queue_state=$(jq -r '.artifacts.queueState // empty' "$result_file" 2>/dev/null || true)
+  local queue_state
+  # HOK-3453: absent queueState → `ready` is decided once, in wavemill-common.sh.
+  queue_state="$(ready_result_queue_state "$worktree/features/$slug/.ready-result.json")"
   if [[ -n "$queue_state" ]]; then
     printf '%s\n' "$queue_state"
-    return 0
-  fi
-
-  status=$(jq -r '.status // empty' "$result_file" 2>/dev/null || true)
-  verdict=$(jq -r '.artifacts.verdict // empty' "$result_file" 2>/dev/null || true)
-  if [[ "$status" == "completed" && ( "$verdict" == "pass" || "$verdict" == "warn" ) ]]; then
-    printf 'ready\n'
   fi
 }
 
