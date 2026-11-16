@@ -1,3 +1,4 @@
+import { validateContributionRow } from '@hokusai/core';
 import {
   mkdirSync,
   openSync,
@@ -19,7 +20,7 @@ import {
   type AnyNativeCertificationArtifact,
   type NativeCertificationArtifact,
 } from './schema.ts';
-import { buildLegacyRepoCertificationPath } from './loader.ts';
+import { buildLegacyRepoCertificationPath } from './storage.ts';
 import {
   isRollingProviderAlias,
   isValidCertificationPathSegment,
@@ -130,7 +131,7 @@ export function readCertification(filePath: string): ReadResult {
     };
   }
 
-  const valid = validateSchema(parsed);
+  const valid = validateSchema(parsed) && validAttemptEvidence(parsed);
   if (!valid) {
     return {
       ok: false,
@@ -179,7 +180,7 @@ export function writeCertification(repoDir: string, record: NativeCertificationA
   validateCertificationForWrite(record, 'writeCertification');
 
   // buildLegacyRepoCertificationPath throws on bad segment chars (path traversal, etc.)
-  const finalPath = buildLegacyRepoCertificationPath(repoDir, record.provider, record.model, record.suiteVersion);
+  const finalPath = buildLegacyRepoCertificationPath(repoDir, record.provider, record.model, record.suiteVersion, record.subject.endpoint);
 
   mkdirSync(dirname(finalPath), { recursive: true });
 
@@ -288,6 +289,7 @@ export function writeScopedCertification(
     record.provider,
     record.model,
     record.suiteVersion,
+    record.subject.endpoint,
   );
   return writeCertificationToPath(finalPath, record);
 }
@@ -312,7 +314,7 @@ export function validateCertificationForWrite(
   record: NativeCertificationArtifact,
   label = 'writeCertification',
 ): void {
-  const valid = validateSchema(record);
+  const valid = validateSchema(record) && validAttemptEvidence(record);
   if (!valid) {
     const summary = (validateSchema.errors ?? [])
       .map(e => `${e.instancePath || '(root)'} ${e.message}`)
@@ -579,4 +581,13 @@ function parseCertificationPathUnderRoot(
   }
 
   return { provider, model, suiteVersion };
+}
+
+/** Canonical SDK validation remains the only authority for embedded contribution facts. */
+function validAttemptEvidence(value: unknown): boolean {
+  try {
+    const artifact = value as NativeCertificationArtifact;
+    for (const attempt of artifact.liveCanary?.attemptEvidence ?? []) if (attempt.contribution) validateContributionRow(attempt.contribution);
+    return true;
+  } catch { return false; }
 }

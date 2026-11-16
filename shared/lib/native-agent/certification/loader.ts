@@ -1,5 +1,6 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readCertification } from './store.ts';
+import { buildLegacyRepoCertificationPath } from './storage.ts';
+export { buildLegacyRepoCertificationPath } from './storage.ts';
 import {
   CERTIFICATION_BASE_PATH,
   CERTIFICATION_SCHEMA_VERSION,
@@ -7,6 +8,7 @@ import {
   artifactHasSubject,
   isCertificationFresh,
   phaseSatisfies,
+  evaluateLiveCodingCanaryEligibility,
   type AnyNativeCertificationArtifact,
   type CertificationSubject,
   type CertificationPhase,
@@ -15,7 +17,6 @@ import {
 import {
   isRollingProviderAlias,
   isValidCertificationPathSegment,
-  resolveCertificationStorageIdentity,
   subjectsEqual,
 } from './identity.ts';
 import {
@@ -53,25 +54,6 @@ export const isValidPathSegment = isValidCertificationPathSegment;
  *
  * @throws {Error} if any segment fails the safety check
  */
-export function buildLegacyRepoCertificationPath(
-  repoDir: string,
-  provider: string,
-  model: string,
-  suiteVersion: string,
-): string {
-  const identity = resolveCertificationStorageIdentity(provider, model);
-
-  for (const [name, value] of [
-    ['provider', identity.provider],
-    ['model', identity.model],
-    ['suiteVersion', suiteVersion],
-  ] as const) {
-    if (!isValidPathSegment(value)) {
-      throw new Error(`Invalid certification path segment for ${name}: ${JSON.stringify(value)}`);
-    }
-  }
-  return join(repoDir, CERTIFICATION_BASE_PATH, identity.provider, identity.model, `${suiteVersion}.json`);
-}
 
 /**
  * @deprecated Use buildLegacyRepoCertificationPath for legacy repo-scoped artifacts,
@@ -145,72 +127,15 @@ export function parseCertificationPath(
  * Returns a structured ineligibility result for missing files, parse
  * failures, and schema mismatches. Never throws on expected error paths.
  */
-export function loadCertification(
-  repoDir: string,
-  provider: string,
-  model: string,
-  suiteVersion: string,
-): { ok: true; artifact: AnyNativeCertificationArtifact } | { ok: false; reason: 'missing' | 'malformed' } {
-  let path: string;
-  try {
-    path = buildLegacyRepoCertificationPath(repoDir, provider, model, suiteVersion);
-  } catch {
-    return { ok: false, reason: 'malformed' };
-  }
-
-  if (!existsSync(path)) {
-    return { ok: false, reason: 'missing' };
-  }
-
-  let raw: string;
-  try {
-    raw = readFileSync(path, 'utf-8');
-  } catch {
-    return { ok: false, reason: 'missing' };
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return { ok: false, reason: 'malformed' };
-  }
-
-  const artifact = parseArtifact(parsed);
-  if (!artifact) {
-    return { ok: false, reason: 'malformed' };
-  }
-
-  return { ok: true, artifact };
+export function loadCertification(repoDir: string, provider: string, model: string, suiteVersion: string) {
+  try { return loadCertificationFromPath(buildLegacyRepoCertificationPath(repoDir, provider, model, suiteVersion)); }
+  catch { return { ok: false as const, reason: 'malformed' as const }; }
 }
 
-export function loadCertificationFromPath(
-  path: string,
-): { ok: true; artifact: AnyNativeCertificationArtifact } | { ok: false; reason: 'missing' | 'malformed' } {
-  if (!existsSync(path)) {
-    return { ok: false, reason: 'missing' };
-  }
-
-  let raw: string;
-  try {
-    raw = readFileSync(path, 'utf-8');
-  } catch {
-    return { ok: false, reason: 'missing' };
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return { ok: false, reason: 'malformed' };
-  }
-
-  const artifact = parseArtifact(parsed);
-  if (!artifact) {
-    return { ok: false, reason: 'malformed' };
-  }
-
-  return { ok: true, artifact };
+/** All readers use the store's canonical JSON schema; no lossy private parser. */
+export function loadCertificationFromPath(path: string): { ok: true; artifact: AnyNativeCertificationArtifact } | { ok: false; reason: 'missing' | 'malformed' } {
+  const result = readCertification(path);
+  return result.ok ? result : { ok: false, reason: result.error.code === 'not-found' ? 'missing' : 'malformed' };
 }
 
 export type ScopedLoadCertificationResult =
@@ -310,6 +235,11 @@ export function evaluateEligibility(
     return { eligible: false, reason: 'scenario-failure', artifact };
   }
 
+  if (artifactHasSubject(artifact) && artifact.subject.endpoint) {
+    const observed = evaluateLiveCodingCanaryEligibility(artifact, requiredSuiteVersion, now, expectedSubject);
+    if (!observed.eligible) return { eligible: false, reason: observed.reason === 'identity-mismatch' ? 'identity-reidentified' : 'scenario-failure', artifact };
+  }
+
   return { eligible: true, artifact };
 }
 
@@ -350,7 +280,7 @@ export function checkSharedCertificationEligibility(
   options: Omit<CertificationStorageOptions, 'scope' | 'repoDir'> = {},
   expectedSubject?: CertificationSubject,
 ): ScopedCertificationEligibility {
-  const loaded = loadSharedCertificationWithLegacyFallback(repoDir, provider, model, suiteVersion, options);
+  const loaded = loadSharedCertificationWithLegacyFallback(repoDir, provider, model, suiteVersion, { ...options, endpoint: expectedSubject?.endpoint ?? options.endpoint });
   if (!loaded.ok) {
     return {
       eligible: false,
@@ -375,7 +305,7 @@ export function checkGlobalCertificationEligibility(
   options: Omit<CertificationStorageOptions, 'scope' | 'repoDir'> = {},
   expectedSubject?: CertificationSubject,
 ): ScopedCertificationEligibility {
-  const loaded = loadGlobalCertification(provider, model, suiteVersion, options);
+  const loaded = loadGlobalCertification(provider, model, suiteVersion, { ...options, endpoint: expectedSubject?.endpoint ?? options.endpoint });
   if (!loaded.ok) {
     return {
       eligible: false,
@@ -389,411 +319,4 @@ export function checkGlobalCertificationEligibility(
     artifactPath: loaded.path,
     storageScope: 'global',
   };
-}
-
-function parseArtifact(input: unknown): AnyNativeCertificationArtifact | undefined {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) {
-    return undefined;
-  }
-
-  const c = input as Record<string, unknown>;
-
-  if (
-    c.schemaVersion !== CERTIFICATION_SCHEMA_VERSION
-    && c.schemaVersion !== 2
-  ) {
-    return undefined;
-  }
-
-  if (
-    typeof c.provider !== 'string'
-    || typeof c.model !== 'string'
-    || typeof c.phase !== 'string'
-    || !(['read-only', 'patch', 'workflow'] as string[]).includes(c.phase)
-    || typeof c.suiteVersion !== 'string'
-    || typeof c.certifiedAt !== 'string'
-    || !Array.isArray(c.scenarios)
-  ) {
-    return undefined;
-  }
-
-  if (c.expiresAt !== undefined && typeof c.expiresAt !== 'string') {
-    return undefined;
-  }
-
-  if (c.knownLimitations !== undefined) {
-    if (!Array.isArray(c.knownLimitations) || !c.knownLimitations.every(l => typeof l === 'string')) {
-      return undefined;
-    }
-  }
-
-  if (c.totalRetryCount !== undefined && typeof c.totalRetryCount !== 'number') {
-    return undefined;
-  }
-
-  const scenarios = parseScenarios(c.scenarios);
-  if (!scenarios) return undefined;
-
-  const common = {
-    provider: c.provider,
-    model: c.model,
-    phase: c.phase as CertificationPhase,
-    suiteVersion: c.suiteVersion,
-    certifiedAt: c.certifiedAt,
-    scenarios,
-  };
-
-  const artifact: AnyNativeCertificationArtifact = c.schemaVersion === CERTIFICATION_SCHEMA_VERSION
-    ? {
-      schemaVersion: CERTIFICATION_SCHEMA_VERSION,
-      subject: parseSubject(c.subject),
-      ...common,
-    }
-    : {
-      schemaVersion: 2,
-      ...common,
-    };
-
-  if (artifact.schemaVersion === CERTIFICATION_SCHEMA_VERSION && !artifact.subject) {
-    return undefined;
-  }
-
-  if (typeof c.expiresAt === 'string') artifact.expiresAt = c.expiresAt;
-  if (Array.isArray(c.knownLimitations)) artifact.knownLimitations = c.knownLimitations as string[];
-  if (typeof c.totalRetryCount === 'number') artifact.totalRetryCount = c.totalRetryCount;
-  if (artifact.schemaVersion === CERTIFICATION_SCHEMA_VERSION) {
-    const liveSmokeEvidence = parseLiveSmokeEvidence(c.liveSmokeEvidence);
-    if (c.liveSmokeEvidence !== undefined && !liveSmokeEvidence) return undefined;
-    if (liveSmokeEvidence) artifact.liveSmokeEvidence = liveSmokeEvidence;
-
-    // Backward compatible: `liveCanary` is optional, but a present-yet-invalid
-    // canary makes the whole artifact malformed so downstream fails closed.
-    const liveCanary = parseLiveCanary(c.liveCanary);
-    if (c.liveCanary !== undefined && !liveCanary) return undefined;
-    if (liveCanary) artifact.liveCanary = liveCanary;
-
-    // HOK-3143: pinned alias target and durable identity invalidation.
-    // Both are additive and optional; a present-yet-invalid field fails closed.
-    const resolvedTarget = parseResolvedTarget(c.resolvedTarget);
-    if (c.resolvedTarget !== undefined && !resolvedTarget) return undefined;
-    if (resolvedTarget) artifact.resolvedTarget = resolvedTarget;
-
-    const identityInvalidation = parseIdentityInvalidation(c.identityInvalidation);
-    if (c.identityInvalidation !== undefined && !identityInvalidation) return undefined;
-    if (identityInvalidation) artifact.identityInvalidation = identityInvalidation;
-  }
-
-  return artifact;
-}
-
-function parseResolvedTarget(
-  raw: unknown,
-): NativeCertificationArtifact['resolvedTarget'] | undefined {
-  if (raw === undefined) return undefined;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-  const r = raw as Record<string, unknown>;
-  if (
-    typeof r.requestedWireId !== 'string'
-    || typeof r.model !== 'string'
-    || typeof r.observedAt !== 'string'
-    || r.source !== 'provider-response'
-  ) {
-    return undefined;
-  }
-  if (r.responseId !== undefined && typeof r.responseId !== 'string') return undefined;
-  return {
-    requestedWireId: r.requestedWireId,
-    model: r.model,
-    observedAt: r.observedAt,
-    source: 'provider-response',
-    ...(typeof r.responseId === 'string' ? { responseId: r.responseId } : {}),
-  };
-}
-
-function parseIdentityInvalidation(
-  raw: unknown,
-): NativeCertificationArtifact['identityInvalidation'] | undefined {
-  if (raw === undefined) return undefined;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-  const r = raw as Record<string, unknown>;
-  if (
-    typeof r.invalidatedAt !== 'string'
-    || r.reason !== 'identity_mismatch'
-    || typeof r.expectedModel !== 'string'
-    || typeof r.observedModel !== 'string'
-    || typeof r.requestedWireId !== 'string'
-    || (r.source !== 'runtime' && r.source !== 'certification')
-  ) {
-    return undefined;
-  }
-  if (r.phase !== undefined && typeof r.phase !== 'string') return undefined;
-  if (r.session !== undefined && typeof r.session !== 'string') return undefined;
-  if (r.issue !== undefined && typeof r.issue !== 'string') return undefined;
-  return {
-    invalidatedAt: r.invalidatedAt,
-    reason: 'identity_mismatch',
-    expectedModel: r.expectedModel,
-    observedModel: r.observedModel,
-    requestedWireId: r.requestedWireId,
-    source: r.source as 'runtime' | 'certification',
-    ...(typeof r.phase === 'string' ? { phase: r.phase } : {}),
-    ...(typeof r.session === 'string' ? { session: r.session } : {}),
-    ...(typeof r.issue === 'string' ? { issue: r.issue } : {}),
-  };
-}
-
-function parseSubject(raw: unknown): NativeCertificationArtifact['subject'] | undefined {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-  const s = raw as Record<string, unknown>;
-  if (
-    typeof s.registryKey !== 'string'
-    || typeof s.nativeProvider !== 'string'
-    || typeof s.providerId !== 'string'
-    || typeof s.providerModelId !== 'string'
-    || typeof s.providerNativeId !== 'string'
-    || typeof s.identityRevision !== 'number'
-    || typeof s.identityFingerprint !== 'string'
-    || typeof s.catalogHash !== 'string'
-  ) {
-    return undefined;
-  }
-  return {
-    registryKey: s.registryKey,
-    nativeProvider: s.nativeProvider,
-    providerId: s.providerId,
-    providerModelId: s.providerModelId,
-    providerNativeId: s.providerNativeId,
-    identityRevision: s.identityRevision,
-    identityFingerprint: s.identityFingerprint,
-    catalogHash: s.catalogHash,
-  };
-}
-
-function parseLiveSmokeEvidence(raw: unknown): NativeCertificationArtifact['liveSmokeEvidence'] | undefined {
-  if (raw === undefined) return undefined;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-  const e = raw as Record<string, unknown>;
-  if (
-    typeof e.requestedWireId !== 'string'
-    || typeof e.catalogHash !== 'string'
-    || typeof e.succeededAt !== 'string'
-  ) {
-    return undefined;
-  }
-  if (e.providerReturnedModel !== undefined && typeof e.providerReturnedModel !== 'string') {
-    return undefined;
-  }
-  return {
-    requestedWireId: e.requestedWireId,
-    ...(typeof e.providerReturnedModel === 'string' ? { providerReturnedModel: e.providerReturnedModel } : {}),
-    catalogHash: e.catalogHash,
-    succeededAt: e.succeededAt,
-  };
-}
-
-const LIVE_CANARY_STATUSES = ['pass', 'fail', 'inconclusive', 'skipped'] as const;
-const LIVE_CANARY_REASONS = [
-  'protocol_failure',
-  'missing_completion_artifact',
-  'wrong_mutation',
-  'extra_repository_change',
-  'provider_transient_error',
-  'provider_config_error',
-  'budget_exceeded',
-  'not_live',
-  'identity_mismatch',
-  'internal_error',
-] as const;
-const LIVE_CANARY_LIMIT_KINDS = ['wall_clock', 'turns', 'tool_calls', 'tokens', 'cost'] as const;
-
-function parseLiveCanary(raw: unknown): NativeCertificationArtifact['liveCanary'] | undefined {
-  if (raw === undefined) return undefined;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-  const c = raw as Record<string, unknown>;
-
-  if (
-    typeof c.scenarioId !== 'string'
-    || !(LIVE_CANARY_STATUSES as readonly string[]).includes(c.status as string)
-    || typeof c.isLive !== 'boolean'
-    || c.phase !== 'coding'
-    || typeof c.provider !== 'string'
-    || typeof c.model !== 'string'
-    || typeof c.providerNativeId !== 'string'
-    || typeof c.identityFingerprint !== 'string'
-    || typeof c.catalogHash !== 'string'
-    || typeof c.suiteVersion !== 'string'
-    || typeof c.ranAt !== 'string'
-  ) {
-    return undefined;
-  }
-
-  const limits = parseLiveCanaryLimits(c.limits);
-  if (!limits) return undefined;
-
-  if (c.expiresAt !== undefined && typeof c.expiresAt !== 'string') return undefined;
-  if (c.reason !== undefined && !(LIVE_CANARY_REASONS as readonly string[]).includes(c.reason as string)) return undefined;
-  if (c.limitExceeded !== undefined && !(LIVE_CANARY_LIMIT_KINDS as readonly string[]).includes(c.limitExceeded as string)) return undefined;
-  if (c.detail !== undefined && typeof c.detail !== 'string') return undefined;
-  if (
-    c.canaryCarriedForwardFrom !== undefined
-    && (typeof c.canaryCarriedForwardFrom !== 'string' || c.canaryCarriedForwardFrom.length === 0)
-  ) return undefined;
-  if (c.attempts !== undefined && (typeof c.attempts !== 'number' || !Number.isInteger(c.attempts) || c.attempts < 1)) return undefined;
-
-  const usage = parseLiveCanaryUsage(c.usage);
-  if (c.usage !== undefined && !usage) return undefined;
-
-  const evidence = parseLiveCanaryEvidence(c.evidence);
-  if (c.evidence !== undefined && !evidence) return undefined;
-
-  const lastInconclusiveAttempt = parseLiveCanaryAttemptNote(c.lastInconclusiveAttempt);
-  if (c.lastInconclusiveAttempt !== undefined && !lastInconclusiveAttempt) return undefined;
-
-  return {
-    scenarioId: c.scenarioId,
-    status: c.status as (typeof LIVE_CANARY_STATUSES)[number],
-    isLive: c.isLive,
-    phase: 'coding',
-    provider: c.provider,
-    model: c.model,
-    providerNativeId: c.providerNativeId,
-    identityFingerprint: c.identityFingerprint,
-    catalogHash: c.catalogHash,
-    ...(typeof c.canaryCarriedForwardFrom === 'string' ? { canaryCarriedForwardFrom: c.canaryCarriedForwardFrom } : {}),
-    suiteVersion: c.suiteVersion,
-    ranAt: c.ranAt,
-    ...(typeof c.expiresAt === 'string' ? { expiresAt: c.expiresAt } : {}),
-    limits,
-    ...(usage ? { usage } : {}),
-    ...(c.reason !== undefined ? { reason: c.reason as (typeof LIVE_CANARY_REASONS)[number] } : {}),
-    ...(c.limitExceeded !== undefined ? { limitExceeded: c.limitExceeded as (typeof LIVE_CANARY_LIMIT_KINDS)[number] } : {}),
-    ...(typeof c.detail === 'string' ? { detail: c.detail } : {}),
-    ...(evidence ? { evidence } : {}),
-    ...(typeof c.attempts === 'number' ? { attempts: c.attempts } : {}),
-    ...(lastInconclusiveAttempt ? { lastInconclusiveAttempt } : {}),
-  };
-}
-
-function parseLiveCanaryLimits(
-  raw: unknown,
-): NonNullable<NativeCertificationArtifact['liveCanary']>['limits'] | undefined {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-  const l = raw as Record<string, unknown>;
-  if (
-    typeof l.maxWallClockMs !== 'number'
-    || typeof l.maxTurns !== 'number'
-    || typeof l.maxToolCalls !== 'number'
-    || typeof l.maxTotalTokens !== 'number'
-  ) {
-    return undefined;
-  }
-  if (l.maxCostUsd !== undefined && typeof l.maxCostUsd !== 'number') return undefined;
-  return {
-    maxWallClockMs: l.maxWallClockMs,
-    maxTurns: l.maxTurns,
-    maxToolCalls: l.maxToolCalls,
-    maxTotalTokens: l.maxTotalTokens,
-    ...(typeof l.maxCostUsd === 'number' ? { maxCostUsd: l.maxCostUsd } : {}),
-  };
-}
-
-function parseLiveCanaryUsage(
-  raw: unknown,
-): NonNullable<NativeCertificationArtifact['liveCanary']>['usage'] | undefined {
-  if (raw === undefined) return undefined;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-  const u = raw as Record<string, unknown>;
-  if (
-    typeof u.turns !== 'number'
-    || typeof u.toolCalls !== 'number'
-    || typeof u.inputTokens !== 'number'
-    || typeof u.outputTokens !== 'number'
-    || typeof u.wallClockMs !== 'number'
-  ) {
-    return undefined;
-  }
-  if (u.costUsd !== undefined && typeof u.costUsd !== 'number') return undefined;
-  return {
-    turns: u.turns,
-    toolCalls: u.toolCalls,
-    inputTokens: u.inputTokens,
-    outputTokens: u.outputTokens,
-    wallClockMs: u.wallClockMs,
-    ...(typeof u.costUsd === 'number' ? { costUsd: u.costUsd } : {}),
-  };
-}
-
-function parseLiveCanaryEvidence(
-  raw: unknown,
-): NonNullable<NativeCertificationArtifact['liveCanary']>['evidence'] | undefined {
-  if (raw === undefined) return undefined;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-  const e = raw as Record<string, unknown>;
-  if (
-    typeof e.structuredMutationToolCalls !== 'number'
-    || !Array.isArray(e.mutationToolNames)
-    || !e.mutationToolNames.every((name) => typeof name === 'string')
-    || typeof e.expectedSentinelHash !== 'string'
-    || !Array.isArray(e.changedPaths)
-    || !e.changedPaths.every((path) => typeof path === 'string')
-    || typeof e.completionArtifactPresent !== 'boolean'
-  ) {
-    return undefined;
-  }
-  if (e.actualSentinelHash !== undefined && typeof e.actualSentinelHash !== 'string') return undefined;
-  if (e.completionArtifactHash !== undefined && typeof e.completionArtifactHash !== 'string') return undefined;
-  return {
-    structuredMutationToolCalls: e.structuredMutationToolCalls,
-    mutationToolNames: e.mutationToolNames as string[],
-    expectedSentinelHash: e.expectedSentinelHash,
-    ...(typeof e.actualSentinelHash === 'string' ? { actualSentinelHash: e.actualSentinelHash } : {}),
-    changedPaths: e.changedPaths as string[],
-    completionArtifactPresent: e.completionArtifactPresent,
-    ...(typeof e.completionArtifactHash === 'string' ? { completionArtifactHash: e.completionArtifactHash } : {}),
-  };
-}
-
-function parseLiveCanaryAttemptNote(
-  raw: unknown,
-): NonNullable<NativeCertificationArtifact['liveCanary']>['lastInconclusiveAttempt'] | undefined {
-  if (raw === undefined) return undefined;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-  const a = raw as Record<string, unknown>;
-  if (
-    typeof a.ranAt !== 'string'
-    || a.status !== 'inconclusive'
-    || !(LIVE_CANARY_REASONS as readonly string[]).includes(a.reason as string)
-  ) {
-    return undefined;
-  }
-  if (a.detail !== undefined && typeof a.detail !== 'string') return undefined;
-  return {
-    ranAt: a.ranAt,
-    status: 'inconclusive',
-    reason: a.reason as (typeof LIVE_CANARY_REASONS)[number],
-    ...(typeof a.detail === 'string' ? { detail: a.detail } : {}),
-  };
-}
-
-function parseScenarios(
-  raw: unknown[],
-): NativeCertificationArtifact['scenarios'] | undefined {
-  const results = [];
-  for (const entry of raw) {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return undefined;
-    const e = entry as Record<string, unknown>;
-    if (typeof e.scenarioId !== 'string' || typeof e.passed !== 'boolean') return undefined;
-    if (e.failureMessage !== undefined && typeof e.failureMessage !== 'string') return undefined;
-    if (e.retryCount !== undefined && typeof e.retryCount !== 'number') return undefined;
-
-    const scenario: NativeCertificationArtifact['scenarios'][number] = {
-      scenarioId: e.scenarioId,
-      passed: e.passed,
-    };
-    if (typeof e.failureMessage === 'string') scenario.failureMessage = e.failureMessage;
-    if (typeof e.retryCount === 'number') scenario.retryCount = e.retryCount;
-
-    results.push(scenario);
-  }
-  return results;
 }

@@ -452,3 +452,48 @@ describe('canary workspace baseline', () => {
     assert.ok(observedRepo, 'loop must receive the disposable repo path');
   });
 });
+
+// protects: failed/retried probe charges and observed providers must survive disposable repository cleanup.
+it('retains every metered attempt as canonical feedback with actual generation charges', async () => {
+  let count = 0;
+  const runLoopFn = async (config: WavemillLoopConfig): Promise<LoopResult> => {
+    count++;
+    const repoDir = config.toolPolicy!.worktreePath;
+    config.onEvent!({ type: 'agent_start' } as never);
+    config.onEvent!({ type: 'message_end', message: { role: 'assistant', model: 'kimi-k3', api: 'openai-completions', provider: 'openrouter',
+      responseModel: 'moonshotai/kimi-k3', responseId: `reconstructed-${count}`, content: [{ type: 'text', text: 'done' }], timestamp: 0, stopReason: 'stop',
+      usage: { input: 100, output: 10, cacheRead: 20, cacheWrite: 0, totalTokens: 130, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } } as never);
+    if (count === 1) return loopResult({ stopReason: 'error', providerError: { kind: 'provider-transient-error', retryable: true, attempts: 1, errorMessage: 'upstream unavailable', turnsAtFailure: 1 } });
+    writeFileSync(join(repoDir, CANARY_SENTINEL_PATH), CANARY_SENTINEL_EXPECTED);
+    mkdirSync(join(repoDir, 'features/live-canary'), { recursive: true });
+    writeFileSync(join(repoDir, CANARY_COMPLETION_PATH), '{"stage":"coding","confidence":"high"}');
+    emitToolEnd(config, 'apply_patch');
+    return loopResult();
+  };
+  const result = await runLiveCodingCanary({ ...baseOptions(runLoopFn), provider: 'openrouter',
+    exactPricing: { enabled: true, fetchGenerationCost: async () => ({ totalCostUsd: 0.05, providerName: 'Reconstructed Host' }) } });
+  assert.equal(result.status, 'pass');
+  assert.equal(result.isLive, false);
+  assert.equal(result.attemptEvidence?.length, 2);
+  assert.deepEqual(result.attemptEvidence?.map(attempt => attempt.contribution?.actual_cost_usd), [0.05, 0.05]);
+  assert.equal(result.attemptEvidence?.[0].contribution?.stage_executions[0].failure?.fault_class, 'provider-fault');
+  assert.equal(result.attemptEvidence?.[1].contribution?.stage_executions[0].provider_executions?.[0].generation?.providerName, 'Reconstructed Host');
+});
+
+it('paired workflow verifies escaped multi-file edits through the real focused-test tool', async () => {
+  const runLoopFn = async (config: WavemillLoopConfig): Promise<LoopResult> => {
+    const repoDir = config.toolPolicy!.worktreePath;
+    writeFileSync(join(repoDir, CANARY_SENTINEL_PATH), CANARY_SENTINEL_EXPECTED);
+    writeFileSync(join(repoDir, 'src/payload.ts'), `export const payload = ${JSON.stringify('quote " slash \\ newline\nUnicode Ω')};\n`);
+    mkdirSync(join(repoDir, 'features/live-canary'), { recursive: true });
+    writeFileSync(join(repoDir, CANARY_COMPLETION_PATH), '{"stage":"coding","confidence":"high"}');
+    emitToolEnd(config, 'apply_patch');
+    const tool = config.context.tools.find(tool => tool.name === 'run_tests')!;
+    const result = await tool.execute('focused-tests', { command: 'node --test tests/canary.test.ts' }, undefined as never, undefined as never);
+    config.onEvent!({ type: 'tool_execution_end', toolName: 'run_tests', result, isError: false, toolCallId: 'focused-tests' } as never);
+    return loopResult();
+  };
+  const result = await runLiveCodingCanary({ ...baseOptions(runLoopFn), profile: 'workflow' });
+  assert.equal(result.status, 'pass', result.detail);
+  assert.equal(result.isLive, false);
+});

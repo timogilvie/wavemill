@@ -1,0 +1,15 @@
+{
+  "provenance": "Reconstructed HOK-3496 nested apply_patch regression; original raw provider payload was not retained. This is not evidence from a live endpoint.",
+  "initial": "export const payload = \"pending\";\nexport const second = 1;\n",
+  "expected": "export const payload = \"quotes \\\" slash \\\\ newline\\nUnicode Ω\";\nexport const second = 2;\n",
+  "arguments": {
+    "patch": {
+      "version": 1,
+      "atomic": true,
+      "operations": [
+        { "op": "edit", "path": "src/payload.ts", "oldText": "export const payload = \"pending\";", "newText": "export const payload = \"quotes \\\" slash \\\\ newline\\nUnicode Ω\";" },
+        { "op": "edit", "path": "src/payload.ts", "oldText": "export const second = 1;", "newText": "export const second = 2;" }
+      ]
+    }
+  }
+}

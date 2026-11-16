@@ -23,6 +23,8 @@ import {
 export type { OpenRouterGenerationCost } from '../openrouter-generation-api.ts';
 
 export interface ExactPricingOptions {
+  /** Credential resolved by the existing native provider configuration; never persisted. */
+  apiKey?: string;
   /** Injected per-id lookup (tests); defaults to the OpenRouter client. */
   fetchGenerationCost?: (id: string) => Promise<OpenRouterGenerationCost | null>;
   concurrency?: number;
@@ -35,7 +37,7 @@ const DEFAULT_CONCURRENCY = 6;
 
 /** True when exact lookups should run for these options. */
 export function isExactPricingEnabled(opts: ExactPricingOptions = {}): boolean {
-  return opts.enabled ?? !!process.env.OPENROUTER_API_KEY;
+  return opts.enabled ?? !!(opts.apiKey || process.env.OPENROUTER_API_KEY);
 }
 
 async function fetchWithInjectedCost(
@@ -78,7 +80,7 @@ export async function fetchOpenRouterGenerationEvidence(
 
   const fetched = opts.fetchGenerationCost
     ? await fetchWithInjectedCost(ids, opts.fetchGenerationCost, opts.concurrency)
-    : await fetchGenerationCostsBatched(ids, { concurrency: opts.concurrency });
+    : await fetchGenerationCostsBatched(ids, { concurrency: opts.concurrency, ...(opts.apiKey ? { apiKey: opts.apiKey } : {}) });
 
   const exact = new Map<string, OpenRouterGenerationCost>();
   let failedCount = 0;

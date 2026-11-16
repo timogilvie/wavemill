@@ -302,6 +302,7 @@ export interface WavemillLoopConfig {
   contextManagement?: NativeContextManagementConfig;
   /** Required when `budget.maxCostUsd` is set; used to compute turn cost. */
   modelPricing?: ModelPricing;
+  modelPricingScope?: 'model' | 'endpoint';
   /** Optional registry override for tool compatibility validation. */
   compatRegistry?: ModelRegistry;
   temperature?: number;
@@ -749,7 +750,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
   const requestFacts = (): Pick<NativeProviderExecution, 'requestedRouting' | 'pricingSnapshot'> => ({
     requestedRouting: config.model.provider === 'openrouter'
       ? structuredClone((config.model.compat as { openRouterRouting?: NativeProviderExecution['requestedRouting'] } | undefined)?.openRouterRouting ?? null) : null,
-    pricingSnapshot: modelPricing ? { scope: 'model', ...modelPricing } : null,
+    pricingSnapshot: modelPricing ? { scope: config.modelPricingScope ?? 'model', ...modelPricing } : null,
   });
   let providerRequest = requestFacts();
   const payloadRing = config.payloadCapture ? new PayloadRingBuffer(config.payloadCapture) : undefined;

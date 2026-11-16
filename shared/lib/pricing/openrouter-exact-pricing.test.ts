@@ -68,3 +68,9 @@ describe('fetchOpenRouterGenerationEvidence', () => {
     assert.deepEqual(exact, new Map([['gen-free', { totalCostUsd: 0 }]]));
   });
 });
+
+// A credential resolved through native provider config must reach the canonical enrichment client.
+it('explicit provider credentials enable exact enrichment without process-global mutation', () => {
+  assert.equal(isExactPricingEnabled({ apiKey: 'test-provider-config' }), true);
+  assert.equal(isExactPricingEnabled({ apiKey: 'test-provider-config', enabled: false }), false);
+});

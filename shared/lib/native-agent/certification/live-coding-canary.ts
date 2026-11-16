@@ -1,3 +1,13 @@
+import { ProviderIdentityMismatchError } from '../provider-identity.ts';
+import { createRunTestsTool } from '../tools/command-tools.ts';
+import { recordLaunch } from '../../session-ownership.ts';
+import { meterWorkflowCost } from '../../sdk-task-cost/meter.ts';
+import { redactProviderExecutions, redactStageTaskCost, redactSessionIds } from '../../hokusai-redaction.ts';
+import { buildTechnicalTaskRouterRowV4 } from '../../hokusai-contribution-builder.ts';
+import { classifyArmFault, type ArmFaultClass } from '../../arm-failure-taxonomy.ts';
+import { TranscriptWriter } from '../transcript.ts';
+import { endpointRouting } from './identity.ts';
+import type { ExactPricingOptions } from '../../pricing/openrouter-exact-pricing.ts';
 /**
  * Live coding canary runner (HOK-2943).
  *
@@ -33,7 +43,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -74,6 +84,7 @@ import { toPiAgentTool, type AgentTool } from '../tools/pi-adapter.ts';
 import type { ToolDescriptor } from '../tools/types.ts';
 import {
   LIVE_CODING_CANARY_SCENARIO_ID,
+  endpointObservationsMatch,
   type CertificationSubject,
   type LiveCodingCanaryEvidence,
   type LiveCodingCanaryFailureReason,
@@ -102,6 +113,8 @@ export const CANARY_TMP_PREFIX = 'wavemill-canary-';
 const MUTATION_EVIDENCE_TOOLS = new Set(['apply_patch', 'write_artifact', 'create_marker']);
 const MAX_EVIDENCE_PATHS = 20;
 const MAX_DETAIL_LENGTH = 300;
+
+export const DEFAULT_CANARY_MAX_ATTEMPTS = 2;
 
 export const DEFAULT_CANARY_LIMITS: LiveCodingCanaryLimits = {
   maxWallClockMs: 240_000,
@@ -142,6 +155,9 @@ export interface RunLiveCodingCanaryOptions {
   /** Test seam: temp root override (must exist). */
   tmpRootOverride?: string;
   signal?: AbortSignal;
+  profile?: 'standard' | 'workflow' | 'cache-heavy';
+  endpointPricing?: ModelPricing;
+  exactPricing?: ExactPricingOptions;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,8 +180,8 @@ export async function runLiveCodingCanary(
     ...DEFAULT_CANARY_LIMITS,
     ...(options.limits ?? {}),
   };
-  const isLive = !options.runLoopFn && !options.modelOverride;
-  const maxAttempts = Math.max(1, options.maxAttempts ?? 2);
+  const isLive = !options.runLoopFn && !options.modelOverride && !options.exactPricing?.fetchGenerationCost;
+  const maxAttempts = Math.max(1, options.maxAttempts ?? DEFAULT_CANARY_MAX_ATTEMPTS);
 
   const model = resolveCanaryModel(options);
   if (!model.ok) {
@@ -183,6 +199,7 @@ export async function runLiveCodingCanary(
 
   let attempt = 0;
   let last: AttemptOutcome | undefined;
+  const attemptEvidence: NonNullable<LiveCodingCanaryResult['attemptEvidence']> = [];
   while (attempt < maxAttempts) {
     attempt += 1;
     last = await runSingleCanaryAttempt({
@@ -192,6 +209,7 @@ export async function runLiveCodingCanary(
       limits,
       now,
     });
+    if (last.attemptEvidence) attemptEvidence.push(...last.attemptEvidence);
     const transient = last.status === 'inconclusive' && last.reason === 'provider_transient_error';
     if (!transient) {
       break;
@@ -200,6 +218,7 @@ export async function runLiveCodingCanary(
 
   return finalizeResult({
     ...last!,
+    attemptEvidence,
     isLive,
     limits,
     options,
@@ -213,6 +232,7 @@ export async function runLiveCodingCanary(
 // ---------------------------------------------------------------------------
 
 interface AttemptOutcome {
+  attemptEvidence?: LiveCodingCanaryResult['attemptEvidence'];
   status: LiveCodingCanaryStatus;
   reason?: LiveCodingCanaryFailureReason;
   limitExceeded?: LiveCodingCanaryLimitKind;
@@ -250,114 +270,173 @@ async function runSingleCanaryAttempt(input: {
     if (tmpRoot) safeRemoveCanaryDir(tmpRoot, options.tmpRootOverride);
   };
   process.once('exit', removeOnExit);
-
+  let workspace: CanaryWorkspace | undefined;
+  let transcript: TranscriptWriter | undefined;
+  const sessionId = randomUUID();
+  let faultClass: ArmFaultClass = 'unknown-fault';
   try {
-    let workspace: CanaryWorkspace;
-    try {
-      workspace = createCanaryWorkspace(options.tmpRootOverride);
-      tmpRoot = workspace.tmpRoot;
-    } catch (error) {
-      return {
-        status: 'inconclusive',
-        reason: 'internal_error',
-        detail: sanitizeDetail(`canary workspace setup failed: ${(error as Error).message}`, tmpRoot),
-      };
-    }
+    const execute = async (): Promise<AttemptOutcome> => {
+      try {
+        workspace = createCanaryWorkspace(options.tmpRootOverride, options.profile ?? 'standard');
+        tmpRoot = workspace.tmpRoot;
+      } catch (error) {
+        return {
+          status: 'inconclusive',
+          reason: 'internal_error',
+          detail: sanitizeDetail(`canary workspace setup failed: ${(error as Error).message}`, tmpRoot),
+        };
+      }
 
-    const evidenceRecorder = createEvidenceRecorder();
-    const descriptors: ToolDescriptor[] = [
-      ...createReadOnlyTools(workspace.repoDir),
-      ...createCodingMutationTools(workspace.repoDir, {
-        phase: 'coding',
-        statusPath: workspace.statusPath,
-      }),
-    ];
-    const registryMetadata = descriptors.map((descriptor) => descriptor.metadata);
-
-    const context: AgentContext = {
-      systemPrompt: buildCanarySystemPrompt(),
-      messages: [{
-        role: 'user',
-        content: buildCanaryUserPrompt(),
-        timestamp: 0,
-      }],
-      tools: descriptors.map((descriptor) => toPiAgentTool(descriptor) as AgentTool<unknown, unknown>),
-    };
-
-    const pricing = resolveModelPricing(options);
-    let result: LoopResult;
-    try {
-      result = await runLoopFn({
-        model: input.model,
-        ...(nativeModels ? { models: nativeModels } : {}),
-        context,
-        convertToLlm: (messages) => messages as unknown as Message[],
-        afterToolCall: async (toolContext) => codingMutationAfterToolCall(toolContext),
-        toolPolicy: {
+      const evidenceDir = join(workspace.tmpRoot, 'evidence');
+      recordLaunch(evidenceDir, { sessionRef: sessionId, harness: 'native', kind: 'coding', model: options.registryModelId,
+        attemptId: sessionId, launchedAt: input.now(), cwd: workspace.repoDir });
+      transcript = new TranscriptWriter({ sessionId, model: options.registryModelId, provider: options.provider,
+        api: input.model.api, worktreePath: workspace.repoDir, path: join(evidenceDir, 'native-sessions', `${sessionId}.jsonl`) });
+      const evidenceRecorder = createEvidenceRecorder();
+      const descriptors: ToolDescriptor[] = [
+        ...createReadOnlyTools(workspace.repoDir),
+        createRunTestsTool(workspace.repoDir),
+        ...createCodingMutationTools(workspace.repoDir, {
           phase: 'coding',
-          worktreePath: workspace.repoDir,
-          registry: registryMetadata,
-          config: {
-            pathFieldsByTool: {
-              ...READ_ONLY_PATH_FIELDS,
-              ...codingMutationPolicyConfig.pathFieldsByTool,
+          statusPath: workspace.statusPath,
+        }),
+      ];
+      const registryMetadata = descriptors.map((descriptor) => descriptor.metadata);
+
+      const context: AgentContext = {
+        systemPrompt: buildCanarySystemPrompt(),
+        messages: [{
+          role: 'user',
+          content: buildCanaryUserPrompt(workspace.profile),
+          timestamp: 0,
+        }],
+        tools: descriptors.map((descriptor) => toPiAgentTool(descriptor) as AgentTool<unknown, unknown>),
+      };
+
+      const pricing = options.endpointPricing ?? resolveModelPricing(options);
+      let result: LoopResult;
+      try {
+        result = await runLoopFn({
+          model: input.model,
+          ...(options.subject.endpoint ? { providerIdentity: { expectation: { requestedWireId: options.subject.providerNativeId,
+            expectedModel: options.subject.providerNativeId, isAlias: false, registryKey: options.registryModelId } } } : {}),
+          ...(nativeModels ? { models: nativeModels } : {}),
+          context,
+          convertToLlm: (messages) => messages as unknown as Message[],
+          afterToolCall: async (toolContext) => codingMutationAfterToolCall(toolContext),
+          toolPolicy: {
+            phase: 'coding',
+            worktreePath: workspace.repoDir,
+            registry: registryMetadata,
+            config: {
+              pathFieldsByTool: {
+                ...READ_ONLY_PATH_FIELDS,
+                ...codingMutationPolicyConfig.pathFieldsByTool,
+              },
             },
           },
-        },
-        budget: {
-          maxTurns: limits.maxTurns,
-          maxToolCalls: limits.maxToolCalls,
-          // Certification artifact limits are identity-hashed and keep their
-          // `maxWallClockMs` name; the loop budget is the renamed model-time one (HOK-3382).
-          maxModelTimeMs: limits.maxWallClockMs,
-          maxTotalTokens: limits.maxTotalTokens,
-          ...(limits.maxCostUsd !== undefined && pricing ? { maxCostUsd: limits.maxCostUsd } : {}),
-        },
-        ...(pricing ? { modelPricing: pricing } : {}),
-        maxTokens: 4096,
-        signal: options.signal,
-        providerErrorRetry: { maxAttempts: 2 },
-        onEvent: evidenceRecorder.onEvent,
-      });
-    } catch (error) {
-      const classification = classifyProviderError((error as Error).message ?? String(error));
-      return {
-        status: 'inconclusive',
-        reason: classification.kind === 'provider-config-error' || classification.kind === 'provider-credit-exhausted'
-          ? 'provider_config_error'
-          : 'provider_transient_error',
-        detail: sanitizeDetail((error as Error).message, tmpRoot),
+          budget: {
+            maxTurns: limits.maxTurns,
+            maxToolCalls: limits.maxToolCalls,
+            // Certification artifact limits are identity-hashed and keep their
+            // `maxWallClockMs` name; the loop budget is the renamed model-time one (HOK-3382).
+            maxModelTimeMs: limits.maxWallClockMs,
+            maxTotalTokens: limits.maxTotalTokens,
+            ...(limits.maxCostUsd !== undefined && pricing ? { maxCostUsd: limits.maxCostUsd } : {}),
+          },
+          ...(pricing ? { modelPricing: pricing, modelPricingScope: options.endpointPricing ? 'endpoint' as const : 'model' as const } : {}),
+          maxTokens: 4096,
+          signal: options.signal,
+          providerErrorRetry: { maxAttempts: 2 },
+          onEvent(event) { transcript!.handleEvent(event); evidenceRecorder.onEvent(event); },
+        });
+      } catch (error) {
+        if (error instanceof ProviderIdentityMismatchError) return { status: 'fail', reason: 'identity_mismatch', detail: sanitizeDetail(error.message, tmpRoot) };
+        const classification = classifyProviderError((error as Error).message ?? String(error));
+        faultClass = classifyArmFault({ failureKind: classification.kind });
+        return {
+          status: 'inconclusive',
+          reason: classification.kind === 'provider-config-error' || classification.kind === 'provider-credit-exhausted'
+            ? 'provider_config_error'
+            : 'provider_transient_error',
+          detail: sanitizeDetail((error as Error).message, tmpRoot),
+        };
+      }
+
+      if (result.providerError) faultClass = classifyArmFault({ failureKind: result.providerError.kind });
+      const usage: LiveCodingCanaryResult['usage'] = {
+        turns: result.turnsCompleted,
+        toolCalls: result.toolCallsExecuted,
+        inputTokens: result.totalInputTokens,
+        outputTokens: result.totalOutputTokens,
+        wallClockMs: result.wallClockMs,
+        ...(pricing && Number.isFinite(result.totalCostUsd) ? { costUsd: result.totalCostUsd } : {}),
       };
-    }
 
-    const usage: LiveCodingCanaryResult['usage'] = {
-      turns: result.turnsCompleted,
-      toolCalls: result.toolCallsExecuted,
-      inputTokens: result.totalInputTokens,
-      outputTokens: result.totalOutputTokens,
-      wallClockMs: result.wallClockMs,
-      ...(pricing && Number.isFinite(result.totalCostUsd) ? { costUsd: result.totalCostUsd } : {}),
+      // Stop reason before error text (HOK-3362): a budget stop is the canary's
+      // budget outcome, never the abort message our own budget left behind.
+      const budgetOutcome = classifyBudgetOutcome(result.stopReason);
+      if (budgetOutcome) {
+        return { ...budgetOutcome, usage };
+      }
+
+      const providerOutcome = classifyProviderOutcome(result);
+      if (providerOutcome) {
+        return { ...providerOutcome, detail: sanitizeDetail(providerOutcome.detail, tmpRoot), usage };
+      }
+
+      const stopOutcome = classifyNonBudgetStopOutcome(result.stopReason);
+      if (stopOutcome) {
+        return { ...stopOutcome, usage };
+      }
+
+      const verification = verifyCanaryRepository(workspace, evidenceRecorder.snapshot());
+      if (verification.status === 'fail') faultClass = classifyArmFault({ failureKind: 'completion-protocol' });
+      return { ...verification, usage };
     };
-
-    // Stop reason before error text (HOK-3362): a budget stop is the canary's
-    // budget outcome, never the abort message our own budget left behind.
-    const budgetOutcome = classifyBudgetOutcome(result.stopReason);
-    if (budgetOutcome) {
-      return { ...budgetOutcome, usage };
+    const outcome = await execute();
+    const attempt = { attemptId: sessionId, status: outcome.status, ...(outcome.reason ? { reason: outcome.reason } : {}) } as NonNullable<LiveCodingCanaryResult['attemptEvidence']>[number];
+    try {
+      if (workspace && transcript) {
+        const evidenceDir = join(workspace.tmpRoot, 'evidence');
+        const metered = await meterWorkflowCost({ repoDir: options.repoDir, worktreePath: workspace.repoDir, featureDir: evidenceDir,
+          branchName: '', issueId: sessionId, slug: 'live-canary', label: 'Certification canary',
+          ...(options.endpointPricing ? { pricingTable: { [options.registryModelId]: options.endpointPricing } } : {}),
+          ownership: [ { sessionRef: sessionId, harness: 'native', kind: 'coding', stage: 'coding', model: options.registryModelId, attemptId: sessionId, launchedAt: input.now().toISOString(), cwd: workspace.repoDir } ],
+          exactPricing: { ...(authEnv && options.provider === 'openrouter' ? { apiKey: authEnv.apiKey } : {}), ...options.exactPricing }, logger: { log() {}, warn() {} } });
+        if (metered.outcome.status === 'success' && metered.summaries?.length) {
+          const providers = metered.outcome.nativeProviderExecutions ?? [];
+          if (options.subject.endpoint && outcome.status === 'pass' && !endpointObservationsMatch(options.subject.endpoint, providers)) {
+            const contradicted = providers.some(row => row.generation?.providerName && row.generation.providerName.trim().toLowerCase() !== options.subject.endpoint!.providerName.trim().toLowerCase());
+            outcome.status = attempt.status = contradicted ? 'fail' : 'inconclusive';
+            outcome.reason = attempt.reason = 'identity_mismatch';
+            outcome.detail = 'Requested endpoint host could not be corroborated; deployment and quantization remain unverified.';
+          }
+          const executed = providers.find(row => row.responseModel)?.responseModel ?? options.registryModelId;
+          const salt = sessionId;
+          const taskId = redactSessionIds([sessionId], { salt })[0]!;
+          attempt.contribution = buildTechnicalTaskRouterRowV4({ taskId, runId: taskId, harness: 'wavemill-certification', observedAt: input.now().toISOString(),
+            observedSuccess: outcome.status === 'pass', budgetCompliant: outcome.status === 'pass', actualCostUsd: metered.outcome.totalCostUsd,
+            wallClockSeconds: outcome.usage ? outcome.usage.wallClockMs / 1000 : undefined,
+            taskDescriptor: { task_type: 'bugfix', language: 'typescript', complexity: 1 }, allowedModels: [executed], selectedModels: { coder: executed, reviewer: executed },
+            stageExecutions: [{ stage: 'coding', executedModel: executed, modelEvidence: providers.some(row => row.responseModel) ? 'provider_response' : 'requested_only', harness: 'native',
+              providerExecutions: redactProviderExecutions(providers, { salt }),
+              ...(outcome.status === 'pass' ? {} : { failure: { fault_class: faultClass } }),
+              cost: { summaries: metered.summaries.map(summary => redactStageTaskCost(summary, { taskId, salt })) } }],
+          });
+        } else if (options.subject.endpoint && outcome.status === 'pass') {
+          outcome.status = attempt.status = 'inconclusive';
+          outcome.reason = attempt.reason = 'identity_mismatch';
+          outcome.detail = 'Endpoint qualification requires metered provider observations.';
+        }
+      }
+    } catch (error) {
+      outcome.status = attempt.status = 'inconclusive';
+      outcome.reason = attempt.reason = 'internal_error';
+      outcome.detail = sanitizeDetail(`Canary feedback unavailable: ${(error as Error).message}`, tmpRoot);
+      delete attempt.contribution;
     }
-
-    const providerOutcome = classifyProviderOutcome(result);
-    if (providerOutcome) {
-      return { ...providerOutcome, detail: sanitizeDetail(providerOutcome.detail, tmpRoot), usage };
-    }
-
-    const stopOutcome = classifyNonBudgetStopOutcome(result.stopReason);
-    if (stopOutcome) {
-      return { ...stopOutcome, usage };
-    }
-
-    const verification = verifyCanaryRepository(workspace, evidenceRecorder.snapshot());
-    return { ...verification, usage };
+    return { ...outcome, attemptEvidence: [attempt] };
   } finally {
     process.removeListener('exit', removeOnExit);
     removeOnExit();
@@ -369,6 +448,7 @@ async function runSingleCanaryAttempt(input: {
 // ---------------------------------------------------------------------------
 
 interface CanaryWorkspace {
+  profile: 'standard' | 'workflow' | 'cache-heavy';
   /** mkdtemp root owning all attempt state. */
   tmpRoot: string;
   /** Disposable git repository the model mutates. */
@@ -377,13 +457,18 @@ interface CanaryWorkspace {
   statusPath: string;
 }
 
-function createCanaryWorkspace(tmpRootOverride?: string): CanaryWorkspace {
+function createCanaryWorkspace(tmpRootOverride?: string, profile: CanaryWorkspace['profile'] = 'standard'): CanaryWorkspace {
   const base = tmpRootOverride ?? realpathSync(tmpdir());
   const tmpRoot = mkdtempSync(join(base, CANARY_TMP_PREFIX));
   const repoDir = join(tmpRoot, 'repo');
   mkdirSync(join(repoDir, 'src'), { recursive: true });
   writeFileSync(join(repoDir, CANARY_SENTINEL_PATH), CANARY_SENTINEL_INITIAL, 'utf-8');
 
+  if (profile !== 'standard') {
+    mkdirSync(join(repoDir, 'tests'), { recursive: true });
+    writeFileSync(join(repoDir, 'src/payload.ts'), 'export const payload = "pending";\n');
+    writeFileSync(join(repoDir, 'tests/canary.test.ts'), `import assert from 'node:assert/strict';\nimport { CANARY_STATE } from '../src/canary.ts';\nimport { payload } from '../src/payload.ts';\nassert.equal(CANARY_STATE, 'mutated');\nassert.equal(payload, ${JSON.stringify('quote " slash \\ newline\nUnicode Ω')});\n`);
+  }
   const git = (args: string[]) => execFileSync('git', args, {
     cwd: repoDir,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -398,7 +483,7 @@ function createCanaryWorkspace(tmpRootOverride?: string): CanaryWorkspace {
     'commit', '-q', '-m', 'canary baseline',
   ]);
 
-  return { tmpRoot, repoDir, statusPath: join(tmpRoot, 'status.json') };
+  return { tmpRoot, repoDir, profile, statusPath: join(tmpRoot, 'status.json') };
 }
 
 /**
@@ -440,7 +525,7 @@ function buildCanarySystemPrompt(): string {
   ].join('\n');
 }
 
-function buildCanaryUserPrompt(): string {
+function buildCanaryUserPrompt(profile: CanaryWorkspace['profile'] = 'standard'): string {
   return [
     'Certification canary task. Perform exactly these two steps, then stop:',
     '',
@@ -454,7 +539,11 @@ function buildCanaryUserPrompt(): string {
     '',
     '{"stage":"coding","confidence":"high"}',
     '',
-    'Do not create, modify, or delete any other file. Do not run any other commands.',
+    ...(profile === 'standard' ? ['Do not create, modify, or delete any other file. Do not run any other commands.'] : [
+      `3. Update src/payload.ts to export this exact string: ${JSON.stringify('quote " slash \\ newline\nUnicode Ω')}. Use an additional NativePatch edit operation; preserve escaping.`,
+      '4. Run `node --test tests/canary.test.ts` through run_tests and obtain exit code 0 before completing. Only src/canary.ts, src/payload.ts and the completion marker may change.',
+    ]),
+    ...(profile === 'cache-heavy' ? ['Read-only context fixture (unchanged throughout the run):', 'cached-context-0123456789abcdef\n'.repeat(1100)] : []),
   ].join('\n');
 }
 
@@ -494,7 +583,7 @@ function resolveCanaryModel(options: RunLiveCodingCanaryOptions): CanaryModelRes
       modelId: options.registryModelId,
       ...(baseUrl ? { baseUrl } : {}),
       headers,
-      routing: getOpenRouterRouting(options.registry, options.registryModelId),
+      routing: options.subject.endpoint ? endpointRouting(options.subject.endpoint) : getOpenRouterRouting(options.registry, options.registryModelId),
     });
 
   // HOK-3162: Models owns auth injection; keep model.headers for user-provided
@@ -530,6 +619,7 @@ function resolveModelPricing(options: RunLiveCodingCanaryOptions): ModelPricing 
 // ---------------------------------------------------------------------------
 
 interface EvidenceSnapshot {
+  testExecutionPassed: boolean;
   structuredMutationToolCalls: number;
   applyPatchCalls: number;
   mutationToolNames: string[];
@@ -540,15 +630,17 @@ function createEvidenceRecorder(): {
   snapshot: () => EvidenceSnapshot;
 } {
   let structuredMutationToolCalls = 0;
+  let testExecutionPassed = false;
   let applyPatchCalls = 0;
   const mutationToolNames = new Set<string>();
 
   return {
     onEvent: (event: unknown) => {
-      const e = event as { type?: string; toolName?: string; isError?: boolean };
+      const e = event as { type?: string; toolName?: string; isError?: boolean; result?: { details?: { exitCode?: number; command?: string } } };
       if (e?.type !== 'tool_execution_end' || typeof e.toolName !== 'string' || e.isError) {
         return;
       }
+      if (e.toolName === 'run_tests' && e.result?.details?.exitCode === 0 && e.result.details.command === 'node --test tests/canary.test.ts') testExecutionPassed = true;
       if (!MUTATION_EVIDENCE_TOOLS.has(e.toolName)) {
         return;
       }
@@ -560,6 +652,7 @@ function createEvidenceRecorder(): {
     },
     snapshot: () => ({
       structuredMutationToolCalls,
+      testExecutionPassed,
       applyPatchCalls,
       mutationToolNames: [...mutationToolNames].sort(),
     }),
@@ -673,7 +766,7 @@ function verifyCanaryRepository(
 
   // 3. Scope: no repository changes beyond sentinel + completion artifact.
   const unexpected = changedPaths.filter(
-    (path) => path !== CANARY_SENTINEL_PATH && path !== CANARY_COMPLETION_PATH,
+    (path) => path !== CANARY_SENTINEL_PATH && path !== CANARY_COMPLETION_PATH && !(workspace.profile !== 'standard' && path === 'src/payload.ts'),
   );
   if (unexpected.length > 0) {
     return {
@@ -696,6 +789,9 @@ function verifyCanaryRepository(
     };
   }
 
+  if (workspace.profile !== 'standard' && (!events.testExecutionPassed || readFileSync(join(workspace.repoDir, 'src/payload.ts'), 'utf8').includes('"pending"'))) {
+    return { status: 'fail', reason: 'protocol_failure', detail: 'Paired workflow requires escaped multi-file edits and a passing focused test execution.', evidence };
+  }
   return { status: 'pass', evidence };
 }
 
@@ -748,6 +844,8 @@ function finalizeResult(input: AttemptOutcome & {
 }): LiveCodingCanaryResult {
   const { options } = input;
   return {
+    ...(options.subject.endpoint ? { endpoint: options.subject.endpoint } : {}),
+    ...(input.attemptEvidence ? { attemptEvidence: input.attemptEvidence } : {}),
     scenarioId: LIVE_CODING_CANARY_SCENARIO_ID,
     status: input.status,
     isLive: input.isLive,

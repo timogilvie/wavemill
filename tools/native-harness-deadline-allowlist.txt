@@ -6,7 +6,6 @@
 # a stage deadline is not.
 shared/lib/native-agent/certification/canary-fixtures.ts 1  # identity-hashed certification artifact limits; renaming needs a suite revision and fleet re-certification (named follow-up)
 shared/lib/native-agent/certification/live-coding-canary.ts 3  # identity-hashed artifact `limits.maxWallClockMs`/`limitExceeded` spelling; the loop budget is mapped to maxModelTimeMs at the boundary
-shared/lib/native-agent/certification/loader.ts 3  # reads/writes the identity-hashed certification artifact field; keeping the artifact name stable keeps certification identity stable
 shared/lib/native-agent/certification/schema.ts 2  # certification artifact schema field, identity-hashed; renaming requires a suite-revision bump
 shared/lib/native-agent/counterfactual-runner.ts 1  # offline counterfactual exploration budget, not a mill stage deadline
 shared/lib/native-agent/openrouter-credits-guard.ts 1  # provider-credit cache TTL, not a stage deadline
