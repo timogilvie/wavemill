@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { readJsonlFile } from '../jsonl-utils.ts';
 import { buildBudgetedComparisonPrompt, runBlindJudge, type BlindJudgeCall, type PresentationOrder } from '../pr-comparison.ts';
+import { adapterForProvider } from '../model-adapters/resolve-adapter.ts';
 import type { TransportAdapter } from '../model-adapters/transport-adapter.ts';
 import { formatRubricForJudgePrompt } from '../rubric.ts';
 import { hashString } from '../prompt-hash.ts';
@@ -189,6 +190,12 @@ export async function runSwapTest(options: SwapTestRunOptions): Promise<SwapTest
   let costUsd = 0;
   let stoppedForCost = false;
   const concurrency = Math.max(1, Math.min(8, options.concurrency ?? 2));
+  // Keep dry-run estimates on the exact same budget as the real judge. An
+  // explicit null remains an opt-out for tests; an omitted adapter gets the
+  // judge's normal Claude transport adapter, just like runBlindJudge.
+  const judgeAdapter = options.deps?.adapter === undefined
+    ? adapterForProvider('claude', { model: options.judgeModel })
+    : options.deps.adapter;
 
   async function worker(): Promise<void> {
     while (true) {
@@ -205,7 +212,7 @@ export async function runSwapTest(options: SwapTestRunOptions): Promise<SwapTest
       try {
         const input = promptInput(pair, task.order, options.promptTemplate);
         if (options.dryRun) {
-          const built = buildBudgetedComparisonPrompt(input, options.deps?.adapter ?? null);
+          const built = buildBudgetedComparisonPrompt(input, judgeAdapter);
           row = {
             pairId: task.pairId,
             order: task.order,
