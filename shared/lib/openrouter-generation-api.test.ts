@@ -68,6 +68,22 @@ await test('HTTP failures return null', async () => {
   assert.equal(result, null);
 });
 
+await test('observed provider survives unavailable billing, never a fabricated zero', async () => {
+  const result = await fetchGenerationCost('gen-pending', {
+    apiKey: 'test',
+    fetchFn: async () => response({ data: { provider_name: 'Host A', total_cost: null } }),
+  });
+  assert.deepEqual(result, { totalCostUsd: null, providerName: 'Host A' });
+});
+
+await test('invalid billing and token fields do not poison retained host evidence', async () => {
+  const result = await fetchGenerationCost('gen-invalid', {
+    apiKey: 'test',
+    fetchFn: async () => response({ data: { provider_name: 'Host A', total_cost: ' ', native_tokens_prompt: -1, native_tokens_cached: 'NaN' } }),
+  });
+  assert.deepEqual(result, { totalCostUsd: null, providerName: 'Host A' });
+});
+
 await test('network errors return null', async () => {
   const result = await fetchGenerationCost('gen-test', {
     apiKey: 'secret-key',

@@ -7,7 +7,8 @@
  */
 
 export interface OpenRouterGenerationCost {
-  totalCostUsd: number;
+  /** Unknown charges remain null; host evidence can arrive before billing. */
+  totalCostUsd: number | null;
   cacheDiscountUsd?: number;
   providerName?: string;
   modelPermaslug?: string;
@@ -30,8 +31,9 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_CONCURRENCY = 6;
 
 function finiteNumber(value: unknown): number | undefined {
+  if (typeof value === 'string' && value.trim() === '') return undefined;
   const parsed = typeof value === 'string' ? Number(value) : value;
-  return typeof parsed === 'number' && Number.isFinite(parsed) ? parsed : undefined;
+  return typeof parsed === 'number' && Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 function stringValue(value: unknown): string | undefined {
@@ -47,8 +49,11 @@ function parseGenerationCost(body: unknown): OpenRouterGenerationCost | null {
     return null;
   }
 
-  const totalCostUsd = finiteNumber(data.total_cost ?? data.totalCost);
-  if (totalCostUsd === undefined || totalCostUsd < 0) {
+  const charge = finiteNumber(data.total_cost ?? data.totalCost);
+  const totalCostUsd = charge !== undefined && charge >= 0 ? charge : null;
+  const providerName = stringValue(data.provider_name ?? data.providerName);
+  const modelPermaslug = stringValue(data.model);
+  if (totalCostUsd === null && !providerName && !modelPermaslug) {
     return null;
   }
 
@@ -58,8 +63,8 @@ function parseGenerationCost(body: unknown): OpenRouterGenerationCost | null {
   const nativeTokensCached = finiteNumber(data.native_tokens_cached ?? data.nativeTokensCached);
   const nativeTokensCompletion = finiteNumber(data.native_tokens_completion ?? data.nativeTokensCompletion);
   if (cacheDiscountUsd !== undefined) result.cacheDiscountUsd = cacheDiscountUsd;
-  if (stringValue(data.provider_name ?? data.providerName)) result.providerName = stringValue(data.provider_name ?? data.providerName);
-  if (stringValue(data.model)) result.modelPermaslug = stringValue(data.model);
+  if (providerName) result.providerName = providerName;
+  if (modelPermaslug) result.modelPermaslug = modelPermaslug;
   if (nativeTokensPrompt !== undefined) result.nativeTokensPrompt = nativeTokensPrompt;
   if (nativeTokensCached !== undefined) result.nativeTokensCached = nativeTokensCached;
   if (nativeTokensCompletion !== undefined) result.nativeTokensCompletion = nativeTokensCompletion;

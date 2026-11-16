@@ -286,6 +286,97 @@
       "type": "string",
       "description": "Agent that produced the work being evaluated (e.g. 'claude', 'codex')."
     },
+    "nativeProviderExecutions": {
+      "type": "array",
+      "description": "Owned native turn evidence; requested identity is separate from observed OpenRouter metadata.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sessionRef",
+          "ownershipAttemptIds",
+          "responseId",
+          "transport",
+          "requestedModel",
+          "responseModel",
+          "generation"
+        ],
+        "properties": {
+          "sessionRef": {
+            "type": "string"
+          },
+          "ownershipAttemptIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "responseId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "transport": {
+            "type": "string"
+          },
+          "requestedModel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "responseModel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "generation": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "required": [
+              "totalCostUsd"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "totalCostUsd": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "providerName": {
+                "type": "string"
+              },
+              "modelPermaslug": {
+                "type": "string"
+              },
+              "cacheDiscountUsd": {
+                "type": "number",
+                "minimum": 0
+              },
+              "nativeTokensPrompt": {
+                "type": "number",
+                "minimum": 0
+              },
+              "nativeTokensCached": {
+                "type": "number",
+                "minimum": 0
+              },
+              "nativeTokensCompletion": {
+                "type": "number",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    },
     "workflowCost": {
       "type": "number",
       "minimum": 0,
