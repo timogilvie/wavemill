@@ -7,10 +7,12 @@ import {
   isModelQualitySignal,
   parseAbortFailureKind,
   type ArmFaultClass,
+  type ArmFaultExitEvidence,
   type ChallengeArmSide,
 } from './arm-failure-taxonomy.ts';
 import { parseBudgetExhaustedFact, type BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
 import { resolveNativeStageTimeSplit, type NativeStageTimeSplit } from './native-agent/stage-time-split.ts';
+import { readStageResultSync } from './stage-result.ts';
 
 const DEFAULT_EVALS_DIR = '.wavemill/evals';
 const RELIABILITY_RECORDS_FILENAME = 'reliability-records.jsonl';
@@ -76,11 +78,30 @@ export interface BuildArmReliabilityRecordInput {
  * harness diagnostics while keeping harness/selection/unknown faults out of
  * model-quality routing feedback.
  */
+/**
+ * HOK-3382: the typed exit evidence a settled-without-result coding attempt
+ * carries. Read from the coding attempt's own result, never guessed from the
+ * detail text; absent/unreadable evidence leaves the historical model-fault
+ * fallback intact.
+ */
+function codingExitEvidence(
+  failureKind: string | null,
+  featureDir: string | undefined,
+): ArmFaultExitEvidence | null {
+  if (!featureDir || failureKind !== 'coding-exited-without-result') return null;
+  try {
+    return readStageResultSync(featureDir, 'coding')?.artifacts?.exitEvidence ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export function buildArmReliabilityRecord(input: BuildArmReliabilityRecordInput): ArmReliabilityRecord {
   const failureKind = parseAbortFailureKind(input.abortReason);
   const budgetExhausted = parseBudgetExhaustedFact(input.budgetExhausted ?? null);
   const timeSplit = resolveNativeStageTimeSplit(budgetExhausted, { featureDir: input.featureDir }) ?? undefined;
-  const faultClass = classifyArmFault({ failureKind, detail: input.detail, budgetExhausted, timeSplit });
+  const exitEvidence = codingExitEvidence(failureKind, input.featureDir);
+  const faultClass = classifyArmFault({ failureKind, detail: input.detail, budgetExhausted, timeSplit, exitEvidence });
   return {
     schemaVersion: '1.0.0',
     id: input.id ?? randomUUID(),

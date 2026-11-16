@@ -116,6 +116,9 @@ const VALID_STATUSES: readonly StageStatus[] = ['running', 'awaiting_user', 'com
 export interface PlanningExecutionBounds {
   maxTurns?: number;
   maxToolCalls?: number;
+  /** HOK-3382: model-attributable time budget (renamed from `maxWallClockMs`). */
+  maxModelTimeMs?: number;
+  /** @deprecated legacy spelling read as an alias for `maxModelTimeMs`. */
   maxWallClockMs?: number;
 }
 
@@ -131,6 +134,8 @@ export interface StageExecutionUsage {
   turnsCompleted?: number;
   toolCallsExecuted?: number;
   wallClockMs?: number;
+  /** Model-attributable elapsed time, excluding paused harness tool execution. */
+  modelTimeMs?: number;
   /** Uncached input tokens (excludes cache reads and writes). */
   totalInputTokens?: number;
   totalOutputTokens?: number;
@@ -467,6 +472,27 @@ export interface ApprovalRequestArtifact {
 }
 
 /** Discriminated union of all stage artifact types. */
+/**
+ * The open harness tool call that held a native stage's loop when the attempt
+ * was settled without a result (HOK-3382). Its presence is what attributes
+ * such a failure to the harness rather than the model.
+ */
+export interface StageHarnessHold {
+  toolName: string;
+  toolCallId: string;
+  startedAt: string;
+}
+
+/** Facts observed when an attempt ended without a usable result (HOK-3382). */
+export interface StageExitEvidence {
+  reason?: string;
+  stage?: string;
+  observedHead?: string | null;
+  observedAt?: string;
+  /** Present only when a harness tool (not the model) was holding the loop. */
+  harnessHold?: StageHarnessHold;
+}
+
 export type StageArtifacts = (
   | PlanningArtifacts
   | CodingArtifacts
@@ -475,6 +501,8 @@ export type StageArtifacts = (
 ) & {
   /** Present when a stage is paused in an approval-needed runtime state. */
   approvalRequest?: ApprovalRequestArtifact;
+  /** HOK-3382: evidence recorded when the agent settled without a result. */
+  exitEvidence?: StageExitEvidence;
 };
 
 /**

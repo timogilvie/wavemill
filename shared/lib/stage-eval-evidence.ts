@@ -53,12 +53,14 @@ type StageResultShape = {
     bounds?: {
       maxTurns?: unknown;
       maxToolCalls?: unknown;
+      maxModelTimeMs?: unknown;
       maxWallClockMs?: unknown;
     };
     usage?: {
       turnsCompleted?: unknown;
       toolCallsExecuted?: unknown;
       wallClockMs?: unknown;
+      modelTimeMs?: unknown;
       totalInputTokens?: unknown;
       totalOutputTokens?: unknown;
       totalCostUsd?: unknown;
@@ -171,10 +173,12 @@ function summarizePlanningExecutionOutcome(result: StageResultShape | null | und
   const artifacts = result.artifacts;
   const bounds = artifacts?.bounds;
   const usage = artifacts?.usage;
+  // HOK-3382: the budget is model time; `maxWallClockMs` is the legacy spelling.
+  const maxModelTimeMs = bounds?.maxModelTimeMs ?? bounds?.maxWallClockMs;
   const exceeded = [
     exceedsBound(usage?.turnsCompleted, bounds?.maxTurns) ? 'turns' : '',
     exceedsBound(usage?.toolCallsExecuted, bounds?.maxToolCalls) ? 'tool_calls' : '',
-    exceedsBound(usage?.wallClockMs, bounds?.maxWallClockMs) ? 'wall_clock' : '',
+    exceedsBound(usage?.modelTimeMs, maxModelTimeMs) ? 'model_time' : '',
   ].filter(Boolean);
   const parts = [
     result.status ? `status=${result.status}` : '',
@@ -187,8 +191,9 @@ function summarizePlanningExecutionOutcome(result: StageResultShape | null | und
     typeof usage?.turnsCompleted === 'number' ? `turnsCompleted=${usage.turnsCompleted}` : '',
     typeof bounds?.maxToolCalls === 'number' ? `maxToolCalls=${bounds.maxToolCalls}` : '',
     typeof usage?.toolCallsExecuted === 'number' ? `toolCallsExecuted=${usage.toolCallsExecuted}` : '',
-    typeof bounds?.maxWallClockMs === 'number' ? `maxWallClockMs=${bounds.maxWallClockMs}` : '',
+    typeof maxModelTimeMs === 'number' ? `maxModelTimeMs=${maxModelTimeMs}` : '',
     typeof usage?.wallClockMs === 'number' ? `wallClockMs=${usage.wallClockMs}` : '',
+    typeof usage?.modelTimeMs === 'number' ? `modelTimeMs=${usage.modelTimeMs}` : '',
     exceeded.length > 0 ? `boundsExceeded=${exceeded.join('|')}` : '',
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(', ') : undefined;

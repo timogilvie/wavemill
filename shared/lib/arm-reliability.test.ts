@@ -76,13 +76,13 @@ test('skips malformed JSONL lines and duplicate retry records', () => {
 // protects: a budget-exhausted arm's reliability record losing the fact, or carrying a hardcoded class (HOK-3362)
 test('derives the fault class from the budget fact and keeps the fact on the record', () => {
   const fact = {
-    kind: 'wall_clock',
-    stopReason: 'wall_clock_limit',
+    kind: 'model_time',
+    stopReason: 'model_time_limit',
     limit: 3_600_000,
     used: 3_600_000,
     progress: { turnsCompleted: 145, toolCallsExecuted: 230, wallClockMs: 3_600_000, providerErrorRetries: 0 },
   } as const;
-  // HOK-3380: a wall-clock fact with no resolvable session-stream pointer can
+  // HOK-3380: a model-time fact with no resolvable session-stream pointer can
   // no longer tell harness tool time apart from model time, so it is
   // unknown-fault rather than defaulting to model-fault.
   const progressing = buildArmReliabilityRecord({
@@ -126,6 +126,46 @@ test('derives the fault class from the budget fact and keeps the fact on the rec
   assert.equal(historical.budgetExhausted, undefined);
 });
 
+// protects: HOK-3382 — a hung harness settled by the recovery controller being charged to the model
+test('HOK-3382: reads harnessHold from the coding attempt and records harness-fault, not model skill', () => {
+  const featureDir = mkdtempSync(join(tmpdir(), 'arm-reliability-hang-'));
+  try {
+    writeFileSync(join(featureDir, '.coding-result.json'), JSON.stringify({
+      stage: 'coding',
+      status: 'failed',
+      startedAt: '2026-11-15T00:00:00.000Z',
+      finishedAt: '2026-11-15T01:00:00.000Z',
+      agent: 'native',
+      model: 'z-ai/glm-5.3-flash',
+      notes: 'Interrupted: coding agent settled without a result (harness-hung)',
+      artifacts: {
+        type: 'coding',
+        terminationClass: 'interrupted',
+        exitEvidence: {
+          reason: 'harness-hung',
+          stage: 'coding',
+          harnessHold: { toolName: 'run_tests', toolCallId: 'call-1', startedAt: '2026-11-15T00:10:00.000Z' },
+        },
+      },
+    }));
+    const record = buildArmReliabilityRecord({
+      issueId: 'HOK-3382_c',
+      challengePairId: 'HOK-3382',
+      challengeRole: 'challenger',
+      stage: 'coding',
+      model: 'z-ai/glm-5.3-flash',
+      abortReason: 'terminal_stage_failure:coding-exited-without-result',
+      detail: 'Interrupted: coding agent settled without a result (harness-hung)',
+      featureDir,
+    });
+    assert.equal(record.failureKind, 'coding-exited-without-result');
+    assert.equal(record.faultClass, 'harness-fault');
+    assert.equal(record.qualitySignalEligible, false);
+  } finally {
+    rmSync(featureDir, { recursive: true, force: true });
+  }
+});
+
 // protects: HOK-3380 — the reliability record failing to resolve a real archived transcript into harness-fault
 test('resolves and records a timeSplit, and derives harness-fault, from an archived transcript', () => {
   const repoDir = mkdtempSync(join(tmpdir(), 'arm-reliability-split-'));
@@ -147,8 +187,8 @@ test('resolves and records a timeSplit, and derives harness-fault, from an archi
       model: 'z-ai/glm-5.3-flash',
       abortReason: 'retry_exhausted:native-stage-timeout',
       budgetExhausted: {
-        kind: 'wall_clock',
-        stopReason: 'wall_clock_limit',
+        kind: 'model_time',
+        stopReason: 'model_time_limit',
         limit: 3_600_000,
         used: 3_600_000,
         progress: { turnsCompleted: 92, toolCallsExecuted: 116, wallClockMs: 3_600_000 },

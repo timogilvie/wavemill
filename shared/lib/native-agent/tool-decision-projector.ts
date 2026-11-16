@@ -514,7 +514,7 @@ function parseEventTimestamp(value: string | number): number | undefined {
 function isTimeoutTermination(sessionEnded: SessionEndedEvent | undefined): boolean {
   if (!sessionEnded) return false;
   const reason = sessionEnded.stopReason;
-  return budgetKindForStopReason(reason) === 'wall_clock' || reason === 'aborted';
+  return budgetKindForStopReason(reason) === 'model_time' || reason === 'aborted';
 }
 
 function pickBudgetFields(

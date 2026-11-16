@@ -1732,9 +1732,16 @@
                             "type": "integer",
                             "minimum": 1
                         },
+                        "maxModelTimeMs": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Model-attributable time budget for native planning (HOK-3382). The clock pauses while a harness tool executes."
+                        },
                         "maxWallClockMs": {
                             "type": "integer",
-                            "minimum": 1
+                            "minimum": 1,
+                            "deprecated": true,
+                            "description": "Deprecated (HOK-3382): legacy spelling of maxModelTimeMs, still read as an alias."
                         },
                         "toolStagnation": {
                             "type": "object",

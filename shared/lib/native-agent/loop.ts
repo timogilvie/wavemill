@@ -137,14 +137,18 @@ export interface LoopBudget {
   maxTotalTokens?: number;
   maxToolCalls?: number;
   /**
-   * Model-attributable time budget (HOK-3381). The clock pauses while a
-   * harness tool executes: charged time is `totalMs - harnessToolMs` over the
-   * run's window, derived through `nativeStageTimeSplit` (HOK-3380), never a
-   * second timer. Per-call tool timeouts still bound a single hung tool; the
-   * stage-level backstop for a hung harness is slice 3/3 (ledger step
-   * deadline).
+   * Model-attributable time budget, named for what it measures (HOK-3381,
+   * renamed HOK-3382). The clock pauses while a harness tool executes:
+   * charged time is `totalMs - harnessToolMs` over the run's window, derived
+   * through `nativeStageTimeSplit` (HOK-3380), never a second timer.
+   *
+   * This is NOT a harness deadline: per-call tool timeouts bound a single
+   * hung tool, and a hung harness (a tool wedged past its timeout) is the
+   * recovery controller's — it reassesses a stalled native stage from the
+   * shared progress clock and classifies the hold as `harness-fault`
+   * (HOK-3382). Never add a second elapsed-time deadline here.
    */
-  maxWallClockMs?: number;
+  maxModelTimeMs?: number;
   maxCostUsd?: number;
   /** Shared HOK-3381 tool-call progress policy (task-progress.ts). */
   stagnation?: ToolCallProgressPolicy;
@@ -156,7 +160,7 @@ export type LoopStopReason =
   | 'token_limit'
   | 'tool_call_limit'
   | 'tool_stagnation'
-  | 'wall_clock_limit'
+  | 'model_time_limit'
   | 'cost_limit'
   | 'aborted'
   | 'error';
@@ -394,7 +398,18 @@ export interface LoopResult {
   totalInputTokens: number;
   totalOutputTokens: number;
   totalCostUsd: number;
+  /**
+   * Elapsed wall time for the run. This is an honest measurement (durations,
+   * smoke checks, prompt-cache economics), never a deadline: a hung harness
+   * is not bounded by it (HOK-3382).
+   */
   wallClockMs: number;
+  /**
+   * Model-attributable time charged by the pausing clock (HOK-3381/HOK-3382):
+   * elapsed time minus harness tool time. `budget-exhaustion.ts` reports it as
+   * the `model_time` budget's `used`, so the fact's unit matches its kind.
+   */
+  modelTimeMs: number;
   /**
    * Prompt-cache usage over this run's turns (HOK-3260), projected from the
    * same per-turn provider usage that feeds `totalCostUsd`.
@@ -671,11 +686,11 @@ function resolveContextManagementConfig(
 interface ComposedSignal {
   signal: AbortSignal;
   cleanup: () => void;
-  isWallClockExpiry: () => boolean;
-  /** Abort the composed signal (not treated as a wall-clock expiry). */
+  isModelTimeExpiry: () => boolean;
+  /** Abort the composed signal (not treated as a model-time expiry). */
   abort: () => void;
   /** Abort because the model-time budget ran out (HOK-3381). */
-  expireWallClock: () => void;
+  expireModelTime: () => void;
 }
 
 /**
@@ -686,7 +701,7 @@ interface ComposedSignal {
  */
 function composeAbortSignal(callerSignal: AbortSignal | undefined): ComposedSignal {
   const controller = new AbortController();
-  let wallClockExpired = false;
+  let modelTimeExpired = false;
 
   function abort() {
     if (!controller.signal.aborted) {
@@ -707,10 +722,10 @@ function composeAbortSignal(callerSignal: AbortSignal | undefined): ComposedSign
   return {
     signal: controller.signal,
     cleanup,
-    isWallClockExpiry: () => wallClockExpired,
+    isModelTimeExpiry: () => modelTimeExpired,
     abort,
-    expireWallClock: () => {
-      wallClockExpired = true;
+    expireModelTime: () => {
+      modelTimeExpired = true;
       abort();
     },
   };
@@ -741,7 +756,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     : undefined;
 
   // ── Model-time budget clock (HOK-3381) ───────────────────────────────────
-  // `maxWallClockMs` now bounds model-attributable time: the clock pauses
+  // `maxModelTimeMs` now bounds model-attributable time: the clock pauses
   // while a harness tool executes. Charged time is derived from the loop's
   // own event timeline through `nativeStageTimeSplit` (HOK-3380) —
   // `totalMs - harnessToolMs` — never a second interval-pairing site.
@@ -767,19 +782,19 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
    * budget boundary.
    */
   const armModelClock = (): void => {
-    if (budget?.maxWallClockMs === undefined) return;
+    if (budget?.maxModelTimeMs === undefined) return;
     if (modelClockTimer !== undefined) {
       clearTimeout(modelClockTimer);
       modelClockTimer = undefined;
     }
     if (composed.signal.aborted) return;
-    const remaining = budget.maxWallClockMs - chargedModelTimeMs(millClockNowMs());
+    const remaining = budget.maxModelTimeMs - chargedModelTimeMs(millClockNowMs());
     if (remaining <= 0) {
-      composed.expireWallClock();
+      composed.expireModelTime();
       return;
     }
     if (activeToolCount > 0) return; // paused: a harness tool holds the loop
-    modelClockTimer = setTimeout(() => composed.expireWallClock(), remaining);
+    modelClockTimer = setTimeout(() => composed.expireModelTime(), remaining);
   };
   armModelClock();
 
@@ -841,6 +856,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
       totalOutputTokens: 0,
       totalCostUsd: 0,
       wallClockMs: 0,
+      modelTimeMs: 0,
       promptCache: EMPTY_PROMPT_CACHE_SUMMARY,
       startedAtMs: startTime,
     };
@@ -1029,7 +1045,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
 
       // Evaluate budget limits in deterministic order.
       // A pending terminal synthesis is the single graceful exception to the
-      // analysis turn/tool limits. Token, cost, abort, and wall-clock limits
+      // analysis turn/tool limits. Token, cost, abort, and model-time limits
       // remain hard safety boundaries.
       if (
         !terminalSynthesisPromptPending
@@ -1070,7 +1086,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
         budgetStopReason = 'cost_limit';
         return { action: 'end' };
       }
-      // Gracefully exit if the abort signal fired during this turn (e.g. wall-clock or caller cancel).
+      // Gracefully exit if the abort signal fired during this turn (e.g. model-time or caller cancel).
       if (composed.signal.aborted) {
         return { action: 'end' };
       }
@@ -1829,31 +1845,35 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
 
   const endTime = Date.now();
   const wallClockMs = endTime - startTime;
+  // Charged model time at the end of the run, from the same clock the budget
+  // arms: elapsed minus harness tool time (HOK-3382). Read before the result is
+  // assembled so the `model_time` fact's `used` matches its kind.
+  const modelTimeMs = chargedModelTimeMs(millClockNowMs());
 
   let stopReason: LoopStopReason;
   const finalStopReason = finalAssistantStopReason(finalMessages);
   if (composed.signal.aborted && (loopError || !budgetStopReason)) {
     // Abort takes precedence over a loop error since the error may be caused by the abort.
-    stopReason = composed.isWallClockExpiry() ? 'wall_clock_limit' : 'aborted';
+    stopReason = composed.isModelTimeExpiry() ? 'model_time_limit' : 'aborted';
   } else if (loopError) {
     stopReason = 'error';
   } else if (finalStopReason === 'error') {
     stopReason = 'error';
   } else if (finalStopReason === 'aborted') {
-    stopReason = composed.isWallClockExpiry() ? 'wall_clock_limit' : 'aborted';
+    stopReason = composed.isModelTimeExpiry() ? 'model_time_limit' : 'aborted';
   // allow-failure-policy: the loop is the producer of budget stop reasons; a terminal-synthesis turn that finished on its last allowed turn is a clean stop, not a budget stop.
   } else if (finalStopReason === 'stop' && budgetStopReason === 'turn_limit') {
     stopReason = 'stop';
   } else if (budgetStopReason) {
     stopReason = budgetStopReason;
   } else if (composed.signal.aborted) {
-    stopReason = composed.isWallClockExpiry() ? 'wall_clock_limit' : 'aborted';
+    stopReason = composed.isModelTimeExpiry() ? 'model_time_limit' : 'aborted';
   } else {
     stopReason = 'stop';
   }
 
   // Stop reason before error text (HOK-3362): the stop reason is decided first,
-  // and a budget stop never carries a provider error. A wall-clock abort leaves
+  // and a budget stop never carries a provider error. A model-time abort leaves
   // "Request was aborted" on the in-flight turn; classifying that text would
   // record our own budget as `provider-unknown-error`.
   if (isBudgetStopReason(stopReason)) {
@@ -1918,6 +1938,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     totalOutputTokens,
     totalCostUsd,
     wallClockMs,
+    modelTimeMs,
     promptCache: summarizePromptCache(turnCacheUsage),
     providerErrorRetries: providerErrorRetryAttempts,
     startedAtMs: startTime,

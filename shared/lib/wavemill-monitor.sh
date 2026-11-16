@@ -4503,16 +4503,19 @@ stage_agent_disposition() {
   printf '%s\n' "$out"
 }
 
-# _stage_stamp_settled_without_result <issue> <feature_dir> <result_stage> <reason> <current_head> [fallback_agent]
+# _stage_stamp_settled_without_result <issue> <feature_dir> <result_stage> <reason> <current_head> [fallback_agent] [harness_hold_json]
 # Stamps a stage `failed` because its agent settled without a result, so the
 # next tick routes it through classifyFailure → maybe_retry_failed_stage
 # (`stage-failure-<stage>`). The one writer of this record: the HOK-3386
 # disposition and the review exit with no usable verdict (HOK-3463) share it.
 # The evidence says what was observed. `fallback_agent` covers a result file
 # that is missing or names no agent — a failed result without an agent reads
-# as a monitor terminalization and is never retried.
+# as a monitor terminalization and is never retried. `harness_hold_json`
+# (HOK-3382) is the recovery controller's open-tool-call evidence; when given
+# it is merged into `exitEvidence.harnessHold`, which is what makes the failed
+# attempt attribute to the harness rather than the model.
 _stage_stamp_settled_without_result() {
-  local issue="$1" feature_dir="$2" result_stage="$3" reason="$4" current_head="${5:-}" fallback_agent="${6:-}"
+  local issue="$1" feature_dir="$2" result_stage="$3" reason="$4" current_head="${5:-}" fallback_agent="${6:-}" harness_hold_json="${7:-}"
   local agent model evidence_json detail artifacts_json
   agent="$(stage_result_field "$feature_dir" "$result_stage" "agent")"
   [[ -n "$agent" ]] || agent="$fallback_agent"
@@ -4520,6 +4523,10 @@ _stage_stamp_settled_without_result() {
   if command -v jq >/dev/null 2>&1; then
     evidence_json="$(jq -cn --arg reason "$reason" --arg stage "$result_stage" --arg currentHead "${current_head:-unknown}" \
       '{reason:$reason, stage:$stage, observedHead:$currentHead, observedAt:(now|todate)}' 2>/dev/null || echo "{}")"
+    if [[ -n "$harness_hold_json" && "$harness_hold_json" != "null" ]] \
+        && jq -e 'type == "object"' >/dev/null 2>&1 <<<"$harness_hold_json"; then
+      evidence_json="$(jq -c --argjson hold "$harness_hold_json" '. + {harnessHold: $hold}' <<<"$evidence_json" 2>/dev/null || printf '%s' "$evidence_json")"
+    fi
   else
     evidence_json="{}"
   fi
@@ -4626,8 +4633,12 @@ _stage_disposition_act_now() {
   blocking_detail="$(printf '%s' "$disposition" | jq -r '.blockingPrompt.detail // empty' 2>/dev/null)"
 
   local recovery_action recovery_outcome recovery_claim
+  # HOK-3382: forward the shared stall fact (and any open harness tool call the
+  # controller resolves from the native transcript). A disposition without it
+  # passes null; the controller then simply has nothing to reassess.
   recovery_outcome="$(wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" \
-    --state-file "$STATE_FILE" --owner-pid "${recovery_owner_pid:-$$}" --run-id "$control_run_id" --issue "$issue" --stage "$result_stage" --disposition "$disposition" 2>/dev/null)"
+    --state-file "$STATE_FILE" --owner-pid "${recovery_owner_pid:-$$}" --run-id "$control_run_id" --issue "$issue" --stage "$result_stage" --disposition "$disposition" \
+    --progress "$(jq -c '.progress // null' <<<"$disposition" 2>/dev/null || echo null)" 2>/dev/null)"
   recovery_action="$(jq -r '.decision.action // "no-action"' <<<"$recovery_outcome")"
   case "$recovery_action" in
     consume-advance)
@@ -4644,6 +4655,45 @@ _stage_disposition_act_now() {
     # next normal poll reassesses an agent that is still legitimately active.
     verify-effect) return 0 ;;
     reject-stale-control) return 0 ;;
+    # HOK-3382: reassessment is due and an open harness tool call is holding
+    # the loop. This is a harness hang, not a model failure: settle the agent,
+    # record the failed attempt with the hold evidence and ack the claim. The
+    # next tick routes it through the existing failed-stage seam
+    # (classifyFailure → maybe_retry_failed_stage → bounded retry), never a
+    # relaunch from here.
+    retry-stage)
+      [[ "$(jq -r '.claim.claimed // false' <<<"$recovery_outcome")" == "true" ]] || return 0
+      recovery_claim="$(jq -r '.claim.claim.claimId' <<<"$recovery_outcome")"
+      _recovery_continuation_current || return 0
+      # A completion marker or terminal result is already an answer.
+      if [[ "$has_completion" == "true" ]] \
+          || [[ "$(read_stage_status "$state_dir" "$result_stage")" != "running" ]]; then
+        wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" --ack "$recovery_claim" >/dev/null
+        return 0
+      fi
+      local hold_json hold_tool teardown_rc=0 ack_outcome=applied
+      hold_json="$(jq -c '.reassessment.harnessHold // null' <<<"$recovery_outcome" 2>/dev/null || echo null)"
+      hold_tool="$(jq -r '.reassessment.harnessHold.toolName // "unknown"' <<<"$recovery_outcome" 2>/dev/null || echo unknown)"
+      # The process is alive and we are not waiting for it to settle: kill it
+      # now through the one teardown seam (it also records the exit fact).
+      stage_agent_teardown "$issue" "$feature_dir" "harness-hung" \
+        --phase "$stage" --worktree "$wt_dir" --no-settle || teardown_rc=$?
+      if (( teardown_rc != 0 )); then
+        # The old attempt may still own the window.  Do not make its running
+        # result retryable until the one teardown seam has proved it stopped:
+        # releasing the claim for reassessment preserves the fence without
+        # permitting a concurrent relaunch.
+        wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" \
+          --ack "$recovery_claim" --outcome reassess >/dev/null
+        log_warn "$issue → ${stage} harness hung in ${hold_tool}, but teardown is incomplete — retaining running result for reassessment"
+        return 0
+      fi
+      _stage_stamp_settled_without_result "$issue" "$feature_dir" "$result_stage" "harness-hung" \
+        "$current_head" "" "$hold_json"
+      wavemill_run_tool task-recovery-controller.ts --state-dir "$feature_dir" \
+        --ack "$recovery_claim" --outcome applied >/dev/null
+      log_warn "$issue → ${stage} harness hung in ${hold_tool} (no progress since $(jq -r '.reassessment.lastProgressAt // "launch"' <<<"$recovery_outcome" 2>/dev/null || echo launch)) - settled for stage-failure-${stage}"
+      return 1 ;;
   esac
 
   if [[ "$kind" == "inactive" && "$reason" == "no-launch" ]]; then

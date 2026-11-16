@@ -1,0 +1,61 @@
+# shellcheck shell=bash
+# Fake coder for the HOK-3382 golden journey (sourced by tests/fakes/bin/claude).
+# Hand-authored regression fixture; it models a harness hang and is not a
+# production incident replay.
+#
+# First coding launch: a native harness tool wedges. The fixture emulates the
+# native on-disk contract up to the hang — a transcript whose last event is an
+# open `run_tests` call, an agent-owned `working` hook, and a child test
+# runner that never returns — then skews the shared progress readers past the
+# 30-minute stall clock and waits forever. The recovery controller reassesses
+# the in-flight stage, settles it with `harness-hung` hold evidence, and the
+# relaunch (stage-failure-coding bounded retry) completes through the shared
+# fake's normal coding contract.
+#
+# No production threshold changes: the skew only moves the progress readers'
+# "now" (tests/journeys/fixtures/controller-writes-dont-reset-stall/progress-clock.mjs),
+# exactly as the existing stall journeys do.
+if [[ -f "$FEATURE_DIR/harness-hang-injected" ]]; then
+  default_coding
+  return
+fi
+touch "$FEATURE_DIR/harness-hang-injected"
+
+session_dir="$FEATURE_DIR/native-sessions"
+mkdir -p "$session_dir"
+transcript_path="$session_dir/coding-${WAVEMILL_ISSUE}.jsonl"
+session_id="wavemill-coding-${WAVEMILL_ISSUE}"
+now_ms=$(( $(date +%s) * 1000 ))
+now_s=$(( now_ms / 1000 ))
+seq=0
+
+append_event() {
+  printf '%s\n' "$1" >> "$transcript_path"
+}
+
+: > "$transcript_path"
+append_event "$(jq -cn --argjson seq "$seq" --arg sid "$session_id" --argjson ts "$now_ms" \
+  '{seq:$seq, sessionId:$sid, timestamp:$ts, type:"session_started", model:"glm-5.3-flash", api:"openrouter", provider:"openrouter"}')"
+seq=$((seq + 1))
+append_event "$(jq -cn --argjson seq "$seq" --arg sid "$session_id" --argjson ts "$((now_ms + 1000))" \
+  '{seq:$seq, sessionId:$sid, timestamp:$ts, type:"turn_started", turnIndex:0}')"
+seq=$((seq + 1))
+append_event "$(jq -cn --argjson seq "$seq" --arg sid "$session_id" --argjson ts "$((now_ms + 2000))" \
+  '{seq:$seq, sessionId:$sid, timestamp:$ts, type:"assistant_message", model:"glm-5.3-flash", stopReason:"toolUse", rawContent:[], replayContent:[], redacted:false}')"
+seq=$((seq + 1))
+# The open harness tool call: started, never returned.
+append_event "$(jq -cn --argjson seq "$seq" --arg sid "$session_id" --argjson ts "$((now_ms + 3000))" \
+  '{seq:$seq, sessionId:$sid, timestamp:$ts, type:"tool_started", toolCallId:"call-hang-1", toolName:"run_tests", args:{}}')"
+
+# Agent-owned in-flight record (never refreshed: a wedged tool writes nothing).
+printf '{"state":"working","event":"PreToolUse","writer":"agent","agent":"native","timestamp":%s}\n' "$now_s" \
+  > "/tmp/wavemill-${WAVEMILL_SESSION:-wavemill}-${WAVEMILL_ISSUE}.hook"
+
+# Move only the progress readers past the 30-minute stall threshold.
+printf '40\n' > "${FAKE_ROOT:?}/progress-clock-skew-minutes"
+
+# The wedged test runner. It becomes the pane's foreground process, so a
+# teardown interrupt reaches it — exactly the shape of a harness stuck inside
+# a tool it can neither finish nor kill.
+printf '%s\n' "$$" > "$FEATURE_DIR/hung-child.pid"
+exec sleep 3600

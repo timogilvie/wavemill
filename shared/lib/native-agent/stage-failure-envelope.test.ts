@@ -23,7 +23,7 @@ function makeEnvelope(overrides: Partial<StageFailureEnvelope> = {}): StageFailu
     schemaVersion: '1.0',
     stage: 'review',
     cause: 'stage-timeout',
-    stopReason: 'wall_clock_limit',
+    stopReason: 'model_time_limit',
     retryAttempt: 1,
     configuredTimeoutMs: 600_000,
     provider: 'openrouter',

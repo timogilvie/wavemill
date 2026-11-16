@@ -52,6 +52,9 @@ export const INCIDENT_REPLAY_FAULTS = [
   'malformed_model_response',
   'provider_402_or_429',
   'agent_sigkill_mid_stage',
+  // HOK-3382: a native harness tool wedged past its timeout; the recovery
+  // controller reassesses the stalled stage and retries it as harness-fault.
+  'native_harness_hang',
   // sentinel: the "no fault" control used by the harness's own canary.
   'control_no_fault',
 ] as const;
@@ -92,6 +95,14 @@ export interface IncidentReplayFixture {
     detail: string;
     survivesRelaunches: number | 'never';
     progressing?: boolean;
+    /**
+     * HOK-3382: the open harness tool call the native transcript ends in. Its
+     * presence makes the replay satisfy rule 4a's *evidence* condition
+     * (stall due + open tool call), not a private replay timer.
+     */
+    harnessHold?: { toolName: string; toolCallId: string; startedAt: string };
+    /** ISO time of the newest agent-written progress; `null` = launch anchor only. */
+    lastProgressAt?: string | null;
   };
   convergence: {
     mustMerge?: boolean;
@@ -301,6 +312,10 @@ export interface FaultModel {
   survivesRelaunches: number;
   /** The agent keeps making progress (no recovery needed). */
   progressing?: boolean;
+  /** HOK-3382: the open harness tool call holding the loop (a harness hang). */
+  harnessHold?: { toolName: string; toolCallId: string; startedAt: string };
+  /** ISO time of the newest agent-written progress, when the fixture names one. */
+  lastProgressAt?: string | null;
 }
 
 /**
@@ -320,6 +335,8 @@ export function faultModelFromFixture(fixture: IncidentReplayFixture): FaultMode
     ...(f.failureKind ? { failureKind: f.failureKind } : {}),
     survivesRelaunches: survives,
     ...(f.progressing !== undefined ? { progressing: f.progressing } : {}),
+    ...(f.harnessHold ? { harnessHold: f.harnessHold } : {}),
+    ...(f.lastProgressAt !== undefined ? { lastProgressAt: f.lastProgressAt } : {}),
   };
 }
 
@@ -370,23 +387,48 @@ function replayRecoveryTick(
     failureKind: model.failureKind ?? null,
     detail: model.detail ?? '',
   });
-  const base = { failureKind: failure.failureKind, nextAction: failure.nextAction };
   // The bounded-retry verdict is a pure read; only the chosen action mutates
   // the bucket below. The controller ranks terminal / code-failure / retryable
   // and, within retryable, proceed / backoff / exhausted.
   const replayHead = 'deadbeef';
   const verdict = retry.gate(ctx.featureDir, replayHead);
-  const decision = decideTaskRecovery({
-    issue: 'replay',
-    stage,
-    attempt: { currentRunId: null, controlRunId: null },
-    disposition: null,
-    stageResult: { kind: 'failed' },
-    contractAvailable: stage === 'coding' ? true : null,
-    outstandingEffect: null,
-    wait: null,
-    failure: { decision: failure, retry: verdict },
-  });
+  // HOK-3382: a hung harness is a *live* stage. The fixture supplies the two
+  // facts the live controller composes — the shared stall clock is due and the
+  // transcript ends in an open tool call — and the controller's rule 4a decides.
+  const hung = model.harnessHold;
+  const decision = hung
+    ? decideTaskRecovery({
+      issue: 'replay',
+      stage,
+      attempt: { currentRunId: null, controlRunId: null },
+      disposition: { kind: 'in-flight', reason: 'agent-working', evidenceConfidence: 'high', waitingOn: null, blockingPrompt: null },
+      stageResult: { kind: 'running' },
+      contractAvailable: stage === 'coding' ? true : null,
+      outstandingEffect: null,
+      wait: null,
+      failure: null,
+      reassessment: {
+        due: true,
+        basis: 'no-progress',
+        lastProgressAt: model.lastProgressAt ?? null,
+        harnessHold: hung,
+      },
+    })
+    : decideTaskRecovery({
+      issue: 'replay',
+      stage,
+      attempt: { currentRunId: null, controlRunId: null },
+      disposition: null,
+      stageResult: { kind: 'failed' },
+      contractAvailable: stage === 'coding' ? true : null,
+      outstandingEffect: null,
+      wait: null,
+      failure: { decision: failure, retry: verdict },
+    });
+  const base = {
+    failureKind: decision.failureKind ?? failure.failureKind,
+    nextAction: decision.nextAction ?? failure.nextAction,
+  };
   const bucket = decision.retryBucket ?? failure.retryBucket ?? `stage-failure-${stage}`;
 
   switch (decision.action) {

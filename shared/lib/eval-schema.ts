@@ -238,6 +238,11 @@
  *   (`request | issue-override | repo-config | default`), so training can
  *   treat a defaulted budget as missing instead of a real constraint.
  *   Additive; legacy records without the field still validate.
+ * - **1.60.0**: HOK-3382 — the model-time budget is named for what it
+ *   measures. `budgetExhausted.kind` gains `model_time` and `stopReason`
+ *   gains `model_time_limit` (the `wall_clock*` spellings stay accepted for
+ *   historical rows); planning bounds gain `maxModelTimeMs`
+ *   (`maxWallClockMs` stays as a deprecated alias). Additive.
  *
  * @module eval-schema
  */
@@ -293,7 +298,7 @@ export interface EvalBudgetExhaustion {
  *
  * @since 1.44.0 added unknown_attribution intervention type (HOK-2894)
  */
-export const SCHEMA_VERSION = '1.59.0';
+export const SCHEMA_VERSION = '1.60.0';
 
 /**
  * Machine-readable exploration source for an eval row.
@@ -387,6 +392,8 @@ export interface EvalExecutedPlanning {
 export type PlanningTerminalReason =
   | 'turn_limit'
   | 'tool_call_limit'
+  /** @since 1.60.0 (HOK-3382) - the model-time budget; `wall_clock_limit` is the deprecated pre-rename spelling, still parsed. */
+  | 'model_time_limit'
   | 'wall_clock_limit'
   /** @since 1.57.0 (HOK-3362: every budget stop reason) */
   | 'token_limit'
@@ -400,6 +407,9 @@ export type PlanningTerminalReason =
 export interface PlanningExecutionBounds {
   maxTurns?: number;
   maxToolCalls?: number;
+  /** @since 1.60.0 (HOK-3382) - model-attributable time budget. */
+  maxModelTimeMs?: number;
+  /** @deprecated pre-rename spelling, still parsed for historical rows. */
   maxWallClockMs?: number;
 }
 
@@ -407,6 +417,8 @@ export interface PlanningExecutionUsage {
   turnsCompleted?: number;
   toolCallsExecuted?: number;
   wallClockMs?: number;
+  /** Model-attributable elapsed time, excluding paused harness tool execution. */
+  modelTimeMs?: number;
   totalInputTokens?: number;
   totalOutputTokens?: number;
   totalCostUsd?: number;

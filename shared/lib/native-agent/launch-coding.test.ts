@@ -1064,7 +1064,7 @@ function createFastCheckTool(): ToolDescriptor<Record<string, unknown>, { ok: tr
 
 describe('launchNativeCoding budget exhaustion (HOK-3362, HOK-3329 replay)', () => {
   // protects: our own wall-clock abort ("Request was aborted") recorded as provider_error / provider-unknown-error (HOK-3329 attempt 2)
-  it('records budget_exhausted kind=wall_clock with progress, never provider_error, when the budget aborts the run', async (t) => {
+  it('records budget_exhausted kind=model_time with progress, never provider_error, when the budget aborts the run', async (t) => {
     const { repoDir, featureDir, slug } = makeRepo();
     // Freeze startup time, then expire the budget during the second provider
     // request, after a tool has completed. Runner load must not decide whether
@@ -1101,12 +1101,12 @@ describe('launchNativeCoding budget exhaustion (HOK-3362, HOK-3329 replay)', () 
         wtDir: repoDir,
         repoDir,
         loopModelOverride: model,
-        loopBudgetOverride: { maxWallClockMs: 150, maxTurns: 10_000, maxToolCalls: 10_000 },
+        loopBudgetOverride: { maxModelTimeMs: 150, maxTurns: 10_000, maxToolCalls: 10_000 },
         extraDescriptors: [createFastCheckTool()],
       }),
       (error: unknown) => {
         assert.ok(error instanceof NativeBudgetExhaustedError);
-        assert.match((error as Error).message, /^native-stage-timeout: native coding exhausted its wall-clock budget/);
+        assert.match((error as Error).message, /^native-stage-timeout: native coding exhausted its model time budget/);
         assert.doesNotMatch((error as Error).message, /provider-unknown-error|Request was aborted/);
         return true;
       },
@@ -1117,9 +1117,9 @@ describe('launchNativeCoding budget exhaustion (HOK-3362, HOK-3329 replay)', () 
     if (!handoff.ok) return;
     assert.equal(handoff.value.reason, 'budget_exhausted');
     assert.equal(handoff.value.providerError, undefined);
-    assert.equal(handoff.value.stopReason, 'wall_clock_limit');
+    assert.equal(handoff.value.stopReason, 'model_time_limit');
     const fact = handoff.value.budgetExhausted!;
-    assert.equal(fact.kind, 'wall_clock');
+    assert.equal(fact.kind, 'model_time');
     assert.equal(fact.limit, 150);
     assert.ok(fact.used >= 150);
     assert.ok(fact.progress.turnsCompleted >= 1);
@@ -1133,7 +1133,7 @@ describe('launchNativeCoding budget exhaustion (HOK-3362, HOK-3329 replay)', () 
 
     const stageResult = await readStageResult(featureDir, 'coding');
     assert.equal(stageResult?.status, 'failed');
-    assert.equal(stageResult?.failureReason, 'budget_exhausted:wall_clock');
+    assert.equal(stageResult?.failureReason, 'budget_exhausted:model_time');
     assert.deepEqual(stageResult?.budgetExhausted, fact);
     assert.doesNotMatch(readFileSync(getCodingFailureHandoffPath(featureDir), 'utf-8'), /provider_error/);
     assert.ok(fact.sessionStream, 'HOK-3380: the fact carries a transcript pointer instead of a stored providerWaitMs');

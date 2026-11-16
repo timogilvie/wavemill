@@ -518,6 +518,8 @@ const PLANNING_OUTCOME_STATUSES = new Set(['running', 'awaiting_user', 'complete
 const PLANNING_TERMINAL_REASONS = new Set([
   'turn_limit',
   'tool_call_limit',
+  // HOK-3382: `model_time_limit` is current; `wall_clock_limit` is the deprecated spelling.
+  'model_time_limit',
   'wall_clock_limit',
   // HOK-3362: every budget stop reason is a planning terminal reason (eval schema 1.57.0).
   'token_limit',
@@ -540,7 +542,11 @@ function toPlanningExecutionOutcome(outcome: PlanningExecutionOutcome): Planning
     ? {
         ...(isFiniteNonNegativeBudget(outcome.bounds.maxTurns) ? { maxTurns: outcome.bounds.maxTurns } : {}),
         ...(isFiniteNonNegativeBudget(outcome.bounds.maxToolCalls) ? { maxToolCalls: outcome.bounds.maxToolCalls } : {}),
-        ...(isFiniteNonNegativeBudget(outcome.bounds.maxWallClockMs) ? { maxWallClockMs: outcome.bounds.maxWallClockMs } : {}),
+        ...(isFiniteNonNegativeBudget(outcome.bounds.maxModelTimeMs)
+          ? { maxModelTimeMs: outcome.bounds.maxModelTimeMs }
+          : isFiniteNonNegativeBudget(outcome.bounds.maxWallClockMs)
+            ? { maxModelTimeMs: outcome.bounds.maxWallClockMs }
+            : {}),
       }
     : undefined;
   const usage = outcome.usage
@@ -548,6 +554,7 @@ function toPlanningExecutionOutcome(outcome: PlanningExecutionOutcome): Planning
         ...(isFiniteNonNegativeBudget(outcome.usage.turnsCompleted) ? { turnsCompleted: outcome.usage.turnsCompleted } : {}),
         ...(isFiniteNonNegativeBudget(outcome.usage.toolCallsExecuted) ? { toolCallsExecuted: outcome.usage.toolCallsExecuted } : {}),
         ...(isFiniteNonNegativeBudget(outcome.usage.wallClockMs) ? { wallClockMs: outcome.usage.wallClockMs } : {}),
+        ...(isFiniteNonNegativeBudget(outcome.usage.modelTimeMs) ? { modelTimeMs: outcome.usage.modelTimeMs } : {}),
         ...(isFiniteNonNegativeBudget(outcome.usage.totalInputTokens) ? { totalInputTokens: outcome.usage.totalInputTokens } : {}),
         ...(isFiniteNonNegativeBudget(outcome.usage.totalOutputTokens) ? { totalOutputTokens: outcome.usage.totalOutputTokens } : {}),
         ...(isFiniteNonNegativeBudget(outcome.usage.totalCostUsd) ? { totalCostUsd: outcome.usage.totalCostUsd } : {}),

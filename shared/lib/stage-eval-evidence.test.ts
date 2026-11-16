@@ -52,7 +52,7 @@ describe('buildChallengeStageEval planning execution outcome evidence', () => {
         type: 'planning',
         planArtifactValid: true,
         approvalReady: true,
-        bounds: { maxTurns: 40, maxToolCalls: 120, maxWallClockMs: 1200000 },
+        bounds: { maxTurns: 40, maxToolCalls: 120, maxModelTimeMs: 1200000 },
         usage: { turnsCompleted: 12, toolCallsExecuted: 31, wallClockMs: 300000 },
       },
     });
@@ -90,7 +90,7 @@ describe('buildChallengeStageEval planning execution outcome evidence', () => {
         type: 'planning',
         planArtifactValid: false,
         approvalReady: false,
-        bounds: { maxTurns: 40, maxToolCalls: 120, maxWallClockMs: 1200000 },
+        bounds: { maxTurns: 40, maxToolCalls: 120, maxModelTimeMs: 1200000 },
         usage: { turnsCompleted: 40, toolCallsExecuted: 72, wallClockMs: 900000 },
       },
     });
@@ -111,6 +111,41 @@ describe('buildChallengeStageEval planning execution outcome evidence', () => {
       assert.match(outcome.summary, /failureReason=turn_limit/);
       assert.match(outcome.summary, /approvalReady=false/);
       assert.match(outcome.summary, /boundsExceeded=turns/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not report model-time exhaustion from elapsed harness time', () => {
+    const slug = 'plan-harness-time';
+    const { repoDir } = setupPlanningResult(slug, {
+      stage: 'planning',
+      status: 'awaiting_user',
+      agent: 'native',
+      model: 'gpt-5.4',
+      artifacts: {
+        type: 'planning',
+        planArtifactValid: true,
+        approvalReady: true,
+        bounds: { maxModelTimeMs: 1_200 },
+        usage: { wallClockMs: 9_000, modelTimeMs: 1_100 },
+      },
+    });
+
+    try {
+      const evalStage = buildChallengeStageEval({
+        repoDir,
+        issueId: 'HOK-3382',
+        branchName: `task/${slug}`,
+        challengeStage: 'plan',
+        record: makeRecord(),
+        stageArtifacts: { planContent: '# Plan\n\n## Phase 1\n- Do the work.\n' },
+      });
+
+      const outcome = evalStage?.evidence.find((item) => item.label === 'planning_execution_outcome');
+      assert.ok(outcome);
+      assert.match(outcome.summary, /modelTimeMs=1100/);
+      assert.doesNotMatch(outcome.summary, /boundsExceeded=model_time/);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
@@ -455,11 +490,11 @@ describe('buildBudgetExhaustions (HOK-3362)', () => {
     $ref: 'eval-record.schema.json#/properties/budgetExhaustions',
   }) as ((value: unknown) => boolean) & { errors?: unknown };
 
-  // HOK-3380: no sessionStream pointer, so the wall-clock rule (5) now
+  // HOK-3380: no sessionStream pointer, so the model-time rule (5) now
   // derives unknown-fault rather than defaulting to model-fault.
   const wallClock = {
-    kind: 'wall_clock',
-    stopReason: 'wall_clock_limit',
+    kind: 'model_time',
+    stopReason: 'model_time_limit',
     limit: 3_600_000,
     used: 3_600_000,
     progress: { turnsCompleted: 145, toolCallsExecuted: 230, wallClockMs: 3_600_000, providerErrorRetries: 0, interruptedRequest: true },
@@ -493,7 +528,7 @@ describe('buildBudgetExhaustions (HOK-3362)', () => {
       }));
       const exhaustions = buildBudgetExhaustions({ stageResultsDir: dir });
       assert.deepEqual(exhaustions?.map((entry) => [entry.stage, entry.attempt, entry.model, entry.fact.kind, entry.faultClass]), [
-        ['coding', 1, 'z-ai/glm-5.3-flash', 'wall_clock', 'unknown-fault'],
+        ['coding', 1, 'z-ai/glm-5.3-flash', 'model_time', 'unknown-fault'],
         ['review', 1, 'kimi-k3', 'turn', 'model-fault'],
       ]);
       assert.equal(exhaustions?.[0]?.timeSplit, undefined);
@@ -526,8 +561,8 @@ describe('buildBudgetExhaustions (HOK-3362)', () => {
         model: 'glm-5.3-flash',
         executedModel: 'z-ai/glm-5.3-flash',
         budgetExhausted: {
-          kind: 'wall_clock',
-          stopReason: 'wall_clock_limit',
+          kind: 'model_time',
+          stopReason: 'model_time_limit',
           limit: 3_600_000,
           used: 3_600_000,
           progress: { turnsCompleted: 1, toolCallsExecuted: 1, wallClockMs: 3_600_000 },
@@ -543,6 +578,31 @@ describe('buildBudgetExhaustions (HOK-3362)', () => {
       assert.equal(entry.timeSplit?.version, 'nativeStageTimeSplit/v1');
       assert.ok(entry.timeSplit && entry.timeSplit.harnessToolMs > entry.timeSplit.modelMs);
       assert.equal(validateField(exhaustions), true, JSON.stringify(validateField.errors));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // protects: HOK-3382 — a hung harness being written into the eval record as a model-fault budget row
+  it('a harness-hung settled attempt never produces a budget-exhaustion fact', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'budget-exhaustions-hang-'));
+    try {
+      writeFileSync(join(dir, '.coding-result.json'), JSON.stringify({
+        stage: 'coding',
+        status: 'failed',
+        model: 'glm-5.3-flash',
+        executedModel: 'z-ai/glm-5.3-flash',
+        notes: 'Interrupted: coding agent settled without a result (harness-hung)',
+        artifacts: {
+          type: 'coding',
+          terminationClass: 'interrupted',
+          exitEvidence: {
+            reason: 'harness-hung',
+            harnessHold: { toolName: 'run_tests', toolCallId: 'call-1', startedAt: '2026-11-15T00:10:00.000Z' },
+          },
+        },
+      }));
+      assert.equal(buildBudgetExhaustions({ stageResultsDir: dir }), undefined);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
