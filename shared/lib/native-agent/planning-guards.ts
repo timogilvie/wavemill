@@ -1,5 +1,6 @@
 import type { LoopBudget } from './loop.ts';
 import type { ToolCallProgressPolicy } from '../task-progress.ts';
+import { extractReleaseReadiness } from '../task-packet-utils.ts';
 
 /**
  * Config-facing stagnation knobs (`nativeAgent.planning.toolStagnation`).
@@ -122,13 +123,6 @@ export function toLoopBudget(limits: NativePlanningLimits): LoopBudget {
   };
 }
 
-const RELEASE_READINESS_FIELDS = [
-  'database_change_risk',
-  'env_changes',
-  'config_changes',
-  'manual_steps',
-];
-
 const CONTROL_TEXT_PATTERNS: RegExp[] = [
   /<\|(?:tool|assistant|user|system|channel|constrain|analysis|final)[^>]*\|>/i,
   /\b(?:tool_call|tool_calls|function_call)\b/i,
@@ -152,16 +146,20 @@ export function validateFinalPlanningArtifact(text: string): FinalPlanValidation
   if (!/^#\s+\S.{2,}$/m.test(trimmed)) {
     return { valid: false, reason: 'missing_title' };
   }
-  if (!/^##\s+Release Readiness\b/m.test(trimmed)) {
+  // HOK-3499: Release Readiness is parsed by the one shared grammar, so the
+  // gate can never accept a plan the ready-stage consumer cannot read.
+  const releaseReadiness = extractReleaseReadiness(trimmed);
+  if (!releaseReadiness) {
     return { valid: false, reason: 'missing_release_readiness' };
   }
-  for (const field of RELEASE_READINESS_FIELDS) {
-    if (!new RegExp(`^-\\s+\\*\\*${field}\\*\\*\\s*:`, 'm').test(trimmed)) {
-      return { valid: false, reason: `missing_release_readiness_${field}` };
-    }
+  if (releaseReadiness.missingFields.length > 0) {
+    return { valid: false, reason: `missing_release_readiness_${releaseReadiness.missingFields[0]}` };
   }
   const hasActionableStructure =
-    /^##\s+(?:Phase|Implementation|Plan|Approach|Tasks?|Steps?|Validation|Testing|Scope)\b/im.test(trimmed) &&
+    // The optional numeric prefix is the plan/task-packet heading convention
+    // (`## 4. Step-by-step implementation approach`, the HOK-3406 attempt-4
+    // repair output); the same prefix is accepted by `extractSection`.
+    /^##\s+(?:\d+\.\s*)?(?:Phase|Implementation|Plan|Approach|Tasks?|Steps?|Validation|Testing|Scope)\b/im.test(trimmed) &&
     /^-\s+\S/m.test(trimmed);
   if (!hasActionableStructure) {
     return { valid: false, reason: 'missing_actionable_structure' };

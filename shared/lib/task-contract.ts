@@ -11,7 +11,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { extractReleaseReadiness } from './task-packet-utils.ts';
+import { extractReleaseReadiness, type ReleaseReadinessField } from './task-packet-utils.ts';
 
 export const TASK_CONTRACT_SCHEMA_VERSION = '1.0.0';
 
@@ -555,16 +555,25 @@ function extractVerificationItems(sources: SourceText[]): {
 function extractReleaseReadinessProjection(
   sources: SourceText[],
 ): ReleaseReadinessProjection {
-  // Try each source file with the existing extractReleaseReadiness parser
+  // Try each source file with the single HOK-3499 Release Readiness parser.
   for (const { path, text } of sources) {
     const readiness = extractReleaseReadiness(text);
     if (!readiness) continue;
 
+    // A required field the section does not declare is absent, not a default.
+    const missing = new Set<string>(readiness.missingFields);
+    const project = <T>(field: ReleaseReadinessField, value: T): TaskContractField<T> => (
+      missing.has(field)
+        ? absent<T>(`${field} not found in Release Readiness`)
+        : present(value, path)
+    );
     return {
-      databaseChangeRisk: present(readiness.databaseChangeRisk, path),
-      envChanges: present(readiness.envChanges, path),
-      configChanges: present(readiness.configChanges, path),
-      manualSteps: present(readiness.manualSteps, path),
+      databaseChangeRisk: readiness.databaseChangeRisk === undefined
+        ? absent('database_change_risk not found in Release Readiness')
+        : present(readiness.databaseChangeRisk, path),
+      envChanges: project('env_changes', readiness.envChanges),
+      configChanges: project('config_changes', readiness.configChanges),
+      manualSteps: project('manual_steps', readiness.manualSteps),
     };
   }
 
