@@ -1,0 +1,973 @@
+{
+  "schemaVersion": 1,
+  "issue": "HOK-3501",
+  "observedAt": "2026-11-16T21:38:25.460Z",
+  "scope": "Compatibility qualification; not representative-task reliability or model-quality evaluation.",
+  "retired": [
+    "gemini-2.5-flash",
+    "glm-5.2",
+    "kimi-k2-thinking",
+    "mistral-medium-3",
+    "qwen-3-235b"
+  ],
+  "maintainedNativeCohort": [
+    "qwen-3-coder",
+    "kimi-k3",
+    "kimi-k3.1-pro",
+    "glm-5.3",
+    "glm-5.3-flash",
+    "minimax-m3.1-flash",
+    "glm-5.3-flashx",
+    "mistral-large-4"
+  ],
+  "geminiMaintenance": "Refreshed deliberately on demand; outside the bounded eight-member automatic cohort.",
+  "pricingSources": [
+    "https://openrouter.ai/api/v1/models",
+    "https://api-docs.deepseek.com/quick_start/pricing/"
+  ],
+  "directDeepSeek": {
+    "at": "2026-11-16T21:25:07.920Z",
+    "model": "deepseek-flash",
+    "executor": "claude",
+    "endpoint": "https://api.deepseek.com/anthropic",
+    "exitCode": 0,
+    "resultSubtype": "success",
+    "isError": false,
+    "modelUsage": {
+      "deepseek-flash": {
+        "inputTokens": 5186,
+        "outputTokens": 582,
+        "cacheReadInputTokens": 21760,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.051359999999999996,
+        "contextWindow": 1000000,
+        "maxOutputTokens": 32000,
+        "thinkingTokens": 42,
+        "cacheCreationEphemeral5mInputTokens": 0,
+        "cacheCreationEphemeral1hInputTokens": 0,
+        "canonicalModel": "deepseek-flash",
+        "provider": "firstParty",
+        "costBasis": "unknown"
+      }
+    },
+    "totalCostUsd": 0.051359999999999996,
+    "usage": {
+      "input_tokens": 5186,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 21760,
+      "output_tokens": 582,
+      "output_tokens_details": {
+        "thinking_tokens": 42
+      },
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard",
+      "fallback_credit": null
+    },
+    "verified": true,
+    "limits": {
+      "maxTurns": 6,
+      "maxCostUsd": 0.5,
+      "timeoutMs": 180000
+    },
+    "costCaveat": "Claude-reported cost with unknown cost basis; not a verified provider bill. Registry uses documented peak-rate budgeting ceiling; off-peak is half price."
+  },
+  "runs": [
+    {
+      "model": "minimax-m3.1-flash",
+      "kind": "model-canary",
+      "status": "pass",
+      "isLive": true,
+      "ranAt": "2026-11-16T21:17:08.428Z",
+      "routing": "0a371ff56bea1ea223a6e192c3128adfbbe0b1135567298144a1eafdb8b10e17",
+      "usage": {
+        "costUsd": 0.000579,
+        "inputTokens": 3422,
+        "outputTokens": 778,
+        "toolCalls": 7,
+        "turns": 5,
+        "wallClockMs": 7509
+      },
+      "trainingEligible": false,
+      "limitation": "Executed before correcting the stale installed SDK; retained compatibility evidence only. Provider/fault fields and economics must not be treated as complete training evidence."
+    },
+    {
+      "model": "minimax-m3.1-flash",
+      "kind": "endpoint-canary",
+      "subject": {
+        "catalogHash": "90f29d44b228b726c5498702b3bdbf28f61874a889f8fc241f30b6a1a4a72741",
+        "endpoint": {
+          "deploymentRevision": null,
+          "providerName": "Minimax",
+          "quantization": "unknown",
+          "tag": "minimax"
+        },
+        "identityFingerprint": "4c8ca46c3a7b5b13e3ad7e4d2639d7b05a6ab220157f334d4e80596404eef9b6",
+        "identityRevision": 1,
+        "nativeProvider": "openrouter",
+        "providerId": "minimax",
+        "providerModelId": "minimax-m3.1-flash",
+        "providerNativeId": "minimax/minimax-m3.1-flash",
+        "registryKey": "minimax-m3.1-flash",
+        "runtimeVersions": {
+          "pi-agent-core": "1.0.2",
+          "pi-ai": "1.0.2"
+        }
+      },
+      "status": "inconclusive",
+      "reason": "identity_mismatch",
+      "ranAt": "2026-11-16T21:29:34.045Z",
+      "usage": {
+        "costUsd": 0.00026,
+        "inputTokens": 524,
+        "outputTokens": 453,
+        "toolCalls": 6,
+        "turns": 4,
+        "wallClockMs": 5911
+      },
+      "limits": {
+        "maxCostUsd": 0.5,
+        "maxToolCalls": 10,
+        "maxTotalTokens": 60000,
+        "maxTurns": 6,
+        "maxWallClockMs": 240000
+      },
+      "attemptEvidence": [
+        {
+          "attemptId": "a9175390-782f-41ab-b2c5-fbdbc9729f2c",
+          "contribution": {
+            "actual_cost_usd": 0.00026,
+            "allowed_models": [
+              "minimax-m3.1-flash"
+            ],
+            "available_models": {
+              "coder_models": [
+                "minimax-m3.1-flash"
+              ],
+              "planner_models": [],
+              "reviewer_models": [
+                "minimax-m3.1-flash"
+              ]
+            },
+            "candidate_pool": {
+              "pool_size": 1,
+              "scenario_id": "unknown",
+              "scenario_kind": "unknown"
+            },
+            "completion_result": "failure",
+            "harness": "wavemill-certification",
+            "observed_at": "2026-11-16T21:29:34.039Z",
+            "outcome_labels": {
+              "budget_label": "unknown",
+              "cost_label": "low",
+              "success_label": "failure",
+              "time_label": "fast"
+            },
+            "schema_version": "technical_task_router_row/v4",
+            "selected_models": {
+              "coder": "minimax-m3.1-flash",
+              "reviewer": "minimax-m3.1-flash"
+            },
+            "sparse_cell": {
+              "cell_id": "unknown",
+              "descriptor_signature": "unknown",
+              "is_sparse": false,
+              "observed_count": 0
+            },
+            "stage_executions": [
+              {
+                "executed_model": "minimax-m3.1-flash",
+                "failure": {
+                  "fault_class": "unknown-fault"
+                },
+                "harness": "native",
+                "model_evidence": "requested_only",
+                "provider_executions": [
+                  {
+                    "generation": null,
+                    "observationId": "redacted-1f33fb02147cc4d4",
+                    "ownershipAttemptIds": [
+                      "redacted-8d234eab82901772"
+                    ],
+                    "pricingSnapshot": {
+                      "cacheReadCostPerMTok": 0.0075,
+                      "inputCostPerMTok": 0.075,
+                      "outputCostPerMTok": 0.3,
+                      "scope": "endpoint"
+                    },
+                    "requestedModel": "minimax-m3.1-flash",
+                    "requestedRouting": {
+                      "allow_fallbacks": false,
+                      "only": [
+                        "minimax"
+                      ]
+                    },
+                    "responseId": "redacted-fdac4d0cf483fb19",
+                    "responseModel": null,
+                    "sessionRef": "redacted-8d234eab82901772",
+                    "transport": "openrouter",
+                    "usage": {
+                      "cache_read_tokens": 2707,
+                      "cache_write_tokens": 0,
+                      "input_tokens": 1,
+                      "output_tokens": 59,
+                      "reasoning_tokens": null
+                    }
+                  },
+                  {
+                    "generation": null,
+                    "observationId": "redacted-0b7f211badc103a5",
+                    "ownershipAttemptIds": [
+                      "redacted-8d234eab82901772"
+                    ],
+                    "pricingSnapshot": {
+                      "cacheReadCostPerMTok": 0.0075,
+                      "inputCostPerMTok": 0.075,
+                      "outputCostPerMTok": 0.3,
+                      "scope": "endpoint"
+                    },
+                    "requestedModel": "minimax-m3.1-flash",
+                    "requestedRouting": {
+                      "allow_fallbacks": false,
+                      "only": [
+                        "minimax"
+                      ]
+                    },
+                    "responseId": "redacted-70ec2a8aaa65970e",
+                    "responseModel": null,
+                    "sessionRef": "redacted-8d234eab82901772",
+                    "transport": "openrouter",
+                    "usage": {
+                      "cache_read_tokens": 2710,
+                      "cache_write_tokens": 0,
+                      "input_tokens": 102,
+                      "output_tokens": 255,
+                      "reasoning_tokens": null
+                    }
+                  },
+                  {
+                    "generation": null,
+                    "observationId": "redacted-dda304e6cc3d6b71",
+                    "ownershipAttemptIds": [
+                      "redacted-8d234eab82901772"
+                    ],
+                    "pricingSnapshot": {
+                      "cacheReadCostPerMTok": 0.0075,
+                      "inputCostPerMTok": 0.075,
+                      "outputCostPerMTok": 0.3,
+                      "scope": "endpoint"
+                    },
+                    "requestedModel": "minimax-m3.1-flash",
+                    "requestedRouting": {
+                      "allow_fallbacks": false,
+                      "only": [
+                        "minimax"
+                      ]
+                    },
+                    "responseId": "redacted-a1c9f7a25c946961",
+                    "responseModel": null,
+                    "sessionRef": "redacted-8d234eab82901772",
+                    "transport": "openrouter",
+                    "usage": {
+                      "cache_read_tokens": 2812,
+                      "cache_write_tokens": 0,
+                      "input_tokens": 315,
+                      "output_tokens": 60,
+                      "reasoning_tokens": null
+                    }
+                  },
+                  {
+                    "generation": null,
+                    "observationId": "redacted-40f6064f03d9ee7f",
+                    "ownershipAttemptIds": [
+                      "redacted-8d234eab82901772"
+                    ],
+                    "pricingSnapshot": {
+                      "cacheReadCostPerMTok": 0.0075,
+                      "inputCostPerMTok": 0.075,
+                      "outputCostPerMTok": 0.3,
+                      "scope": "endpoint"
+                    },
+                    "requestedModel": "minimax-m3.1-flash",
+                    "requestedRouting": {
+                      "allow_fallbacks": false,
+                      "only": [
+                        "minimax"
+                      ]
+                    },
+                    "responseId": "redacted-b1efcbbb787b76d2",
+                    "responseModel": null,
+                    "sessionRef": "redacted-8d234eab82901772",
+                    "transport": "openrouter",
+                    "usage": {
+                      "cache_read_tokens": 3127,
+                      "cache_write_tokens": 0,
+                      "input_tokens": 106,
+                      "output_tokens": 79,
+                      "reasoning_tokens": null
+                    }
+                  }
+                ],
+                "stage": "coding",
+                "task_cost": {
+                  "actual_cost_usd": null,
+                  "collected_at": "2026-11-16T21:29:34.029Z",
+                  "cost_basis": "per_token_api",
+                  "cost_source": "local_estimate",
+                  "coverage": "partial",
+                  "diagnostics": [
+                    "mixed_coverage"
+                  ],
+                  "estimated_cost_usd": 0.00026,
+                  "event_count": 4,
+                  "event_ids": [
+                    "redacted-1f33fb02147cc4d4",
+                    "redacted-0b7f211badc103a5",
+                    "redacted-dda304e6cc3d6b71",
+                    "redacted-40f6064f03d9ee7f"
+                  ],
+                  "field_availability": {
+                    "actual_cost": "unavailable",
+                    "estimated_cost": "available",
+                    "pricing": "available",
+                    "usage": "partial"
+                  },
+                  "harness": "native",
+                  "join_confidence": "unattributed",
+                  "model_segments": [
+                    {
+                      "actual_cost_usd": null,
+                      "cost_source": "local_estimate",
+                      "estimated_cost_usd": 0.00026,
+                      "model": "minimax-m3.1-flash",
+                      "turn_count": 4,
+                      "usage": {
+                        "cache_read_tokens": 11356,
+                        "cache_write_tokens": 0,
+                        "input_tokens": 524,
+                        "output_tokens": 453,
+                        "reasoning_tokens": null
+                      }
+                    }
+                  ],
+                  "models": [
+                    "minimax-m3.1-flash"
+                  ],
+                  "pricing_source": "local_estimate",
+                  "provider_contract_version": "native/1",
+                  "schema_version": "task_cost_summary/v1",
+                  "session_ids": [
+                    "redacted-8d234eab82901772"
+                  ],
+                  "task_id": "redacted-8d234eab82901772",
+                  "total_cost_usd": 0.00026,
+                  "turn_count": 4,
+                  "turns_truncated": false,
+                  "usage": {
+                    "cache_read_tokens": 11356,
+                    "cache_write_tokens": 0,
+                    "input_tokens": 524,
+                    "output_tokens": 453,
+                    "reasoning_tokens": null
+                  }
+                }
+              }
+            ],
+            "success_under_budget": false,
+            "task_descriptor": {
+              "complexity": 1,
+              "language": "typescript",
+              "task_type": "bugfix"
+            },
+            "task_id": "redacted-8d234eab82901772",
+            "wall_clock_seconds": 5.911
+          },
+          "reason": "identity_mismatch",
+          "status": "inconclusive"
+        }
+      ],
+      "limitation": "Host attribution missing on some generation responses. Inconclusive; no production endpoint promotion. Provider identity fields may be requested-only; do not invent observed model evidence."
+    },
+    {
+      "model": "glm-5.3-flashx",
+      "kind": "model-canary",
+      "status": "pass",
+      "isLive": true,
+      "ranAt": "2026-11-16T21:17:13.582Z",
+      "routing": "4ff4b6db5018df714408c62996a6f16ff15d151ec263e6508137deb5c3cf4cec",
+      "usage": {
+        "costUsd": 0.001898,
+        "inputTokens": 2864,
+        "outputTokens": 528,
+        "toolCalls": 2,
+        "turns": 2,
+        "wallClockMs": 10360
+      },
+      "trainingEligible": false,
+      "limitation": "Executed before correcting the stale installed SDK; retained compatibility evidence only. Provider/fault fields and economics must not be treated as complete training evidence."
+    },
+    {
+      "model": "glm-5.3-flashx",
+      "kind": "endpoint-canary",
+      "subject": {
+        "catalogHash": "9dd78b03b82e054d4aea5e2a59bd4707fad8d6622bc2d1f806e2eb73c28b41cf",
+        "endpoint": {
+          "deploymentRevision": null,
+          "providerName": "Z.AI",
+          "quantization": "fp8",
+          "tag": "z-ai/fp8"
+        },
+        "identityFingerprint": "293ddb59366cb231039fef5be69dd17ed7f9654b28913a7ecec2805174ab089e",
+        "identityRevision": 1,
+        "nativeProvider": "openrouter",
+        "providerId": "z-ai",
+        "providerModelId": "glm-5.3-flashx",
+        "providerNativeId": "z-ai/glm-5.3-flashx",
+        "registryKey": "glm-5.3-flashx",
+        "runtimeVersions": {
+          "pi-agent-core": "1.0.2",
+          "pi-ai": "1.0.2"
+        }
+      },
+      "status": "inconclusive",
+      "reason": "identity_mismatch",
+      "ranAt": "2026-11-16T21:29:38.968Z",
+      "usage": {
+        "costUsd": 0.0009759999999999999,
+        "inputTokens": 367,
+        "outputTokens": 388,
+        "toolCalls": 2,
+        "turns": 2,
+        "wallClockMs": 10039
+      },
+      "limits": {
+        "maxCostUsd": 0.5,
+        "maxToolCalls": 10,
+        "maxTotalTokens": 60000,
+        "maxTurns": 6,
+        "maxWallClockMs": 240000
+      },
+      "attemptEvidence": [
+        {
+          "attemptId": "1a9dd601-6d46-4f47-8aa5-05577bd33094",
+          "contribution": {
+            "actual_cost_usd": 0.00097577,
+            "allowed_models": [
+              "glm-5.3-flashx"
+            ],
+            "available_models": {
+              "coder_models": [
+                "glm-5.3-flashx"
+              ],
+              "planner_models": [],
+              "reviewer_models": [
+                "glm-5.3-flashx"
+              ]
+            },
+            "candidate_pool": {
+              "pool_size": 1,
+              "scenario_id": "unknown",
+              "scenario_kind": "unknown"
+            },
+            "completion_result": "failure",
+            "harness": "wavemill-certification",
+            "observed_at": "2026-11-16T21:29:38.961Z",
+            "outcome_labels": {
+              "budget_label": "unknown",
+              "cost_label": "low",
+              "success_label": "failure",
+              "time_label": "fast"
+            },
+            "schema_version": "technical_task_router_row/v4",
+            "selected_models": {
+              "coder": "glm-5.3-flashx",
+              "reviewer": "glm-5.3-flashx"
+            },
+            "sparse_cell": {
+              "cell_id": "unknown",
+              "descriptor_signature": "unknown",
+              "is_sparse": false,
+              "observed_count": 0
+            },
+            "stage_executions": [
+              {
+                "executed_model": "glm-5.3-flashx",
+                "failure": {
+                  "fault_class": "unknown-fault"
+                },
+                "harness": "native",
+                "model_evidence": "requested_only",
+                "provider_executions": [
+                  {
+                    "generation": {
+                      "cacheDiscountUsd": 0.00069856,
+                      "modelPermaslug": "z-ai/glm-5.3-flashx-20260918",
+                      "nativeTokensCached": 2368,
+                      "nativeTokensCompletion": 240,
+                      "nativeTokensPrompt": 2409,
+                      "providerName": "Z.AI",
+                      "totalCostUsd": 0.00049277
+                    },
+                    "observationId": "redacted-5fd1b91376451dc2",
+                    "ownershipAttemptIds": [
+                      "redacted-36d77d026030924f"
+                    ],
+                    "pricingSnapshot": {
+                      "cacheReadCostPerMTok": 0.075,
+                      "inputCostPerMTok": 0.37,
+                      "outputCostPerMTok": 1.25,
+                      "scope": "endpoint"
+                    },
+                    "requestedModel": "glm-5.3-flashx",
+                    "requestedRouting": {
+                      "allow_fallbacks": false,
+                      "only": [
+                        "z-ai/fp8"
+                      ]
+                    },
+                    "responseId": "redacted-6b3e171ba4a91b6b",
+                    "responseModel": null,
+                    "sessionRef": "redacted-36d77d026030924f",
+                    "transport": "openrouter",
+                    "usage": {
+                      "cache_read_tokens": 2368,
+                      "cache_write_tokens": 0,
+                      "input_tokens": 41,
+                      "output_tokens": 240,
+                      "reasoning_tokens": null
+                    }
+                  },
+                  {
+                    "generation": null,
+                    "observationId": "redacted-e80351c202af8389",
+                    "ownershipAttemptIds": [
+                      "redacted-36d77d026030924f"
+                    ],
+                    "pricingSnapshot": {
+                      "cacheReadCostPerMTok": 0.075,
+                      "inputCostPerMTok": 0.37,
+                      "outputCostPerMTok": 1.25,
+                      "scope": "endpoint"
+                    },
+                    "requestedModel": "glm-5.3-flashx",
+                    "requestedRouting": {
+                      "allow_fallbacks": false,
+                      "only": [
+                        "z-ai/fp8"
+                      ]
+                    },
+                    "responseId": "redacted-52d0ea9c91bad449",
+                    "responseModel": null,
+                    "sessionRef": "redacted-36d77d026030924f",
+                    "transport": "openrouter",
+                    "usage": {
+                      "cache_read_tokens": 2368,
+                      "cache_write_tokens": 0,
+                      "input_tokens": 326,
+                      "output_tokens": 148,
+                      "reasoning_tokens": null
+                    }
+                  }
+                ],
+                "stage": "coding",
+                "task_cost": {
+                  "actual_cost_usd": 0.00049277,
+                  "collected_at": "2026-11-16T21:29:38.953Z",
+                  "cost_basis": "per_token_api",
+                  "cost_source": "mixed",
+                  "coverage": "partial",
+                  "diagnostics": [
+                    "mixed_coverage",
+                    "provider_reported_cost"
+                  ],
+                  "estimated_cost_usd": 0.000976,
+                  "event_count": 2,
+                  "event_ids": [
+                    "redacted-5fd1b91376451dc2",
+                    "redacted-e80351c202af8389"
+                  ],
+                  "field_availability": {
+                    "actual_cost": "partial",
+                    "estimated_cost": "available",
+                    "pricing": "available",
+                    "usage": "partial"
+                  },
+                  "harness": "native",
+                  "join_confidence": "unattributed",
+                  "model_segments": [
+                    {
+                      "actual_cost_usd": 0.00049277,
+                      "cost_source": "mixed",
+                      "estimated_cost_usd": 0.000976,
+                      "model": "glm-5.3-flashx",
+                      "turn_count": 2,
+                      "usage": {
+                        "cache_read_tokens": 4736,
+                        "cache_write_tokens": 0,
+                        "input_tokens": 367,
+                        "output_tokens": 388,
+                        "reasoning_tokens": null
+                      }
+                    }
+                  ],
+                  "models": [
+                    "glm-5.3-flashx"
+                  ],
+                  "pricing_source": "local_estimate",
+                  "provider_contract_version": "native/1",
+                  "schema_version": "task_cost_summary/v1",
+                  "session_ids": [
+                    "redacted-36d77d026030924f"
+                  ],
+                  "task_id": "redacted-36d77d026030924f",
+                  "total_cost_usd": 0.00097577,
+                  "turn_count": 2,
+                  "turns_truncated": false,
+                  "usage": {
+                    "cache_read_tokens": 4736,
+                    "cache_write_tokens": 0,
+                    "input_tokens": 367,
+                    "output_tokens": 388,
+                    "reasoning_tokens": null
+                  }
+                }
+              }
+            ],
+            "success_under_budget": false,
+            "task_descriptor": {
+              "complexity": 1,
+              "language": "typescript",
+              "task_type": "bugfix"
+            },
+            "task_id": "redacted-36d77d026030924f",
+            "wall_clock_seconds": 10.039
+          },
+          "reason": "identity_mismatch",
+          "status": "inconclusive"
+        }
+      ],
+      "limitation": "Host attribution missing on some generation responses. Inconclusive; no production endpoint promotion. Provider identity fields may be requested-only; do not invent observed model evidence."
+    },
+    {
+      "model": "mistral-large-4",
+      "kind": "model-canary",
+      "status": "pass",
+      "isLive": true,
+      "ranAt": "2026-11-16T21:17:18.744Z",
+      "routing": "00816439693fc1989c4edec7730e713bba07130db1b26549f530950552fd208c",
+      "usage": {
+        "costUsd": 0.004258,
+        "inputTokens": 3309,
+        "outputTokens": 848,
+        "toolCalls": 2,
+        "turns": 2,
+        "wallClockMs": 12321
+      },
+      "trainingEligible": false,
+      "limitation": "Executed before correcting the stale installed SDK; retained compatibility evidence only. Provider/fault fields and economics must not be treated as complete training evidence."
+    },
+    {
+      "model": "mistral-large-4",
+      "kind": "endpoint-canary",
+      "subject": {
+        "catalogHash": "9fef98c03c9e1b5a889ba875c5b5fa68f4d96b84d1a355b99b8c533abef3fc70",
+        "endpoint": {
+          "deploymentRevision": null,
+          "providerName": "Mistral",
+          "quantization": "unknown",
+          "tag": "mistral/zdr"
+        },
+        "identityFingerprint": "4b6f952d188dae647b5d854c7ec05a22c128fb5058408e2e15b16a9bb3ff9d1b",
+        "identityRevision": 1,
+        "nativeProvider": "openrouter",
+        "providerId": "mistralai",
+        "providerModelId": "mistral-large-4-0",
+        "providerNativeId": "mistralai/mistral-large-4-0",
+        "registryKey": "mistral-large-4",
+        "runtimeVersions": {
+          "pi-agent-core": "1.0.2",
+          "pi-ai": "1.0.2"
+        }
+      },
+      "status": "inconclusive",
+      "reason": "identity_mismatch",
+      "ranAt": "2026-11-16T21:29:44.080Z",
+      "usage": {
+        "costUsd": 0.004663,
+        "inputTokens": 3476,
+        "outputTokens": 985,
+        "toolCalls": 2,
+        "turns": 2,
+        "wallClockMs": 14743
+      },
+      "limits": {
+        "maxCostUsd": 0.5,
+        "maxToolCalls": 10,
+        "maxTotalTokens": 60000,
+        "maxTurns": 6,
+        "maxWallClockMs": 240000
+      },
+      "attemptEvidence": [
+        {
+          "attemptId": "6681edcd-911f-45a8-8654-180475e2eaf8",
+          "contribution": {
+            "actual_cost_usd": 0.0046629,
+            "allowed_models": [
+              "mistral-large-4"
+            ],
+            "available_models": {
+              "coder_models": [
+                "mistral-large-4"
+              ],
+              "planner_models": [],
+              "reviewer_models": [
+                "mistral-large-4"
+              ]
+            },
+            "candidate_pool": {
+              "pool_size": 1,
+              "scenario_id": "unknown",
+              "scenario_kind": "unknown"
+            },
+            "completion_result": "failure",
+            "harness": "wavemill-certification",
+            "observed_at": "2026-11-16T21:29:44.065Z",
+            "outcome_labels": {
+              "budget_label": "unknown",
+              "cost_label": "low",
+              "success_label": "failure",
+              "time_label": "fast"
+            },
+            "schema_version": "technical_task_router_row/v4",
+            "selected_models": {
+              "coder": "mistral-large-4",
+              "reviewer": "mistral-large-4"
+            },
+            "sparse_cell": {
+              "cell_id": "unknown",
+              "descriptor_signature": "unknown",
+              "is_sparse": false,
+              "observed_count": 0
+            },
+            "stage_executions": [
+              {
+                "executed_model": "mistral-large-4",
+                "failure": {
+                  "fault_class": "unknown-fault"
+                },
+                "harness": "native",
+                "model_evidence": "requested_only",
+                "provider_executions": [
+                  {
+                    "generation": {
+                      "modelPermaslug": "mistralai/mistral-large-4-0-20261006",
+                      "nativeTokensCached": 0,
+                      "nativeTokensCompletion": 880,
+                      "nativeTokensPrompt": 2427,
+                      "providerName": "Mistral",
+                      "totalCostUsd": 0.0035469
+                    },
+                    "observationId": "redacted-aa4d5f9e4d32b5ee",
+                    "ownershipAttemptIds": [
+                      "redacted-1a21317466b2d05c"
+                    ],
+                    "pricingSnapshot": {
+                      "cacheReadCostPerMTok": 0.07,
+                      "inputCostPerMTok": 0.7,
+                      "outputCostPerMTok": 2.0999999999999996,
+                      "scope": "endpoint"
+                    },
+                    "requestedModel": "mistral-large-4",
+                    "requestedRouting": {
+                      "allow_fallbacks": false,
+                      "only": [
+                        "mistral/zdr"
+                      ]
+                    },
+                    "responseId": "redacted-496746a345d8887e",
+                    "responseModel": null,
+                    "sessionRef": "redacted-1a21317466b2d05c",
+                    "transport": "openrouter",
+                    "usage": {
+                      "cache_read_tokens": 0,
+                      "cache_write_tokens": 0,
+                      "input_tokens": 2427,
+                      "output_tokens": 880,
+                      "reasoning_tokens": null
+                    }
+                  },
+                  {
+                    "generation": null,
+                    "observationId": "redacted-11edd997adb70c73",
+                    "ownershipAttemptIds": [
+                      "redacted-1a21317466b2d05c"
+                    ],
+                    "pricingSnapshot": {
+                      "cacheReadCostPerMTok": 0.07,
+                      "inputCostPerMTok": 0.7,
+                      "outputCostPerMTok": 2.0999999999999996,
+                      "scope": "endpoint"
+                    },
+                    "requestedModel": "mistral-large-4",
+                    "requestedRouting": {
+                      "allow_fallbacks": false,
+                      "only": [
+                        "mistral/zdr"
+                      ]
+                    },
+                    "responseId": "redacted-f59fd94e4bf84b88",
+                    "responseModel": null,
+                    "sessionRef": "redacted-1a21317466b2d05c",
+                    "transport": "openrouter",
+                    "usage": {
+                      "cache_read_tokens": 2304,
+                      "cache_write_tokens": 0,
+                      "input_tokens": 1049,
+                      "output_tokens": 105,
+                      "reasoning_tokens": null
+                    }
+                  }
+                ],
+                "stage": "coding",
+                "task_cost": {
+                  "actual_cost_usd": 0.0035469,
+                  "collected_at": "2026-11-16T21:29:44.053Z",
+                  "cost_basis": "per_token_api",
+                  "cost_source": "mixed",
+                  "coverage": "partial",
+                  "diagnostics": [
+                    "mixed_coverage",
+                    "provider_reported_cost"
+                  ],
+                  "estimated_cost_usd": 0.004663,
+                  "event_count": 2,
+                  "event_ids": [
+                    "redacted-aa4d5f9e4d32b5ee",
+                    "redacted-11edd997adb70c73"
+                  ],
+                  "field_availability": {
+                    "actual_cost": "partial",
+                    "estimated_cost": "available",
+                    "pricing": "available",
+                    "usage": "partial"
+                  },
+                  "harness": "native",
+                  "join_confidence": "unattributed",
+                  "model_segments": [
+                    {
+                      "actual_cost_usd": 0.0035469,
+                      "cost_source": "mixed",
+                      "estimated_cost_usd": 0.004663,
+                      "model": "mistral-large-4",
+                      "turn_count": 2,
+                      "usage": {
+                        "cache_read_tokens": 2304,
+                        "cache_write_tokens": 0,
+                        "input_tokens": 3476,
+                        "output_tokens": 985,
+                        "reasoning_tokens": null
+                      }
+                    }
+                  ],
+                  "models": [
+                    "mistral-large-4"
+                  ],
+                  "pricing_source": "local_estimate",
+                  "provider_contract_version": "native/1",
+                  "schema_version": "task_cost_summary/v1",
+                  "session_ids": [
+                    "redacted-1a21317466b2d05c"
+                  ],
+                  "task_id": "redacted-1a21317466b2d05c",
+                  "total_cost_usd": 0.0046629,
+                  "turn_count": 2,
+                  "turns_truncated": false,
+                  "usage": {
+                    "cache_read_tokens": 2304,
+                    "cache_write_tokens": 0,
+                    "input_tokens": 3476,
+                    "output_tokens": 985,
+                    "reasoning_tokens": null
+                  }
+                }
+              }
+            ],
+            "success_under_budget": false,
+            "task_descriptor": {
+              "complexity": 1,
+              "language": "typescript",
+              "task_type": "bugfix"
+            },
+            "task_id": "redacted-1a21317466b2d05c",
+            "wall_clock_seconds": 14.743
+          },
+          "reason": "identity_mismatch",
+          "status": "inconclusive"
+        }
+      ],
+      "limitation": "Host attribution missing on some generation responses. Inconclusive; no production endpoint promotion. Provider identity fields may be requested-only; do not invent observed model evidence."
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "kind": "model-canary",
+      "status": "pass",
+      "isLive": true,
+      "ranAt": "2026-11-16T21:17:24.092Z",
+      "routing": "0a3ce3800ce47d8fd7a16fefe495606778c398b09745e01d41bd9da8e99251f5",
+      "usage": {
+        "costUsd": 0.011712,
+        "inputTokens": 9963,
+        "outputTokens": 1108,
+        "toolCalls": 3,
+        "turns": 4,
+        "wallClockMs": 15516
+      },
+      "trainingEligible": false,
+      "limitation": "Executed before correcting the stale installed SDK; retained compatibility evidence only. Provider/fault fields and economics must not be treated as complete training evidence."
+    }
+  ],
+  "exportStatus": {
+    "destination": "existing consent-aware Hokusai contribution queue",
+    "exports": [
+      {
+        "model": "minimax-m3.1-flash",
+        "attemptId": "a9175390-782f-41ab-b2c5-fbdbc9729f2c",
+        "status": "enqueued"
+      },
+      {
+        "model": "glm-5.3-flashx",
+        "attemptId": "1a9dd601-6d46-4f47-8aa5-05577bd33094",
+        "status": "enqueued"
+      },
+      {
+        "model": "mistral-large-4",
+        "attemptId": "6681edcd-911f-45a8-8654-180475e2eaf8",
+        "status": "enqueued"
+      }
+    ],
+    "initialSdkRows": "excluded",
+    "representativeTaskRows": "none; qualification probes only"
+  },
+  "remainingEvidenceOwner": "HOK-3410 representative-task batch; HOK-3497 independently qualified endpoint selection.",
+  "sdkVerification": {
+    "vendor": "hokusai-core-0.8.0-hok3495-54bb506.tgz",
+    "hostBuilderMatches": true,
+    "builderSha256": "13bdc8f80668148112f6d419e6835ecfbde78c82c356516f90d8a6aa0d9b3aa4"
+  },
+  "validation": {
+    "certificationRegistryReportingTests": 289,
+    "routingStartupTests": 117,
+    "goldenJourney": "endpoint-qualification: passed, 312 seconds, 17 ticks, includes readiness incident replay",
+    "launcherVerification": "K3.1 and all three new native models accepted in planning/coding/review; DeepSeek Flash accepted through Claude; Gemini 3.8 accepted in coding/review only."
+  }
+}
