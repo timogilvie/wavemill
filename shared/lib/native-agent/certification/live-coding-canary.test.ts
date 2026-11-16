@@ -528,3 +528,18 @@ it('workflow prompt orders edits and tests before completion, and budget failure
   assert.equal(result.evidence?.structuredMutationToolCalls, 0);
   assert.equal(result.evidence?.completionArtifactPresent, false);
 });
+
+it('operator evidence survives disposable repository cleanup for read-only metadata recovery', async () => {
+  const evidenceRoot = makeScratchDir('canary-retained-');
+  let repo = '';
+  const loop = fakeLoop([GOOD_BEHAVIOR]);
+  const result = await runLiveCodingCanary({ ...baseOptions(async config => {
+    repo = config.toolPolicy!.worktreePath;
+    return loop.runLoopFn(config);
+  }), evidenceRoot });
+  assert.equal(result.status, 'pass');
+  assert.equal(existsSync(repo), false, 'disposable repo is removed');
+  const attempt = result.attemptEvidence![0];
+  assert.equal(existsSync(join(evidenceRoot, attempt.attemptId, '.session-ownership.jsonl')), true);
+  assert.equal(existsSync(join(evidenceRoot, attempt.attemptId, 'native-sessions', `${attempt.attemptId}.jsonl`)), true);
+});

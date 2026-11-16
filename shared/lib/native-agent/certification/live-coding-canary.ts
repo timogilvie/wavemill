@@ -157,6 +157,8 @@ export interface RunLiveCodingCanaryOptions {
   /** Test seam: temp root override (must exist). */
   tmpRootOverride?: string;
   signal?: AbortSignal;
+  /** Explicit operator evidence root, outside disposable repositories; never exported. */
+  evidenceRoot?: string;
   profile?: 'standard' | 'workflow' | 'cache-heavy';
   endpointPricing?: ModelPricing;
   exactPricing?: ExactPricingOptions;
@@ -274,6 +276,7 @@ async function runSingleCanaryAttempt(input: {
   process.once('exit', removeOnExit);
   let workspace: CanaryWorkspace | undefined;
   let transcript: TranscriptWriter | undefined;
+  let evidenceDir: string | undefined;
   const sessionId = randomUUID();
   let faultClass: ArmFaultClass = 'unknown-fault';
   try {
@@ -289,7 +292,7 @@ async function runSingleCanaryAttempt(input: {
         };
       }
 
-      const evidenceDir = join(workspace.tmpRoot, 'evidence');
+      evidenceDir = options.evidenceRoot ? join(options.evidenceRoot, sessionId) : join(workspace.tmpRoot, 'evidence');
       recordLaunch(evidenceDir, { sessionRef: sessionId, harness: 'native', kind: 'coding', model: options.registryModelId,
         attemptId: sessionId, launchedAt: input.now(), cwd: workspace.repoDir });
       transcript = new TranscriptWriter({ sessionId, model: options.registryModelId, provider: options.provider,
@@ -402,8 +405,7 @@ async function runSingleCanaryAttempt(input: {
     const outcome = await execute();
     const attempt = { attemptId: sessionId, status: outcome.status, ...(outcome.reason ? { reason: outcome.reason } : {}) } as NonNullable<LiveCodingCanaryResult['attemptEvidence']>[number];
     try {
-      if (workspace && transcript) {
-        const evidenceDir = join(workspace.tmpRoot, 'evidence');
+      if (workspace && transcript && evidenceDir) {
         const metered = await meterWorkflowCost({ repoDir: options.repoDir, worktreePath: workspace.repoDir, featureDir: evidenceDir,
           branchName: '', issueId: sessionId, slug: 'live-canary', label: 'Certification canary',
           ...(options.endpointPricing ? { pricingTable: { [options.registryModelId]: options.endpointPricing } } : {}),

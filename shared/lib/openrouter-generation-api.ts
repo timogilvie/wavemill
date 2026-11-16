@@ -8,6 +8,7 @@
 
 export type { ProviderGenerationEvidence as OpenRouterGenerationCost } from '@hokusai/core';
 import type { ProviderGenerationEvidence as OpenRouterGenerationCost } from '@hokusai/core';
+import { retryTransient, TransientError } from './transient-retry.ts';
 
 export type FetchLike = typeof fetch;
 
@@ -16,6 +17,8 @@ export interface FetchGenerationOptions {
   apiKey?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Shared network retry controls; tests inject sleep, callers retain the shared bounds. */
+  retry?: Pick<NonNullable<Parameters<typeof retryTransient>[1]>, 'sleep' | 'random' | 'maxAttempts'>;
 }
 
 const GENERATION_URL = 'https://openrouter.ai/api/v1/generation';
@@ -87,21 +90,28 @@ export async function fetchGenerationCost(
   }
 
   const fetchFn = opts.fetchFn ?? fetch;
-  const timeout = withTimeout(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   try {
     const url = `${GENERATION_URL}?id=${encodeURIComponent(generationId)}`;
-    const response = await fetchFn(url, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: timeout.signal,
-    });
-    if (!response.ok) {
-      return null;
-    }
-    return parseGenerationCost(await response.json());
+    return await retryTransient(async () => {
+      if (opts.signal?.aborted) return null;
+      const timeout = withTimeout(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+      try {
+        let response: Response;
+        try {
+          response = await fetchFn(url, { headers: { Authorization: `Bearer ${apiKey}` }, signal: timeout.signal });
+        } catch (cause) {
+          if (opts.signal?.aborted) return null;
+          throw new TransientError('OpenRouter generation lookup unavailable', { cause });
+        }
+        // Completed generations can briefly be absent from the lookup index.
+        // This retries metadata GETs only, never the model execution.
+        if (response.status === 404 || response.status === 429 || response.status >= 500) throw new TransientError(`HTTP ${response.status} generation lookup`);
+        if (!response.ok) return null;
+        return parseGenerationCost(await response.json());
+      } finally { timeout.cleanup(); }
+    }, opts.retry);
   } catch {
     return null;
-  } finally {
-    timeout.cleanup();
   }
 }
 

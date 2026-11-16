@@ -66,7 +66,7 @@ export async function runEndpointQualificationCommand(argv = process.argv.slice(
       mkdirSync(dirname(output), { recursive: true });
       writeFileSync(output + '.catalog.json', JSON.stringify(snapshot, null, 2) + '\n', { flag: 'wx' });
       writeFileSync(output + '.plan.json', JSON.stringify({ capturedAt, model, modelSubject: subject, plan }, null, 2) + '\n', { flag: 'wx' });
-      const runs = args.live ? await runEndpointComparison({ repoDir, model, registry, entries, plan, certificationRoot: output + '.certifications',
+      const runs = args.live ? await runEndpointComparison({ repoDir, model, registry, entries, plan, certificationRoot: output + '.certifications', evidenceRoot: output + '.private-evidence',
         async onRun(run) { appendFileSync(output + '.runs.jsonl', JSON.stringify(run) + '\n');
           const exports = await exportComparisonRuns([run], repoDir);
           appendFileSync(output + '.exports.jsonl', JSON.stringify(exports) + '\n'); },

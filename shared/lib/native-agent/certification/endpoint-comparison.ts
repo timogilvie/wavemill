@@ -86,6 +86,7 @@ export async function runEndpointComparison(options: {
   repoDir: string; model: string; registry: ModelRegistry; entries: OpenRouterEndpoint[];
   plan: ReturnType<typeof comparisonPlan>;
   certificationRoot?: string;
+  evidenceRoot?: string;
   onRun: (run: EndpointComparisonRun) => void | Promise<void>;
   runCanary?: typeof runLiveCodingCanary;
   runConformance?: typeof runScenarios;
@@ -110,6 +111,7 @@ export async function runEndpointComparison(options: {
     const subject = resolveCertificationSubject({ provider: 'openrouter', model: options.model, registry: options.registry, endpoint: scheduled.endpoint }).subject;
     const result = await (options.runCanary ?? runLiveCodingCanary)({ provider: 'openrouter', registryModelId: options.model, subject,
       suiteVersion: DEFAULT_CERTIFICATION_SUITE_VERSION, registry: options.registry, repoDir: options.repoDir,
+      ...(options.evidenceRoot ? { evidenceRoot: options.evidenceRoot } : {}),
       endpointPricing: endpointRates(entry), profile: scheduled.profile, maxAttempts: DEFAULT_CANARY_MAX_ATTEMPTS, limits: DEFAULT_CANARY_LIMITS });
     const run = { ...scheduled, result };
     results.push(run);
