@@ -10723,24 +10723,8 @@ ready_base_sha() {
 
 ready_queue_state() {
   local state_dir="$1"
-  local result_file="$state_dir/.ready-result.json"
-  local status verdict queue_state
-
-  [[ -f "$result_file" ]] || { echo ""; return 0; }
-
-  queue_state=$(jq -r '.artifacts.queueState // empty' "$result_file" 2>/dev/null || echo "")
-  if [[ -n "$queue_state" ]]; then
-    printf '%s\n' "$queue_state"
-    return 0
-  fi
-
-  status=$(jq -r '.status // empty' "$result_file" 2>/dev/null || echo "")
-  verdict=$(jq -r '.artifacts.verdict // empty' "$result_file" 2>/dev/null || echo "")
-  if [[ "$status" == "completed" && ( "$verdict" == "pass" || "$verdict" == "warn" ) ]]; then
-    printf 'ready\n'
-  else
-    printf '\n'
-  fi
+  # HOK-3453: absent queueState → `ready` is decided once, in wavemill-common.sh.
+  printf '%s\n' "$(ready_result_queue_state "$state_dir/.ready-result.json")"
 }
 
 ready_queue_field() {
@@ -22848,7 +22832,7 @@ monitor_issue_state() {
       esac
 
       # Re-run ready if main has advanced since the pass was recorded (HOK-1359)
-      local stored_base_sha current_main_sha queue_state
+      local stored_base_sha current_main_sha queue_state rerun_for_tend=""
       stored_base_sha=$(ready_base_sha "$ready_state_dir_path")
       current_main_sha=$(get_main_head_sha "${WORKTREE_ROOT}/${SLUG}" "$BASE_BRANCH")
       queue_state=$(ready_queue_state "$ready_state_dir_path")
@@ -22866,8 +22850,11 @@ monitor_issue_state() {
             mark_ready_stale "$ISSUE" "$ready_state_dir_path" "$stored_base_sha" "$stored_base_sha"
           fi
           log "status" "$ISSUE → merge executor is now tend; re-running ready for PR #$PR"
-          # Fall through to the main-advanced re-run path below by continuing.
+          # HOK-3453: re-run Ready through the stale re-run path below even
+          # when main has not moved — the merge-needed pass published no
+          # handoff, so without a fresh pass tend has nothing to claim.
           queue_state=""
+          rerun_for_tend=1
         else
           set_window_attention_state "$WIN" "needs-user"
           active_count=$((active_count + 1))
@@ -22905,7 +22892,7 @@ monitor_issue_state() {
         return 0
       fi
 
-      if [[ -n "$current_main_sha" && "$stored_base_sha" != "$current_main_sha" ]]; then
+      if [[ -n "$rerun_for_tend" ]] || [[ -n "$current_main_sha" && "$stored_base_sha" != "$current_main_sha" ]]; then
         if merge_queue_enabled; then
           if [[ "$queue_state" != "merge-candidate" ]]; then
             mark_ready_stale "$ISSUE" "$ready_state_dir_path" "$stored_base_sha" "$current_main_sha"

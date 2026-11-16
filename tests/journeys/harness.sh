@@ -114,7 +114,16 @@ journey_init() {
 
   # Capabilities are pinned rather than derived: tend is the merge executor
   # (so the mill publishes Ready handoffs), observer and merge queue are off.
-  export WAVEMILL_SESSION_CAPABILITIES_JSON='{"tend":true,"observer":false,"mergeExecutor":"tend","mergeQueue":false}'
+  # A journey about capability changes sets JOURNEY_DERIVE_CAPABILITIES=1
+  # before journey_init so the real resolver reads the repo config instead.
+  # The merge queue stays off either way: an operator shell can carry
+  # MERGE_QUEUE_ENABLED, which the resolver honours over the repo config.
+  if [[ "${JOURNEY_DERIVE_CAPABILITIES:-0}" == "1" ]]; then
+    unset WAVEMILL_SESSION_CAPABILITIES_JSON
+    export MERGE_QUEUE_ENABLED=false
+  else
+    export WAVEMILL_SESSION_CAPABILITIES_JSON='{"tend":true,"observer":false,"mergeExecutor":"tend","mergeQueue":false}'
+  fi
   # Run every tool through the same node path production uses, but keep the
   # fakes' NODE_OPTIONS preload (exported by fakes_setup).
   export WAVEMILL_DISABLE_CHALLENGE=1
