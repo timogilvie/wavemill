@@ -29,6 +29,7 @@
  * stays in `arm-failure-taxonomy.ts` — attribution is not a terminal decision.
  */
 import type { ArmFaultClass } from './arm-failure-taxonomy.ts';
+import { classifyArmFault, isModelQualitySignal } from './arm-failure-taxonomy.ts';
 import type { CiFailureCategory } from './ci-failure-classifier.ts';
 import { classifyProviderError } from './native-agent/provider-error-classifier.ts';
 
@@ -531,7 +532,7 @@ const NEXT_ACTIONS: Readonly<Record<string, string>> = {
   'review-identity-mismatch': "the review artifact's reviewer identity disagreed with the arm's assignment (or execution evidence was contradicted); the arm was retired as an invalid challenge (no model forfeit) so its green sibling proceeds. Inspect the review-result.json intendedModel/executedModel on the closed PR",
   'review-unattributed': 'Ready was refused by the review gate but the reviewer identity could not be proven; the arm was retired as an invalid challenge (no model forfeit) so its green sibling proceeds. Inspect the review-result.json executionEvidence on the closed PR',
   'coding-dirty-handoff': 'the coding agent exited after writing .coding-complete with uncommitted output and did not repair it when relaunched (completion-protocol failure); the challenger is forfeited so the primary proceeds',
-  'planning-artifact-invalid': 'the plan artifact failed structural validation after one repair turn. Inspect the recorded validationError and relaunch on a stronger planner',
+  'planning-artifact-invalid': 'the plan artifact failed structural validation after one repair turn. Inspect the recorded validationError; the model for the next attempt is Hokusai\'s decision',
   'review-no-output': 'the review model finished without emitting findings or a terminal verdict. Relaunch the review phase on a stronger reviewer',
   'coding-exited-without-result': 'the coding agent settled without recording a terminal result (durable commits preserved) — either it exited, or a harness tool held the loop until the recovery controller settled it. Relaunch coding to resume from the last durable commit',
   'native-unclassified': 'unrecognised failure signature: the mill retries it with backoff and one fresh relaunch before escalating. Inspect the recorded detail if it escalates',
@@ -560,20 +561,22 @@ export function retryBucketFor(stage: FailureStage): string {
 export const DEFAULT_RETRY_ATTEMPTS = 3;
 
 /**
- * The one attribution rule (HOK-3255): a failure may be charged to a model
- * only when it is terminal, the allowlisted cause is a `model-fault`, and
- * execution evidence proves which model produced the failing output. Retry
- * counts are not an input, so exhaustion cannot change attribution by
- * construction; absent or contradictory evidence stays unattributed.
+ * The one attribution rule (HOK-3255, extended HOK-3498): a failure is
+ * charged to a model only when execution evidence proves which model
+ * produced the failing output, and `classifyArmFault` names the failure kind
+ * as model quality signal. The policy class (terminal / code-failure /
+ * retryable) is not an input: a retryable `planning-artifact-invalid` with
+ * direct evidence is as much the model's as a terminal one. Retry counts are
+ * not an input either, so exhaustion cannot change attribution by
+ * construction; absent evidence stays unattributed.
  */
 function attributionFor(
-  klass: FailureClass,
-  cause: TerminalCause | undefined,
+  failureKind: string,
+  detail: string | null | undefined,
   executionEvidence: ExecutionEvidence | null | undefined,
 ): FailureAttribution {
-  return klass === 'terminal' && cause?.faultClass === 'model-fault' && Boolean(executionEvidence?.model.trim())
-    ? 'model'
-    : 'unattributed';
+  if (!executionEvidence?.model.trim()) return 'unattributed';
+  return isModelQualitySignal(classifyArmFault({ failureKind, detail })) ? 'model' : 'unattributed';
 }
 
 /**
@@ -597,7 +600,7 @@ export function classifyFailure(evidence: FailureEvidence): FailureDecision {
       cause,
       rationale: `allowlisted terminal cause ${cause.code}: ${cause.reason}`,
       nextAction: nextActionFor(failureKind),
-      attribution: attributionFor('terminal', cause, evidence.executionEvidence),
+      attribution: attributionFor(failureKind, detail, evidence.executionEvidence),
     };
   }
 
@@ -617,7 +620,7 @@ export function classifyFailure(evidence: FailureEvidence): FailureDecision {
             ? 'CI classified the failure as locally replayable'
             : `${failureKind} is a recognised code failure`,
         nextAction: 'remediate the failing change from the recorded excerpt, then push a new head',
-        attribution: attributionFor('code-failure', undefined, evidence.executionEvidence),
+        attribution: attributionFor(failureKind, detail, evidence.executionEvidence),
       };
     }
   }
@@ -632,7 +635,7 @@ export function classifyFailure(evidence: FailureEvidence): FailureDecision {
         ? 'unrecognised failure: retry by default (HOK-3176)'
         : `${failureKind} is not on the terminal allowlist: retry by default (HOK-3176)`,
     nextAction: nextActionFor(failureKind),
-    attribution: attributionFor('retryable', undefined, evidence.executionEvidence),
+    attribution: attributionFor(failureKind, detail, evidence.executionEvidence),
   };
 }
 

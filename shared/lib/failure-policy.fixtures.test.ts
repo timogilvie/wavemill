@@ -448,6 +448,43 @@ test('HOK-3382: a hung harness retries under stage-failure-coding and is never m
   assert.equal(decided.attribution, 'unattributed');
 });
 
+// protects: HOK-3498 — a retryable model-fault with direct evidence is
+// attributed to the model. HOK-3406: glm-5.3-flash's plan failed structural
+// validation four times; the policy kept retrying (unchanged) but called the
+// failure unattributed, so Hokusai never saw model evidence.
+test('HOK-3498: a retryable planning-artifact-invalid with direct evidence is model-attributed', () => {
+  const evidence: FailureEvidence = {
+    stage: 'planning',
+    failureKind: 'planning-artifact-invalid:missing_release_readiness_database_change_risk',
+    detail: 'Native planning final artifact rejected: missing_release_readiness_database_change_risk',
+    executionEvidence: { source: 'provider-response', model: 'z-ai/glm-5.3-flash' },
+  };
+  const decided = classifyFailure(evidence);
+  assert.equal(decided.class, 'retryable');
+  assert.equal(decided.retryBucket, 'stage-failure-planning');
+  assert.equal(decided.attribution, 'model');
+  // The retry decision itself is unchanged by attribution.
+  assert.equal(classifyFailure({ ...evidence, executionEvidence: null }).attribution, 'unattributed');
+  // A harness-fault kind stays unattributed even with direct evidence.
+  assert.equal(classifyFailure({
+    stage: 'coding',
+    failureKind: 'provider-credit-exhausted',
+    executionEvidence: { source: 'provider-response', model: 'z-ai/glm-5.3-flash' },
+  }).attribution, 'unattributed');
+});
+
+// protects: a codified terminal cause keeps its classified fault class (the
+// attribution rule reads classifyArmFault, not the policy class).
+test('HOK-3498: terminal model-fault causes keep model attribution with direct evidence', () => {
+  const fault = { stage: 'ready', failureKind: 'ready-exhausted', challengeArm: true } as const;
+  assert.equal(classifyFailure({ ...fault, executionEvidence: { source: 'provider-response', model: 'verified-model' } }).attribution, 'model');
+  assert.equal(classifyFailure({
+    stage: 'coding',
+    failureKind: 'coding-dirty-handoff',
+    executionEvidence: { source: 'provider-response', model: 'verified-model' },
+  }).attribution, 'model');
+});
+
 // protects: missing eval output and empty attribution never become model losses.
 test('eval job evidence remains unattributed and genuine model faults require identity', () => {
   for (const reason of ['no_result_file', 'timed_out', 'eval_not_persisted']) {

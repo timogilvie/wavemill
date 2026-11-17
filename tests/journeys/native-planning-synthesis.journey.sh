@@ -23,6 +23,10 @@ journey_wait_until "$ISSUE" 12 "plan approved and coding launched" phase_is codi
 fd="$(journey_feature_dir "$ISSUE")"
 journey_assert "native planning validated its synthesized artifact" \
   journey_jq_true '.planningResult.status == "awaiting_user" and .planningResult.artifacts.planArtifactValid == true and .planningResult.artifacts.usage.turnsCompleted == 3 and .planningResult.artifacts.usage.toolCallsExecuted == 2' "$fd/.synthesis-assertions.json"
+# HOK-3498: the planning exit records the one resolver's executed-model
+# record, not a launcher-local derivation.
+journey_assert "planning recorded direct provider-response evidence" \
+  journey_jq_true '.planningResult.executedModel != null and .planningResult.executionEvidence.status == "direct" and .planningResult.executionEvidence.source == "provider-response"' "$fd/.synthesis-assertions.json"
 journey_assert "provider saw no tools and retained gathered evidence" \
   journey_jq_true '.turns == 3 and .terminalTools == 0 and .retainedEvidence == true' "$fd/.synthesis-assertions.json"
 journey_assert "one native planning launch" \

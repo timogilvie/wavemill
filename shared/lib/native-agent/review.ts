@@ -94,8 +94,10 @@ import {
   NATIVE_REVIEW_TIMEOUT_CATEGORY,
   PROVIDER_CREDIT_EXHAUSTED_CATEGORY,
   REVIEW_MODEL_UNLAUNCHABLE_FAILURE_CATEGORY,
+  readStageResult,
   updateStageResult,
 } from '../stage-result.ts';
+import { resolveStageExecutionTruth } from '../executed-model-resolver.ts';
 import { equivalentOpenRouterModelIds } from '../openrouter-catalog.ts';
 import { getNativeContextManagementConfig, getNativePayloadCaptureConfig, getNativeReviewTimeoutConfig } from '../config.ts';
 import type { NormalizedPricing } from '../openrouter-catalog.ts';
@@ -1188,22 +1190,36 @@ export async function runNativeReview(
     });
     transcriptWriter.writeCleanupReport(cleanupReport);
     if (options.featureDir) {
+      const reviewFailureStatus = cleanupReason === 'aborted' ? 'aborted' : 'failed';
+      // HOK-3498: the failure exit records the resolver's executed-model
+      // record; the stop reason is stage `failureReason`, never evidence.
+      const truth = await resolveStageExecutionTruth({
+        featureDir: options.featureDir,
+        stage: 'review',
+        status: reviewFailureStatus,
+        worktreePath: repoDir,
+        branchName: context.metadata.branch,
+        repoDir: options.repoDir,
+        existing: await readStageResult({ featureDir: options.featureDir, stage: 'review' }),
+        agentHint: 'native',
+        flags: {
+          model: modelConfig.name ?? modelConfig.id,
+          'intended-model': requestedAnalysisModel ?? modelConfig.name ?? modelConfig.id,
+        },
+        evidenceFacts: piRuntimeVersionsField(),
+      });
       await updateStageResult(options.featureDir, 'review', {
-        status: cleanupReason === 'aborted' ? 'aborted' : 'failed',
+        status: reviewFailureStatus,
         finishedAt: new Date().toISOString(),
         agent: 'native',
         model: modelConfig.name ?? modelConfig.id,
-        intendedModel: requestedAnalysisModel ?? modelConfig.name ?? modelConfig.id,
-        executedModel: null,
-        executionEvidence: {
-          status: 'contradicted',
-          source: 'native-runtime',
-          ...piRuntimeVersionsField(),
-          detail: loopResult.stopReason,
-          recordedAt: new Date().toISOString(),
-        },
-        modelAttributionEligible: false,
-        modelAttributionIneligibleReason: 'execution_contradicted',
+        intendedModel: truth.intendedModel,
+        executedModel: truth.executedModel,
+        executionEvidence: truth.executionEvidence,
+        modelAttributionEligible: truth.modelAttributionEligible,
+        ...(truth.modelAttributionIneligibleReason
+          ? { modelAttributionIneligibleReason: truth.modelAttributionIneligibleReason }
+          : {}),
         notes: `Native review stopped with ${loopResult.stopReason}; cleanup decision ${cleanupReport.cleanupDecision}.`,
         failureReason: loopResult.stopReason,
         artifacts: {

@@ -56,6 +56,18 @@ export const EXECUTED_MODEL_RESOLVER_GUARD: GuardSpec = {
       lang: 'ts',
       re: /['"]missing_execution_evidence['"]/,
     },
+    {
+      name: 'execution-contradicted-literal-outside-stage-result',
+      description: "Eligibility reason 'execution_contradicted' is decided only in shared/lib/stage-result.ts (HOK-3498): a failed stage is not a contradicted execution.",
+      lang: 'ts',
+      re: /['"]execution_contradicted['"]/,
+    },
+    {
+      name: 'hand-written-execution-evidence-literal',
+      description: 'Stage results derive `executionEvidence` through executionTruthFields / resolveStageExecutionTruth — never a hand-written `{ status: ... }` block (HOK-3498).',
+      lang: 'ts',
+      re: /\bexecutionEvidence\s*:\s*\{\s*(?:status\s*:|\s*$)/,
+    },
   ],
   invariantPaths: [
     // The one resolver and its tests/wrappers.
@@ -72,10 +84,11 @@ export const EXECUTED_MODEL_RESOLVER_GUARD: GuardSpec = {
     'shared/lib/eval-schema.ts',
     'shared/validators/stage-result.schema.ts',
     'shared/schemas/stage-result.schema.json',
-    // Native launcher records its own direct evidence; the resolver reads it.
-    'shared/lib/native-agent/launch-planning.ts',
-    'shared/lib/native-agent/launch-coding.ts',
-    'shared/lib/native-agent/review.ts',
+    // HOK-3498: the native launchers are scanned now — their exits write the
+    // resolver's record. The remaining legitimate literals in
+    // launch-planning.ts / launch-coding.ts are suppressed inline with a
+    // reason (the ProviderIdentityMismatchError branch and the launch
+    // marker), so a sixth hand-written evidence block still fires here.
     // Challenge/eval attribution helpers inspect the reason post-decision.
     // Not writers — but they repeat the literals as predicates, so the guard
     // treats them as invariant text (same rule as the model-equivalence guard).
