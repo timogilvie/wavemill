@@ -639,3 +639,112 @@ test('foreign ownership stays fenced until completion or explicit replacement ru
     assert.equal(await validateRecoveryAction({stateDir:dir,stateFile,issue:'HOK-1',claimId:old.claimId}),false);
   } finally {rmSync(dir,{recursive:true,force:true});}
 });
+
+// ── HOK-3406: migrated Observer repairs are controller claims ────────────────
+// Three repair classes Observer used to execute privately now resolve as
+// controller actions. Each replay claims exactly one execution, so repeated
+// Observer findings cannot dispatch a second repair.
+test('HOK-3406: each migrated repair class claims exactly one execution', () => {
+  const cases: Array<{ name: string; snap: RecoverySnapshot; action: string }> = [
+    {
+      name: 'update-from-base',
+      snap: snapshot({
+        stage: 'ready', baseDrift: true, stageResult: { kind: 'failed' },
+        failure: { decision: classifyFailure({ stage: 'ready', detail: 'some novel ready error' }), retry: 'proceed' },
+      }),
+      action: 'remediate',
+    },
+    {
+      name: 'retry-after-budget-reset',
+      snap: snapshot({ stage: 'ready', stageResult: { kind: 'failed' }, failure: retryableFailure('proceed', 'ready') }),
+      action: 'retry-stage',
+    },
+    {
+      name: 'arm-retirement-escalation',
+      snap: snapshot({ stage: 'ready', stageResult: { kind: 'failed' }, failure: retryableFailure('exhausted', 'ready') }),
+      action: 'escalate',
+    },
+  ];
+  for (const { name, snap, action } of cases) {
+    const dir = freshDir();
+    try {
+      const decision = decideTaskRecovery(snap);
+      assert.equal(decision.action, action, name);
+      const first = claimRecoveryAction({ stateDir: dir, decision, runId: 'run', evidenceId: `${name}:tick-1` });
+      assert.equal(first.claimed, true, `${name} claims its execution`);
+      // A repeated finding for the same attempt, even under a fresh evidence
+      // id, must not dispatch the repair twice.
+      const repeat = claimRecoveryAction({ stateDir: dir, decision, runId: 'run', evidenceId: `${name}:tick-2` });
+      assert.deepEqual(repeat.claimed, false, name);
+      assert.equal(repeat.claimed === false ? repeat.reason : null, 'already-claimed', name);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+test('HOK-3406: five repeated Observer findings collapse to one claimed repair', () => {
+  const dir = freshDir();
+  try {
+    const decision = decideTaskRecovery(snapshot({
+      stage: 'ready', baseDrift: true, stageResult: { kind: 'failed' },
+      failure: { decision: classifyFailure({ stage: 'ready', detail: 'some novel ready error' }), retry: 'proceed' },
+    }));
+    const outcomes = Array.from({ length: 5 }, (_, tick) =>
+      claimRecoveryAction({ stateDir: dir, decision, runId: 'run', evidenceId: `observer-finding-${tick}` }));
+    assert.equal(outcomes.filter((outcome) => outcome.claimed).length, 1);
+    assert.equal(outcomes.filter((outcome) => !outcome.claimed && outcome.reason === 'already-claimed').length, 4);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('HOK-3406: an explicit human hold blocks every migrated repair claim', () => {
+  for (const snap of [
+    snapshot({ stage: 'ready', baseDrift: true, wait: { owner: 'human', wake: 'operator-release' }, stageResult: { kind: 'failed' },
+      failure: { decision: classifyFailure({ stage: 'ready', detail: 'some novel ready error' }), retry: 'proceed' } }),
+    snapshot({ stage: 'ready', stageResult: { kind: 'failed' }, wait: { owner: 'human', wake: 'operator-release' },
+      failure: retryableFailure('proceed', 'ready') }),
+  ]) {
+    const dir = freshDir();
+    try {
+      const decision = decideTaskRecovery(snap);
+      assert.equal(decision.action, 'wait');
+      assert.deepEqual(claimRecoveryAction({ stateDir: dir, decision, runId: 'run', evidenceId: 'human-hold' }),
+        { claimed: false, reason: 'not-control-bearing' });
+      assert.equal(readRecoveryClaim(dir), null);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+// protects: an automated repair racing a task that already settled.
+test('HOK-3406: a settled attempt cannot be repaired', () => {
+  const dir = freshDir();
+  try {
+    const stateFile = join(dir, 'workflow-state.json');
+    writeFileSync(stateFile, JSON.stringify(buildWorkflowState({
+      'HOK-1': { runId: 'run', phase: 'ready', lifecycle: { schemaVersion: 1, workflowOutcome: 'aborted', resourceDisposition: 'released' } },
+    })));
+    const decision = decideTaskRecovery(snapshot({
+      stage: 'ready', baseDrift: true, stageResult: { kind: 'failed' },
+      failure: { decision: classifyFailure({ stage: 'ready', detail: 'some novel ready error' }), retry: 'proceed' },
+    }));
+    assert.deepEqual(
+      claimRecoveryAction({ stateDir: dir, stateFile, issue: 'HOK-1', decision, runId: 'run', evidenceId: 'settled' }),
+      { claimed: false, reason: 'settled-attempt' },
+    );
+    assert.equal(readRecoveryClaim(dir), null);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// protects: a failed first repair backs off through the shared budget instead
+// of immediately re-dispatching.
+test('HOK-3406: a failed first repair backs off rather than duplicating', () => {
+  const backoff = decideTaskRecovery(snapshot({
+    stage: 'ready', stageResult: { kind: 'failed' },
+    failure: { decision: classifyFailure({ stage: 'ready', detail: 'some novel ready error' }), retry: 'backoff' },
+  }));
+  assert.equal(backoff.action, 'wait');
+  assert.equal(backoff.wait?.owner, 'backoff');
+  const dir = freshDir();
+  try {
+    assert.deepEqual(claimRecoveryAction({ stateDir: dir, decision: backoff, runId: 'run', evidenceId: 'failed-attempt' }),
+      { claimed: false, reason: 'not-control-bearing' });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

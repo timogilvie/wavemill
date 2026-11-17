@@ -70,7 +70,12 @@ through the controller before the existing executor. `_stage_disposition_act`
 also asks the same controller to consume completed results or respect waits.
 They are not a second retry or escalation policy. Tend executes integration
 actions and Observer supervises; neither gets a second task-retry or escalation
-decider. HOK-3406 migrates Observer's existing auto-fixes onto this interface.
+decider. HOK-3406 completed the migration: Observer is evidence-only — it emits
+findings (branch-behind-base, recheck-loop, stuck-arm evidence) and holds no
+executors, no `observer.autoFix` configuration and no private retry buckets.
+Branch updates, retry resets and challenge-arm retirement run through the
+controller and its existing executors (`updateBranchWithBase`,
+`bounded-retry`, `recordArmTermination`).
 
 The incident-replay harness (`incident-replay-harness.ts`) drives every
 recorded incident fixture through `decideTaskRecovery`, so the live decision
@@ -86,6 +91,16 @@ It fails on:
    controller.
 2. `recovery-claim-writer` — a `.recovery-claim.json` write outside the
    controller.
+3. `observer-auto-fix-import` — re-importing the deleted Observer auto-fix
+   engine (Observer is evidence-only).
+4. `observer-repair-bucket` — recreating `observer-update-branch`,
+   `observer-ready-budget-reset` or `observer-forfeit-arm`.
+5. `observer-executor-call` — `tools/observer.ts` calling
+   `updateBranchWithBase`, `abortTaskInState`, `recordArmTermination`,
+   `createStateDirRetry` or `runObserverAutoFixes` directly.
+6. `observer-autofix-surface` — the removed `autoFixDryRun` /
+   `getObserverAutoFixConfig` / `ObserverAutoFixConfig` surface returning to
+   `tools/observer.ts`.
 
 For a justified exception, add the path to
 `tools/task-recovery-ownership-allowlist.txt` with a `# reason`, or suppress one

@@ -12,7 +12,7 @@ function mkdir(): string {
 test('gate → increment → exhausted transitions', () => {
   const dir = mkdir();
   try {
-    const retry = createStateDirRetry('observer-update-branch', { maxAttempts: 2, backoff: { baseSeconds: 0, capSeconds: 0 } });
+    const retry = createStateDirRetry('branch-update-probe', { maxAttempts: 2, backoff: { baseSeconds: 0, capSeconds: 0 } });
     const head = 'aaaaaaa';
     assert.equal(retry.gate(dir, head), 'proceed');
     retry.increment(dir, head);
@@ -33,7 +33,7 @@ test('gate → increment → exhausted transitions', () => {
 test('new key resets the bucket', () => {
   const dir = mkdir();
   try {
-    const retry = createStateDirRetry('observer-ready-budget-reset', { maxAttempts: 1, backoff: { baseSeconds: 0, capSeconds: 0 } });
+    const retry = createStateDirRetry('budget-reset-probe', { maxAttempts: 1, backoff: { baseSeconds: 0, capSeconds: 0 } });
     retry.increment(dir, 'aaaaaaa');
     assert.equal(retry.gate(dir, 'aaaaaaa'), 'exhausted');
     assert.equal(retry.gate(dir, 'bbbbbbb'), 'proceed');
@@ -64,7 +64,7 @@ test('clear for failed-ready-recheck legacy prefix removes .failed-ready-recheck
 test('readKey returns stored head and base from the two-line key', () => {
   const dir = mkdir();
   try {
-    const retry = createStateDirRetry('observer-update-branch', { maxAttempts: 2 });
+    const retry = createStateDirRetry('branch-update-probe', { maxAttempts: 2 });
     retry.increment(dir, 'aaaaaaa', 'bbbbbbb');
     const key = retry.readKey(dir);
     assert.equal(key.head, 'aaaaaaa');
@@ -77,9 +77,9 @@ test('readKey returns stored head and base from the two-line key', () => {
 test('markExhausted creates the sentinel file for the bucket', () => {
   const dir = mkdir();
   try {
-    const retry = createStateDirRetry('observer-forfeit-arm', { maxAttempts: 1 });
-    retry.markExhausted(dir, 'already-forfeited');
-    assert.ok(existsSync(join(dir, '.retry-observer-forfeit-arm-exhausted')));
+    const retry = createStateDirRetry('arm-retirement-probe', { maxAttempts: 1 });
+    retry.markExhausted(dir, 'already-retired');
+    assert.ok(existsSync(join(dir, '.retry-arm-retirement-probe-exhausted')));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
