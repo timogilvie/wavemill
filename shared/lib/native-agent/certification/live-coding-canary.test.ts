@@ -458,6 +458,8 @@ it('retains every metered attempt as canonical feedback with actual generation c
   let count = 0;
   const runLoopFn = async (config: WavemillLoopConfig): Promise<LoopResult> => {
     count++;
+    assert.equal(config.providerIdentity?.expectation.requestedWireId, SUBJECT.providerNativeId);
+    assert.equal(config.providerIdentity?.expectation.expectedModel, SUBJECT.providerNativeId);
     const repoDir = config.toolPolicy!.worktreePath;
     config.onEvent!({ type: 'agent_start' } as never);
     config.onEvent!({ type: 'message_end', message: { role: 'assistant', model: 'kimi-k3', api: 'openai-completions', provider: 'openrouter',
@@ -555,4 +557,21 @@ it('preserves canonical Pi echo attestation in endpoint feedback instead of fall
   assert.equal(stage.executed_model, 'gpt-4o');
   assert.equal(stage.model_evidence, 'provider_response');
   assert.equal(stage.provider_executions![0].responseModel, 'gpt-4o');
+});
+
+it('retains the canonical echoed provider identity when Pi omits responseModel', async () => {
+  const loop = fakeLoop([{ mutateSentinel: CANARY_SENTINEL_EXPECTED,
+    writeCompletion: '{"stage":"coding","confidence":"high"}', emit: ['apply_patch'] }]);
+  const result = await runLiveCodingCanary({ ...baseOptions(async config => {
+    config.onEvent!({ type: 'agent_start' } as never);
+    config.onEvent!({ type: 'message_end', message: { role: 'assistant', model: 'gpt-4o',
+      api: 'openai-responses', provider: 'openai', responseId: 'echoed-response',
+      content: [{ type: 'text', text: 'done' }], timestamp: 0, stopReason: 'stop',
+      usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 110,
+        cost: { input: .001, output: .001, cacheRead: 0, cacheWrite: 0, total: .002 } } } } as never);
+    return loop.runLoopFn(config);
+  }) });
+  const stage = result.attemptEvidence?.[0].contribution?.stage_executions[0];
+  assert.equal(stage?.model_evidence, 'provider_response');
+  assert.equal(stage?.provider_executions?.[0].responseModel, SUBJECT.providerNativeId);
 });

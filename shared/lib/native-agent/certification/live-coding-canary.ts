@@ -9,7 +9,7 @@ import { redactProviderExecutions, redactStageTaskCost, redactSessionIds } from 
 import { buildTechnicalTaskRouterRowV4 } from '../../hokusai-contribution-builder.ts';
 import { classifyArmFault, type ArmFaultClass } from '../../arm-failure-taxonomy.ts';
 import { TranscriptWriter } from '../transcript.ts';
-import { endpointRouting } from './identity.ts';
+import { endpointRouting, isRollingProviderAlias } from './identity.ts';
 import type { ExactPricingOptions } from '../../pricing/openrouter-exact-pricing.ts';
 /**
  * Live coding canary runner (HOK-2943).
@@ -322,7 +322,7 @@ async function runSingleCanaryAttempt(input: {
       try {
         result = await runLoopFn({
           model: input.model,
-          ...(options.subject.endpoint ? { providerIdentity: { expectation: { requestedWireId: options.subject.providerNativeId,
+          ...(!isRollingProviderAlias(options.subject.providerNativeId) ? { providerIdentity: { expectation: { requestedWireId: options.subject.providerNativeId,
             expectedModel: options.subject.providerNativeId, isAlias: false, registryKey: options.registryModelId } } } : {}),
           ...(nativeModels ? { models: nativeModels } : {}),
           context,

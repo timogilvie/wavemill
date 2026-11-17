@@ -46,18 +46,18 @@ describe('validateNativeOpenRouterConfig', () => {
     try {
       const result = validateNativeOpenRouterConfig({
         repoDir,
-        model: 'z-ai/glm-5.2',
+        model: 'z-ai/glm-5.3',
         phase: 'planning',
       });
 
       assert.equal(result.ok, true);
       assert.deepEqual(result.blockers, []);
-      assert.equal(result.identity?.wavemillAlias, 'glm-5.2');
-      assert.equal(result.identity?.openrouterId, 'z-ai/glm-5.2');
+      assert.equal(result.identity?.wavemillAlias, 'glm-5.3');
+      assert.equal(result.identity?.openrouterId, 'z-ai/glm-5.3');
       assert.equal(result.command?.agent, 'native-openrouter');
-      assert.equal(result.command?.commandModel, 'z-ai/glm-5.2');
+      assert.equal(result.command?.commandModel, 'z-ai/glm-5.3');
       assert.equal(result.command?.providerName, 'z-ai');
-      assert.equal(result.command?.providerModel, 'glm-5.2');
+      assert.equal(result.command?.providerModel, 'glm-5.3');
     } finally {
       cleanup(repoDir);
     }
@@ -92,7 +92,7 @@ describe('validateNativeOpenRouterConfig', () => {
     try {
       const result = validateNativeOpenRouterConfig({
         repoDir,
-        model: 'glm-5.2',
+        model: 'glm-5.3',
         phase: 'planning',
       });
 
@@ -107,11 +107,11 @@ describe('validateNativeOpenRouterConfig', () => {
   it('reports global projection misses before launch', () => {
     const repoDir = makeRepo(baseConfig());
     try {
-      // mistral-medium-3 is coding-only, so it misses the planning projection
+      // gemini-3.8-flash is coding-only, so it misses the planning projection
       // (qwen-2.5-coder-32b was retired by HOK-2947).
       const result = validateNativeOpenRouterConfig({
         repoDir,
-        model: 'mistral-medium-3',
+        model: 'gemini-3.8-flash',
         phase: 'planning',
       });
 

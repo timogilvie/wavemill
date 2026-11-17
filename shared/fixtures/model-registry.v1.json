@@ -1143,12 +1143,12 @@
             "model": "gemini-2.5-flash",
             "suiteVersion": "v2"
           },
-          "lifecycle": "supported",
+          "lifecycle": "deprecated",
           "compatibilityFlags": {
             "thinkingFormat": "openrouter"
           },
-          "launchEligible": true,
-          "routingEligible": true
+          "launchEligible": false,
+          "routingEligible": false
         }
       }
     },
@@ -1430,12 +1430,12 @@
             "model": "mistral-medium-3-5",
             "suiteVersion": "v2"
           },
-          "lifecycle": "supported",
+          "lifecycle": "deprecated",
           "compatibilityFlags": {
             "thinkingFormat": "openrouter"
           },
-          "launchEligible": true,
-          "routingEligible": true
+          "launchEligible": false,
+          "routingEligible": false
         }
       }
     },
@@ -1708,12 +1708,12 @@
             "model": "qwen3-235b-a22b-2507",
             "suiteVersion": "v2"
           },
-          "lifecycle": "supported",
+          "lifecycle": "deprecated",
           "compatibilityFlags": {
             "thinkingFormat": "openrouter"
           },
-          "launchEligible": true,
-          "routingEligible": true
+          "launchEligible": false,
+          "routingEligible": false
         }
       }
     },
@@ -1849,12 +1849,12 @@
             "model": "glm-5.2",
             "suiteVersion": "v2"
           },
-          "lifecycle": "supported",
+          "lifecycle": "deprecated",
           "compatibilityFlags": {
             "thinkingFormat": "openrouter"
           },
-          "launchEligible": true,
-          "routingEligible": true
+          "launchEligible": false,
+          "routingEligible": false
         }
       }
     },
@@ -2070,12 +2070,12 @@
             "model": "kimi-k2-thinking",
             "suiteVersion": "v2"
           },
-          "lifecycle": "supported",
+          "lifecycle": "deprecated",
           "compatibilityFlags": {
             "thinkingFormat": "openrouter"
           },
-          "launchEligible": true,
-          "routingEligible": true
+          "launchEligible": false,
+          "routingEligible": false
         }
       }
     },
@@ -2186,6 +2186,11 @@
           "nativeProvider": "openrouter",
           "piTransportKind": "openai-completions",
           "readOnlyNative": "certified",
+          "certification": {
+            "maxCertifiedPhase": "workflow",
+            "certifiedAt": "2026-11-06T16:19:17.364Z",
+            "certificationSuiteVersion": "v3"
+          },
           "compatFlags": {
             "thinkingFormat": "openrouter",
             "openRouterRouting": {
@@ -2698,6 +2703,339 @@
           }
         }
       }
+    },
+    {
+      "id": "minimax-m3.1-flash",
+      "capabilities": {
+        "vendor": "minimax",
+        "class": "fast_economy",
+        "strengths": [
+          "catalog-declared tools and long context"
+        ],
+        "weaknesses": [
+          "no representative Wavemill outcome evidence yet"
+        ],
+        "qualityScores": {
+          "routing": 50,
+          "planning": 50,
+          "coding": 50,
+          "review": 50,
+          "classify": 50
+        },
+        "pricing": {
+          "inputCostPerMTok": 0.075,
+          "outputCostPerMTok": 0.3,
+          "cacheReadCostPerMTok": 0.0075
+        },
+        "defaultLadderEligible": false,
+        "contextWindowTokens": 1048576,
+        "toolSupport": "basic",
+        "multimodal": {
+          "text": true,
+          "image": true
+        },
+        "latencyTier": "standard",
+        "reasoningTier": "advanced",
+        "costPerMillionInputTokensUsd": 0.075,
+        "costPerMillionOutputTokensUsd": 0.3,
+        "agent": "native-openrouter",
+        "nativeCapability": {
+          "nativeProvider": "openrouter",
+          "piTransportKind": "openai-completions",
+          "readOnlyNative": "certified",
+          "certification": {
+            "maxCertifiedPhase": "workflow",
+            "certifiedAt": "2026-11-16T21:17:08.428Z",
+            "certificationSuiteVersion": "v3",
+            "knownLimitations": [
+              "Launch requires an actual matching durable certificate; registry metadata is not proof."
+            ]
+          },
+          "compatFlags": {
+            "thinkingFormat": "openrouter",
+            "openRouterRouting": {
+              "only": [
+                "minimax"
+              ],
+              "allow_fallbacks": false
+            }
+          }
+        },
+        "supportedModel": {
+          "wavemillAlias": "minimax-m3.1-flash",
+          "providerNativeId": "minimax/minimax-m3.1-flash",
+          "provider": "openrouter",
+          "transport": "openai-completions",
+          "stages": [
+            "planning",
+            "coding",
+            "review"
+          ],
+          "requiredCertificationPhaseByStage": {
+            "planning": "workflow",
+            "coding": "patch",
+            "review": "read-only"
+          },
+          "certificationSuiteVersion": "v3",
+          "certificationFreshnessDays": 60,
+          "canonicalArtifactIdentity": {
+            "provider": "minimax",
+            "model": "minimax-m3.1-flash",
+            "suiteVersion": "v3"
+          },
+          "lifecycle": "supported",
+          "launchEligible": true,
+          "routingEligible": true
+        },
+        "identity": {
+          "status": "verified",
+          "revision": 1,
+          "fingerprint": "4c8ca46c3a7b5b13e3ad7e4d2639d7b05a6ab220157f334d4e80596404eef9b6",
+          "displayName": "MiniMax: MiniMax M3.1 Flash",
+          "family": "minimax",
+          "evidencePolicy": "eligible",
+          "verification": {
+            "source": "https://openrouter.ai/api/v1/models",
+            "observedAt": "2026-11-16T21:00:00.000Z",
+            "catalogHash": "46c80faec2cf84bb7e5e77fe361ea73b1627f74934b87dfbf44a772f47b1588e"
+          }
+        }
+      }
+    },
+    {
+      "id": "glm-5.3-flashx",
+      "capabilities": {
+        "vendor": "z-ai",
+        "class": "fast_economy",
+        "strengths": [
+          "catalog-declared tools and long context"
+        ],
+        "weaknesses": [
+          "no representative Wavemill outcome evidence yet"
+        ],
+        "qualityScores": {
+          "routing": 50,
+          "planning": 50,
+          "coding": 50,
+          "review": 50,
+          "classify": 50
+        },
+        "pricing": {
+          "inputCostPerMTok": 0.37,
+          "outputCostPerMTok": 1.25,
+          "cacheReadCostPerMTok": 0.075
+        },
+        "defaultLadderEligible": false,
+        "contextWindowTokens": 1048576,
+        "toolSupport": "basic",
+        "multimodal": {
+          "text": true,
+          "image": true
+        },
+        "latencyTier": "standard",
+        "reasoningTier": "advanced",
+        "costPerMillionInputTokensUsd": 0.37,
+        "costPerMillionOutputTokensUsd": 1.25,
+        "agent": "native-openrouter",
+        "nativeCapability": {
+          "nativeProvider": "openrouter",
+          "piTransportKind": "openai-completions",
+          "readOnlyNative": "certified",
+          "certification": {
+            "maxCertifiedPhase": "workflow",
+            "certifiedAt": "2026-11-16T21:17:13.582Z",
+            "certificationSuiteVersion": "v3",
+            "knownLimitations": [
+              "Launch requires an actual matching durable certificate; registry metadata is not proof."
+            ]
+          },
+          "compatFlags": {
+            "thinkingFormat": "openrouter",
+            "openRouterRouting": {
+              "only": [
+                "z-ai/fp8"
+              ],
+              "allow_fallbacks": false
+            }
+          }
+        },
+        "supportedModel": {
+          "wavemillAlias": "glm-5.3-flashx",
+          "providerNativeId": "z-ai/glm-5.3-flashx",
+          "provider": "openrouter",
+          "transport": "openai-completions",
+          "stages": [
+            "planning",
+            "coding",
+            "review"
+          ],
+          "requiredCertificationPhaseByStage": {
+            "planning": "workflow",
+            "coding": "patch",
+            "review": "read-only"
+          },
+          "certificationSuiteVersion": "v3",
+          "certificationFreshnessDays": 60,
+          "canonicalArtifactIdentity": {
+            "provider": "z-ai",
+            "model": "glm-5.3-flashx",
+            "suiteVersion": "v3"
+          },
+          "lifecycle": "supported",
+          "launchEligible": true,
+          "routingEligible": true
+        },
+        "identity": {
+          "status": "verified",
+          "revision": 1,
+          "fingerprint": "293ddb59366cb231039fef5be69dd17ed7f9654b28913a7ecec2805174ab089e",
+          "displayName": "Z.ai: GLM 5.3 FlashX",
+          "family": "glm",
+          "evidencePolicy": "eligible",
+          "verification": {
+            "source": "https://openrouter.ai/api/v1/models",
+            "observedAt": "2026-11-16T21:00:00.000Z",
+            "catalogHash": "1e7dcc9ec67c6af345d28b4fe60e4db1204e392808dd2bfd68e37518efa14e95"
+          }
+        }
+      }
+    },
+    {
+      "id": "mistral-large-4",
+      "capabilities": {
+        "vendor": "mistralai",
+        "class": "fast_economy",
+        "strengths": [
+          "catalog-declared tools and long context"
+        ],
+        "weaknesses": [
+          "no representative Wavemill outcome evidence yet"
+        ],
+        "qualityScores": {
+          "routing": 50,
+          "planning": 50,
+          "coding": 50,
+          "review": 50,
+          "classify": 50
+        },
+        "pricing": {
+          "inputCostPerMTok": 0.7,
+          "outputCostPerMTok": 2.0999999999999996,
+          "cacheReadCostPerMTok": 0.07
+        },
+        "defaultLadderEligible": false,
+        "contextWindowTokens": 1048576,
+        "toolSupport": "basic",
+        "multimodal": {
+          "text": true,
+          "image": true
+        },
+        "latencyTier": "standard",
+        "reasoningTier": "advanced",
+        "costPerMillionInputTokensUsd": 0.7,
+        "costPerMillionOutputTokensUsd": 2.0999999999999996,
+        "agent": "native-openrouter",
+        "nativeCapability": {
+          "nativeProvider": "openrouter",
+          "piTransportKind": "openai-completions",
+          "readOnlyNative": "certified",
+          "certification": {
+            "maxCertifiedPhase": "workflow",
+            "certifiedAt": "2026-11-16T21:17:18.744Z",
+            "certificationSuiteVersion": "v3",
+            "knownLimitations": [
+              "Launch requires an actual matching durable certificate; registry metadata is not proof."
+            ]
+          },
+          "compatFlags": {
+            "thinkingFormat": "openrouter",
+            "openRouterRouting": {
+              "only": [
+                "mistral/zdr"
+              ],
+              "allow_fallbacks": false
+            }
+          }
+        },
+        "supportedModel": {
+          "wavemillAlias": "mistral-large-4",
+          "providerNativeId": "mistralai/mistral-large-4-0",
+          "provider": "openrouter",
+          "transport": "openai-completions",
+          "stages": [
+            "planning",
+            "coding",
+            "review"
+          ],
+          "requiredCertificationPhaseByStage": {
+            "planning": "workflow",
+            "coding": "patch",
+            "review": "read-only"
+          },
+          "certificationSuiteVersion": "v3",
+          "certificationFreshnessDays": 60,
+          "canonicalArtifactIdentity": {
+            "provider": "mistralai",
+            "model": "mistral-large-4-0",
+            "suiteVersion": "v3"
+          },
+          "lifecycle": "supported",
+          "launchEligible": true,
+          "routingEligible": true
+        },
+        "identity": {
+          "status": "verified",
+          "revision": 1,
+          "fingerprint": "4b6f952d188dae647b5d854c7ec05a22c128fb5058408e2e15b16a9bb3ff9d1b",
+          "displayName": "Mistral: Mistral Large 4",
+          "family": "mistral",
+          "evidencePolicy": "eligible",
+          "verification": {
+            "source": "https://openrouter.ai/api/v1/models",
+            "observedAt": "2026-11-16T21:00:00.000Z",
+            "catalogHash": "b3a72698e4a66315531bea70afc6c4207493ce495d5726ba2da207a1a70e3fa0"
+          }
+        }
+      }
+    },
+    {
+      "id": "deepseek-flash",
+      "capabilities": {
+        "vendor": "deepseek",
+        "class": "fast_economy",
+        "strengths": [
+          "direct endpoint advertises DeepSeek V4.1 Flash",
+          "anthropic-compatible launch"
+        ],
+        "weaknesses": [
+          "representative-task evidence pending",
+          "peak-rate budgeting ceiling; provider also offers half-price off-peak rates"
+        ],
+        "qualityScores": {
+          "routing": 70,
+          "planning": 68,
+          "coding": 76,
+          "review": 70,
+          "classify": 80
+        },
+        "pricing": {
+          "inputCostPerMTok": 0.3,
+          "outputCostPerMTok": 1.2,
+          "cacheReadCostPerMTok": 0.006
+        },
+        "defaultLadderEligible": false,
+        "contextWindowTokens": 1048576,
+        "toolSupport": "basic",
+        "multimodal": {
+          "text": true,
+          "image": false
+        },
+        "latencyTier": "fast",
+        "reasoningTier": "basic",
+        "costPerMillionInputTokensUsd": 0.3,
+        "costPerMillionOutputTokensUsd": 1.2,
+        "agent": "claude"
+      }
     }
   ],
   "ladders": {
@@ -2876,9 +3214,9 @@
       "wavemillAlias": "qwen-3-235b",
       "openrouterId": "qwen/qwen3-235b-a22b-2507",
       "family": "qwen",
-      "status": "watchlist",
+      "status": "deprecated",
       "priorityTier": 2,
-      "roleEligibility": ["planning", "coding", "review"]
+      "roleEligibility": []
     },
     {
       "wavemillAlias": "kimi-k2",
@@ -2900,17 +3238,17 @@
       "wavemillAlias": "kimi-k2-thinking",
       "openrouterId": "moonshotai/kimi-k2-thinking",
       "family": "kimi",
-      "status": "watchlist",
+      "status": "deprecated",
       "priorityTier": 2,
-      "roleEligibility": ["planning", "coding", "review"]
+      "roleEligibility": []
     },
     {
       "wavemillAlias": "glm-5.2",
       "openrouterId": "z-ai/glm-5.2",
       "family": "glm",
-      "status": "active",
+      "status": "deprecated",
       "priorityTier": 1,
-      "roleEligibility": ["planning", "coding", "review"]
+      "roleEligibility": []
     },
     {
       "wavemillAlias": "gemini-2.5-pro",
@@ -2940,9 +3278,9 @@
       "wavemillAlias": "gemini-2.5-flash",
       "openrouterId": "google/gemini-2.5-flash",
       "family": "gemini",
-      "status": "active",
+      "status": "deprecated",
       "priorityTier": 2,
-      "roleEligibility": ["coding", "review"]
+      "roleEligibility": []
     },
     {
       "wavemillAlias": "llama-4-maverick",
@@ -2964,9 +3302,9 @@
       "wavemillAlias": "mistral-medium-3",
       "openrouterId": "mistralai/mistral-medium-3-5",
       "family": "mistral",
-      "status": "watchlist",
+      "status": "deprecated",
       "priorityTier": 3,
-      "roleEligibility": ["coding"]
+      "roleEligibility": []
     },
     {
       "wavemillAlias": "devstral-medium",
@@ -3047,6 +3385,42 @@
       "status": "active",
       "priorityTier": 1,
       "roleEligibility": ["planning", "coding", "review"]
+    },
+    {
+      "wavemillAlias": "minimax-m3.1-flash",
+      "openrouterId": "minimax/minimax-m3.1-flash",
+      "family": "unknown",
+      "status": "watchlist",
+      "priorityTier": 2,
+      "roleEligibility": [
+        "planning",
+        "coding",
+        "review"
+      ]
+    },
+    {
+      "wavemillAlias": "glm-5.3-flashx",
+      "openrouterId": "z-ai/glm-5.3-flashx",
+      "family": "glm",
+      "status": "watchlist",
+      "priorityTier": 2,
+      "roleEligibility": [
+        "planning",
+        "coding",
+        "review"
+      ]
+    },
+    {
+      "wavemillAlias": "mistral-large-4",
+      "openrouterId": "mistralai/mistral-large-4-0",
+      "family": "mistral",
+      "status": "watchlist",
+      "priorityTier": 2,
+      "roleEligibility": [
+        "planning",
+        "coding",
+        "review"
+      ]
     }
   ]
 }

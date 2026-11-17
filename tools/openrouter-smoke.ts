@@ -20,11 +20,11 @@ import type { OpenRouterTransport } from '../shared/lib/openrouter-runtime.ts';
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const fixtureDir = join(moduleDir, '..', 'shared', 'fixtures', 'openrouter-responses', 'success');
 const OPENROUTER_URL_PATTERN = /https:\/\/openrouter\.ai\/\S+/g;
-export const WATCHLIST_SMOKE_MODELS = [
-  'qwen-3-235b',
-  'kimi-k2-thinking',
-  'mistral-medium-3',
-] as const;
+// Keep operator sweeps on the same catalog lifecycle as routing.
+export const WATCHLIST_SMOKE_MODELS = loadLaunchPriorityFixture().models
+  .filter(entry => entry.status === 'watchlist'
+    && resolveOpenRouterModelIdentity(entry.wavemillAlias)?.nativeOpenRouter === true)
+  .map(entry => entry.wavemillAlias);
 
 function readFixture(name: string): Record<string, unknown> {
   return JSON.parse(readFileSync(join(fixtureDir, `${name}.json`), 'utf-8')) as Record<string, unknown>;
@@ -170,7 +170,7 @@ export async function runOpenRouterSmokeCli(argv: string[] = process.argv.slice(
     options,
     examples: [
       'npx tsx tools/openrouter-smoke.ts --json',
-      'npx tsx tools/openrouter-smoke.ts --models glm-5.2 --json',
+      'npx tsx tools/openrouter-smoke.ts --models glm-5.3 --json',
       'npx tsx tools/openrouter-smoke.ts --watchlist --json',
       'OPENROUTER_LIVE_SMOKE=1 npx tsx tools/openrouter-smoke.ts --families qwen --live --json',
     ],

@@ -238,7 +238,7 @@ describe('resolveModelAgent', () => {
     }
     assert.equal(result.reason, 'role-ineligible');
     assert.match(result.diagnostic, /phase=planning/);
-    assert.match(result.diagnostic, /certification=eligible-roles:coding/);
+    assert.match(result.diagnostic, /certification=eligible-roles:none/);
   });
 
   it('rejects stale or phase-insufficient native metadata as uncertified', () => {
