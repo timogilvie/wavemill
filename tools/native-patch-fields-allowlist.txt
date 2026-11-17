@@ -1,0 +1,8 @@
+# native-patch-fields-allowlist.txt — authorized sites that touch raw NativePatch
+# payload fields outside the single contract schema (HOK-3500 guard,
+# tools/check-native-patch-fields.ts).
+#
+# Format (tools/lib/source-guard.ts): `<repo-relative path> [<count>]  # <reason>`.
+# The contract owner and residual runtime files are excluded automatically by
+# the guard spec's invariantPaths; this list is intentionally empty because
+# no other site should interrogate a NativePatch payload field directly.
