@@ -3,15 +3,23 @@
  * `WorkflowCostResult` / `WorkflowCostAttribution` shape (HOK-3328).
  *
  * The report is the cost: `totalCostUsd` is its cross-harness `totalUsd`,
- * `byHarness` its per-harness slices. Nothing here picks a harness, prices a
- * token, or adds summaries up — the per-model rows are a view of the SDK's
- * model segments so the dozen `workflowTokenUsage` / attribution readers keep
- * working unchanged.
+ * `byHarness` its per-harness slices, and each model's cost is its `byModel`
+ * breakdown. Nothing here picks a harness, prices a token, or resolves a cost
+ * — the per-model rows are a view of the SDK's model segments (tokens) and
+ * per-model totals (cost) so the dozen `workflowTokenUsage` / attribution
+ * readers keep working unchanged.
  *
  * Mapping notes:
- * - When the report's total is `null` (an unresolved event), the numeric view
- *   is the SDK's lower bound `actual + estimated`, matching the legacy
- *   convention; attribution carries the truth (`coverage`, `reason`).
+ * - Cost is never re-derived from segment sums: an event can carry both a
+ *   provider-reported charge and a list-price estimate, and the SDK resolves
+ *   it as `actual ?? estimated`. Adding a segment's two sums double-counts it.
+ * - `byModel` merges harnesses. A model that ran under several harnesses in
+ *   one task has its combined cost on the first harness's attribution entry
+ *   and `costUsd: 0` on the others, so per-model entries still sum to the
+ *   total. (A per-harness model breakdown would need an SDK report field.)
+ * - When a total is `null` (an unresolved event), the numeric view is the
+ *   SDK's lower bound `actual + estimated`, matching the legacy convention;
+ *   attribution carries the truth (`coverage`, `reason`).
  * - `outputTokens` is the contract's `output_tokens`, which already includes
  *   reasoning (Codex reports `reasoning_tokens` as a breakdown of it).
  * - `pricedSessions` / `unpricedSessions` count model segments.
@@ -19,7 +27,7 @@
  * @module sdk-task-cost/project
  */
 
-import type { TaskCostReport } from '@hokusai/costs';
+import type { TaskCostBreakdown, TaskCostReport } from '@hokusai/costs';
 import type {
   WorkflowCostAttribution,
   WorkflowCostAttributionModel,
@@ -44,25 +52,15 @@ const GAP_REASONS: readonly WorkflowCostAttributionReason[] = [
   'no_priced_sessions',
 ];
 
-function segmentCost(segment: TaskCostModelSegment): number | null {
-  if (segment.actual_cost_usd === null && segment.estimated_cost_usd === null) return null;
-  return (segment.actual_cost_usd ?? 0) + (segment.estimated_cost_usd ?? 0);
+function segmentPriced(segment: TaskCostModelSegment): boolean {
+  return segment.actual_cost_usd !== null || segment.estimated_cost_usd !== null;
 }
 
-function segmentPricingSource(segment: TaskCostModelSegment): WorkflowCostPricingSource | undefined {
-  if (segment.actual_cost_usd !== null && segment.estimated_cost_usd !== null) return 'mixed';
-  if (segment.actual_cost_usd !== null) return 'openrouter_api';
-  if (segment.estimated_cost_usd !== null) return 'local_estimate';
-  return undefined;
-}
-
-function mergePricingSource(
-  current: WorkflowCostPricingSource | undefined,
-  next: WorkflowCostPricingSource | undefined,
-): WorkflowCostPricingSource | undefined {
-  if (next === undefined) return current;
-  return current === undefined || current === next ? next : 'mixed';
-}
+const PRICING_SOURCE: Partial<Record<TaskCostBreakdown['costSource'], WorkflowCostPricingSource>> = {
+  provider_reported: 'openrouter_api',
+  local_estimate: 'local_estimate',
+  mixed: 'mixed',
+};
 
 function attributionReason(report: TaskCostReport): WorkflowCostAttributionReason | undefined {
   const codes = new Set<string>(report.diagnostics.map((diagnostic) => diagnostic.code));
@@ -113,7 +111,6 @@ export function projectReportToWorkflowCost(
     for (const segment of summary.model_segments) {
       const usage = segment.usage;
       const outputTokens = usage.output_tokens ?? 0;
-      const cost = segmentCost(segment);
       const legacy = models[segment.model] ??= {
         inputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, outputTokens: 0, costUsd: 0,
       };
@@ -121,7 +118,6 @@ export function projectReportToWorkflowCost(
       legacy.cacheCreationTokens += usage.cache_write_tokens ?? 0;
       legacy.cacheReadTokens += usage.cache_read_tokens ?? 0;
       legacy.outputTokens += outputTokens;
-      legacy.costUsd += cost ?? 0;
 
       const key = `${provider}\0${segment.model}`;
       let model = attributionModels.get(key);
@@ -135,7 +131,7 @@ export function projectReportToWorkflowCost(
       model.cacheCreationTokens = (model.cacheCreationTokens ?? 0) + (usage.cache_write_tokens ?? 0);
       model.totalTokens = model.inputTokens + model.outputTokens + model.cacheReadTokens + model.cacheCreationTokens;
 
-      if (cost === null) {
+      if (!segmentPriced(segment)) {
         unpricedSegments++;
         if (!model.priced) model.reason = 'unpriced_model';
         continue;
@@ -143,12 +139,26 @@ export function projectReportToWorkflowCost(
       pricedSegments++;
       model.priced = true;
       delete model.reason;
-      model.costUsd = (model.costUsd ?? 0) + cost;
       if (segment.actual_cost_usd !== null) {
         model.providerReportedCostUsd = (model.providerReportedCostUsd ?? 0) + segment.actual_cost_usd;
       }
-      model.pricingSource = mergePricingSource(model.pricingSource, segmentPricingSource(segment));
     }
+  }
+
+  // Cost comes from the SDK's resolved per-model breakdown, never segment sums.
+  for (const [modelId, legacy] of Object.entries(models)) {
+    const breakdown = report.byModel[modelId];
+    legacy.costUsd = breakdown ? reportCostUsd(breakdown) : 0;
+  }
+  const costedModels = new Set<string>();
+  for (const model of attributionModels.values()) {
+    if (!model.priced) continue;
+    const breakdown = report.byModel[model.modelId];
+    const first = !costedModels.has(model.modelId);
+    costedModels.add(model.modelId);
+    model.costUsd = first && breakdown ? reportCostUsd(breakdown) : 0;
+    const pricingSource = breakdown ? PRICING_SOURCE[breakdown.costSource] : undefined;
+    if (pricingSource) model.pricingSource = pricingSource;
   }
 
   const harnesses = [...new Set(report.summaries.map((summary) => summary.harness))];
