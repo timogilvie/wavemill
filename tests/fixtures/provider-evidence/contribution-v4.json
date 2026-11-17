@@ -146,7 +146,7 @@
               "reasoning_tokens": null
             },
             "actual_cost_usd": 0.02,
-            "estimated_cost_usd": null,
+            "estimated_cost_usd": 0.001225,
             "cost_source": "provider_reported"
           }
         ],
@@ -160,7 +160,7 @@
           "reasoning_tokens": null
         },
         "actual_cost_usd": 0.02,
-        "estimated_cost_usd": null,
+        "estimated_cost_usd": 0.001225,
         "total_cost_usd": 0.02,
         "cost_source": "provider_reported",
         "cost_basis": "per_token_api",
@@ -168,10 +168,12 @@
         "field_availability": {
           "usage": "partial",
           "actual_cost": "available",
-          "estimated_cost": "unavailable",
-          "pricing": "unavailable"
+          "estimated_cost": "available",
+          "pricing": "available"
         },
-        "pricing_source": "none",
+        "pricing_revision": "2026-11-16",
+        "pricing_timestamp": "2026-11-08T23:31:33.572Z",
+        "pricing_source": "local_estimate",
         "join_confidence": "unattributed",
         "collected_at": "2026-11-08T23:31:33.572Z",
         "event_count": 2,
@@ -180,7 +182,6 @@
           "redacted-b15d239fdf211851"
         ],
         "diagnostics": [
-          "unpriced_model",
           "mixed_coverage",
           "provider_reported_cost"
         ]
