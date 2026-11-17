@@ -136,6 +136,10 @@ export interface LLMCallResult {
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
+    /** Cache-read tokens, when the transport reported them (HOK-3409). */
+    cacheReadTokens?: number;
+    /** Cache-write tokens, when the transport reported them (HOK-3409). */
+    cacheWriteTokens?: number;
   };
   /** Cost in USD (if available from JSON envelope) */
   costUsd?: number;
@@ -1059,6 +1063,12 @@ async function callLLMOnce(
             inputTokens: result.usage.inputTokens,
             outputTokens: result.usage.outputTokens,
             totalTokens: result.usage.totalTokens,
+            ...(result.usage.cacheReadTokens !== undefined
+              ? { cacheReadTokens: result.usage.cacheReadTokens }
+              : {}),
+            ...(result.usage.cacheWriteTokens !== undefined
+              ? { cacheWriteTokens: result.usage.cacheWriteTokens }
+              : {}),
           },
         }
       : {}),

@@ -887,8 +887,23 @@ export interface TokenUsage {
   inputTokens: number;
   /** Number of output (completion) tokens */
   outputTokens: number;
-  /** Total tokens (input + output) */
+  /** Total tokens — sum of the billable buckets (input + output + cache read/write when reported) */
   totalTokens: number;
+  /**
+   * Tokens read from the provider cache. Optional: absent when the judge
+   * transport reported no cache counters, so historic `evals.jsonl` rows keep
+   * parsing unchanged.
+   *
+   * @since 1.61.0 HOK-3409
+   */
+  cacheReadTokens?: number;
+  /**
+   * Tokens written to the provider cache. Optional, same rules as
+   * {@link TokenUsage.cacheReadTokens}.
+   *
+   * @since 1.61.0 HOK-3409
+   */
+  cacheWriteTokens?: number;
 }
 
 // ────────────────────────────────────────────────────────────────

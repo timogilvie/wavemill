@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { evaluateTask } from './eval.ts';
 import { enrichEvalRecord } from './eval-record-builder.ts';
 import { SCHEMA_VERSION } from './eval-schema.ts';
+import { CACHE_READ_MULTIPLIER, CACHE_WRITE_MULTIPLIER, loadPricingTable } from './pricing/model-pricing.ts';
 
 function mockCallFn(responseText, usage = null, costUsd = undefined) {
   return mock.fn(() => Promise.resolve({ text: responseText, usage, costUsd }));
@@ -998,6 +999,115 @@ describe('evaluateTask', () => {
     );
 
     assert.equal(result.estimatedCost, 0.03078);
+  });
+
+  // protects: HOK-3409 — a judge call whose prompt was served from the
+  // provider cache is priced at the cache-read rate, not the ~10x uncached
+  // input rate the private adapter mappers charged before they adopted the
+  // SDK's own usage semantics.
+  it('prices judge cache reads at the cache-read rate, not the input rate', async () => {
+    const validResponse = JSON.stringify({
+      score: 0.9,
+      rationale: 'Well done.',
+      interventionFlags: [],
+    });
+    // A registry judge model with no explicit cache rate, so @hokusai/costs
+    // applies the documented cache-read default (0.1x input).
+    const judgeModel = 'gpt-5.5';
+    const pricing = loadPricingTable()[judgeModel];
+    assert.ok(pricing, `expected registry pricing for ${judgeModel}`);
+    const cacheReadRate =
+      pricing.cacheReadCostPerMTok ?? pricing.inputCostPerMTok * CACHE_READ_MULTIPLIER;
+    const cacheWriteRate =
+      pricing.cacheWriteCostPerMTok ?? pricing.inputCostPerMTok * CACHE_WRITE_MULTIPLIER;
+
+    const previousModel = process.env.EVAL_MODEL;
+    process.env.EVAL_MODEL = judgeModel;
+    try {
+      const cached = await evaluateTask(
+        {
+          taskPrompt: 'Quick task',
+          prReviewOutput: 'Good',
+        },
+        undefined,
+        {
+          _callFn: mockCallFn(validResponse, {
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 1000,
+            cacheReadTokens: 1000,
+          }),
+        }
+      );
+      const uncached = await evaluateTask(
+        {
+          taskPrompt: 'Quick task',
+          prReviewOutput: 'Good',
+        },
+        undefined,
+        {
+          _callFn: mockCallFn(validResponse, {
+            inputTokens: 1000,
+            outputTokens: 0,
+            totalTokens: 1000,
+          }),
+        }
+      );
+
+      const cacheWritten = await evaluateTask(
+        {
+          taskPrompt: 'Quick task',
+          prReviewOutput: 'Good',
+        },
+        undefined,
+        {
+          _callFn: mockCallFn(validResponse, {
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 1000,
+            cacheWriteTokens: 1000,
+          }),
+        }
+      );
+
+      // The cache bucket survives the aggregation onto the record, and stays
+      // absent when the judge transport reported no cache counters.
+      assert.equal(cached.tokenUsage.cacheReadTokens, 1000);
+      assert.equal(cached.tokenUsage.inputTokens, 0);
+      assert.equal(cacheWritten.tokenUsage.cacheWriteTokens, 1000);
+      assert.equal(uncached.tokenUsage.cacheReadTokens, undefined);
+      assert.equal(uncached.tokenUsage.cacheWriteTokens, undefined);
+
+      assert.ok(cached.estimatedCost !== undefined, 'the cached judge call must be priced');
+      assert.ok(uncached.estimatedCost !== undefined, 'the uncached judge call must be priced');
+      const expectedCacheRead = (1000 / 1_000_000) * cacheReadRate;
+      const expectedInput = (1000 / 1_000_000) * pricing.inputCostPerMTok;
+      assert.ok(
+        Math.abs(cached.estimatedCost - expectedCacheRead) < 1e-12,
+        `cached judge cost ${cached.estimatedCost} should be ${expectedCacheRead}`
+      );
+      assert.ok(
+        Math.abs(uncached.estimatedCost - expectedInput) < 1e-12,
+        `uncached judge cost ${uncached.estimatedCost} should be ${expectedInput}`
+      );
+      // The two buckets reach different rates: the cached call is 10x cheaper.
+      assert.ok(
+        Math.abs(uncached.estimatedCost - 10 * cached.estimatedCost) < 1e-11,
+        `uncached ${uncached.estimatedCost} should be 10x cached ${cached.estimatedCost}`
+      );
+      // Cache writes reach their own (default 1.25x) rate.
+      const expectedCacheWrite = (1000 / 1_000_000) * cacheWriteRate;
+      assert.ok(
+        Math.abs(cacheWritten.estimatedCost - expectedCacheWrite) < 1e-12,
+        `cache-write judge cost ${cacheWritten.estimatedCost} should be ${expectedCacheWrite}`
+      );
+    } finally {
+      if (previousModel === undefined) {
+        delete process.env.EVAL_MODEL;
+      } else {
+        process.env.EVAL_MODEL = previousModel;
+      }
+    }
   });
 
   it('omits tokenUsage when CLI response has no usage', async () => {
