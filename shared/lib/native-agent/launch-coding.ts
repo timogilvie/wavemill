@@ -120,7 +120,13 @@ import {
   assertOpenRouterBalanceSufficient,
   capOpenRouterMaxTokensForBalance,
 } from './openrouter-credits-guard.ts';
-import { updateStageResult, type ModelAttributionIneligibleReason, type StageExecutionUsage } from '../stage-result.ts';
+import {
+  updateStageResult,
+  readStageResult,
+  type ModelAttributionIneligibleReason,
+  type StageExecutionUsage,
+} from '../stage-result.ts';
+import { resolveStageExecutionTruth } from '../executed-model-resolver.ts';
 import { buildStageExecutionUsage } from './prompt-cache.ts';
 import { reportPromptCacheHitRate } from './prompt-cache-detector.ts';
 import { getNativeContextManagementConfig, getNativePayloadCaptureConfig } from '../config.ts';
@@ -864,6 +870,7 @@ function buildCompletionAttribution(input: {
   const attributionEligible = input.stageCompleted && input.intendedModel === input.model;
   return {
     executedModel,
+    // allow-executed-model-resolver: HOK-3498 leaves this scripted/loop-override success record as the launcher evidence the one resolver reads first.
     executionEvidence: {
       status: 'direct',
       source: 'native-runtime',
@@ -876,7 +883,7 @@ function buildCompletionAttribution(input: {
       : {
         modelAttributionIneligibleReason: !input.stageCompleted
           ? ('stage_not_completed' as const)
-          : ('runtime_fallback' as const),
+          : ('runtime_fallback' as const), // allow-executed-model-resolver: HOK-3498 buildCompletionAttribution's intended-vs-executed check predates the resolver; unchanged here.
       }),
   };
 }
@@ -1280,6 +1287,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       // turn has returned. The stage result flips to the provider-reported id on
       // completion.
       executedModel: null,
+      // allow-executed-model-resolver: HOK-3498 — the launch marker records "no turn yet"; exits derive evidence from the resolver.
       executionEvidence: {
         status: 'missing',
         source: providerIdentityExpectation ? 'provider-response' : 'native-runtime',
@@ -1837,6 +1845,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
         model: options.loopModelOverride?.name ?? options.resolvedModel ?? '',
         intendedModel: options.resolvedModel ?? options.loopModelOverride?.name ?? null,
         executedModel: error.reportedModel,
+        // allow-executed-model-resolver: HOK-3498 reserves contradicted + provider_substitution for a provider-identity mismatch; the live error is the authoritative evidence.
         executionEvidence: {
           status: 'contradicted',
           source: 'provider-response',
@@ -1870,22 +1879,33 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       writeTextStatus(options.session, options.issue, 'native coding identity_mismatch');
       throw error;
     }
+    const failureTruth = await resolveStageExecutionTruth({
+      featureDir,
+      stage: 'coding',
+      status: 'failed',
+      worktreePath: options.wtDir,
+      branchName: options.branch,
+      repoDir: options.repoDir,
+      existing: await readStageResult({ featureDir, stage: 'coding' }),
+      agentHint: 'native',
+      flags: {
+        model: options.loopModelOverride?.name ?? options.resolvedModel ?? '',
+        'intended-model': options.resolvedModel ?? options.loopModelOverride?.name ?? '',
+      },
+      evidenceFacts: piRuntimeVersionsField(),
+    });
     await updateStageResult(featureDir, 'coding', {
       status: 'failed',
       finishedAt: new Date().toISOString(),
       agent: 'native',
       model: options.loopModelOverride?.name ?? options.resolvedModel ?? '',
-      intendedModel: options.resolvedModel ?? options.loopModelOverride?.name ?? null,
-      executedModel: null,
-      executionEvidence: {
-        status: 'contradicted',
-        source: 'native-runtime',
-        ...piRuntimeVersionsField(),
-        detail: message,
-        recordedAt: new Date().toISOString(),
-      },
-      modelAttributionEligible: false,
-      modelAttributionIneligibleReason: 'execution_contradicted',
+      intendedModel: failureTruth.intendedModel,
+      executedModel: failureTruth.executedModel,
+      executionEvidence: failureTruth.executionEvidence,
+      modelAttributionEligible: failureTruth.modelAttributionEligible,
+      ...(failureTruth.modelAttributionIneligibleReason
+        ? { modelAttributionIneligibleReason: failureTruth.modelAttributionIneligibleReason }
+        : {}),
       notes: `Native coding failed: ${message}`,
       failureReason: message,
     });

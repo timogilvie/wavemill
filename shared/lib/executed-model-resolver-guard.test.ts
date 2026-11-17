@@ -81,6 +81,35 @@ describe('EXECUTED_MODEL_RESOLVER_GUARD', () => {
     );
   });
 
+  it('fails on a hand-written execution_contradicted reason (HOK-3498)', () => {
+    // protects: a native stage failure must not masquerade as a contradicted execution.
+    const repo = tempRepo();
+    track(repo, 'shared/lib/offender.ts', `export const reason = 'execution_contradicted';\n`);
+    commit(repo);
+    const result = runSourceGuard(EXECUTED_MODEL_RESOLVER_GUARD, repo);
+    assert.ok(
+      result.findings.some((f) => f.pattern === 'execution-contradicted-literal-outside-stage-result'),
+      `expected execution-contradicted finding, got ${result.findings.map((f) => f.pattern).join(', ')}`,
+    );
+  });
+
+  it('fails on a hand-written executionEvidence block (HOK-3498)', () => {
+    // protects: every stage exit derives its evidence record through the one resolver.
+    const repo = tempRepo();
+    track(repo, 'shared/lib/offender.ts', [
+      'export const write = {',
+      "  executionEvidence: { status: 'direct', recordedAt: new Date().toISOString() },",
+      '};',
+      '',
+    ].join('\n'));
+    commit(repo);
+    const result = runSourceGuard(EXECUTED_MODEL_RESOLVER_GUARD, repo);
+    assert.ok(
+      result.findings.some((f) => f.pattern === 'hand-written-execution-evidence-literal'),
+      `expected hand-written evidence finding, got ${result.findings.map((f) => f.pattern).join(', ')}`,
+    );
+  });
+
   it('passes when no offending shape appears', () => {
     const repo = tempRepo();
     track(repo, 'shared/lib/benign.ts', `// talks about executed-model resolver in a comment\nexport const x = 1;\n`);

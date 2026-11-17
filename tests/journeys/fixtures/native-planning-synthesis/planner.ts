@@ -12,9 +12,13 @@ const api = 'journey-planning-synthesis';
 let turns = 0;
 registerScriptedPiProvider({ api, turns: ctx => {
   turns++;
+  // HOK-3498: a real provider echoes a response id on every turn; the one
+  // executed-model resolver needs it to record direct provider-response
+  // evidence for this planning exit.
+  const responseId = `gen-journey-synthesis-${turns}`;
   if (turns < replay.maxTurns) return {
     content: [{ type: 'tool_call', id: `read-${turns}`, name: 'read_file', arguments: { path: `features/${slug}/task-packet.md` } }],
-    stopReason: 'tool_calls', usage: { input: 10, output: 5 },
+    stopReason: 'tool_calls', usage: { input: 10, output: 5 }, responseId,
   };
   assert.equal((ctx.rawContext as { tools?: unknown[] }).tools?.length ?? 0, 0);
   assert.match(JSON.stringify(ctx.messages), /reserved terminal synthesis/);
@@ -25,7 +29,7 @@ registerScriptedPiProvider({ api, turns: ctx => {
     '## Validation', '- Verify the file is committed and merged into the integration branch.',
     '## Release Readiness', '- **database_change_risk**: none', '- **env_changes**: none',
     '- **config_changes**: none', '- **manual_steps**: none',
-  ].join('\n') }], stopReason: 'stop', usage: { input: 20, output: 10 } };
+  ].join('\n') }], stopReason: 'stop', usage: { input: 20, output: 10 }, responseId };
 } });
 await launchNativePlanning({
   wtDir, slug, repoDir: process.env.REPO_DIR!, issue: process.env.WAVEMILL_ISSUE!, session: process.env.WAVEMILL_SESSION!,
