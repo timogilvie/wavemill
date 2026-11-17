@@ -53,6 +53,7 @@ export interface NativeGateInput {
   now?: Date;
   certificationRoot?: string;
   endpoint?: import('./schema.ts').CertificationEndpoint;
+  qualificationContract?: import('./qualification-contract.ts').QualificationContract;
 }
 
 export interface NativeGateReady {
@@ -139,6 +140,7 @@ export function evaluateNativeProviderGate(input: NativeGateInput): NativeGateDe
     model: input.modelId,
     registry: input.registry,
     endpoint: input.endpoint,
+    qualificationContract: input.qualificationContract,
   });
   const artifactPath = buildGlobalCertificationPath(
     subject.storageIdentity.provider,

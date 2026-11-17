@@ -1,3 +1,5 @@
+import { resolveCertificationSubject } from './identity.ts';
+import { qualificationContract } from './qualification-contract.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { comparisonPlan, comparisonRequiredPairs, endpointComparisonReport } from './endpoint-comparison.ts';
@@ -48,7 +50,7 @@ test('SDK-accounted admission can complete a full low-cost study and stops befor
   assert.equal(schedule.length, 294);
   assert.equal(schedule.find(run => run.pair === 1)!.endpoint.tag, 'alternative', 'pair order is preregistered and rotates');
   const run = (maxSpendUsd: number, missingAccounting = false) => runEndpointComparison({ repoDir: process.cwd(), model: 'kimi-k3', registry: getEffectiveRegistry(), entries,
-    plan: comparisonPlan(entries, 'reference', { ...policy, maxSpendUsd }), onRun() {},
+    plan: comparisonPlan(entries, 'reference', { ...policy, maxSpendUsd }, { referenceCharacterization: characterization(fixture, getEffectiveRegistry()) }), onRun() {},
     runConformance: (async () => ({ harnessPassed: true, results: [] })) as never,
     runCanary: (async () => ({ ...structuredClone(fixture), isLive: false, ...(missingAccounting ? { attemptEvidence: [] } : {}) })) as never });
   const full = await run(25);
@@ -57,4 +59,35 @@ test('SDK-accounted admission can complete a full low-cost study and stops befor
   assert.equal(endpointComparisonReport(plan, full).subjects[1].promotionVerdict, 'insufficient-evidence', 'injected runs never grant promotion');
   assert.equal((await run(1)).length, 1, 'past spend plus the next full reserve must fit');
   assert.equal((await run(25, true)).length, 1, 'missing accounting stops probing');
+});
+
+function characterization(fixture: any, registry: any) {
+  const plan = comparisonPlan([entries[0]], 'reference', policy, { characterizationOnly: true });
+  const subject = resolveCertificationSubject({ provider: 'openrouter', model: 'kimi-k3', registry, endpoint: plan.subjects[0], qualificationContract: plan.contract }).subject;
+  return { plan, runs: plan.runs.map(run => ({ ...run, result: { ...structuredClone(fixture), isLive: true, status: 'pass', ranAt: new Date().toISOString(), catalogHash: subject.catalogHash, qualificationContract: plan.contract, evidence: { ...fixture.evidence, finalTest: { status: 'completed', exitCode: 0 } } } })) };
+}
+test('candidate calls require independently characterized live reference evidence under the same workload, runtime and budget', async () => {
+  const { runEndpointComparison, referenceCharacterizationHealthy } = await import('./endpoint-comparison.ts');
+  const { getEffectiveRegistry } = await import('../../model-registry.ts');
+  const registry = getEffectiveRegistry();
+  let calls = 0;
+  await assert.rejects(runEndpointComparison({ repoDir: process.cwd(), model: 'kimi-k3', registry, entries,
+    plan: comparisonPlan(entries, 'reference', policy), onRun() {}, runCanary: (async () => { calls++; }) as never,
+    runConformance: (async () => ({ harnessPassed: true, results: [] })) as never }), /characterization/);
+  assert.equal(calls, 0);
+  assert.equal(referenceCharacterizationHealthy(undefined, comparisonPlan(entries, 'reference', policy), 'hash'), false);
+});
+
+test('reference-only characterization executes all nine declared workloads and stops on a reference resource failure', async () => {
+  const { runEndpointComparison } = await import('./endpoint-comparison.ts');
+  const { getEffectiveRegistry } = await import('../../model-registry.ts');
+  const { readFileSync } = await import('node:fs');
+  const fixture = readFileSync(new URL('../../../../docs/experiments/hok3496/original-runs.jsonl', import.meta.url), 'utf8').trim().split('\n').map(line => JSON.parse(line)).find(run => run.endpoint.tag === 'wafer').result;
+  for (const fail of [false, true]) {
+    const runs = await runEndpointComparison({ repoDir: process.cwd(), model: 'kimi-k3', registry: getEffectiveRegistry(), entries: [entries[0]],
+      plan: comparisonPlan([entries[0]], 'reference', policy, { characterizationOnly: true }), onRun() {},
+      runConformance: (async () => ({ harnessPassed: true, results: [] })) as never,
+      runCanary: (async () => ({ ...structuredClone(fixture), ...(fail ? { status: 'fail', reason: 'budget_exceeded' } : {}) })) as never });
+    assert.equal(runs.length, fail ? 1 : 9);
+  }
 });

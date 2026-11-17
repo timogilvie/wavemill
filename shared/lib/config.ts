@@ -472,6 +472,7 @@ export interface NativePatchCodingConfig {
 }
 
 export interface CanaryCohortMemberConfig {
+  qualificationContract?: import('./native-agent/certification/qualification-contract.ts').QualificationContract;
   endpoint?: import('./native-agent/certification/schema.ts').CertificationEndpoint;
   provider: 'openai' | 'openrouter';
   model: string;

@@ -71,6 +71,7 @@ export interface CertifyOptions {
   phase: CertificationPhase;
   repoDir: string;
   dryRun?: boolean;
+  qualificationContract?: import('../shared/lib/native-agent/certification/qualification-contract.ts').QualificationContract;
   endpoint?: CertificationEndpoint;
   endpointPricing?: ModelPricing;
   certificationRoot?: string;
@@ -225,6 +226,7 @@ export async function certifyNativeAgent(opts: CertifyOptions): Promise<CertifyR
     model: registryModelId,
     registry: baseRegistry,
     endpoint: opts.endpoint,
+    qualificationContract: opts.qualificationContract,
   });
 
   let endpointPricing = opts.endpointPricing;
