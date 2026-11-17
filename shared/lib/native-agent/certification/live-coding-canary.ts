@@ -1,7 +1,7 @@
 import { CANARY_SENTINEL_PATH, CANARY_SENTINEL_INITIAL, CANARY_SENTINEL_EXPECTED, CANARY_PAYLOAD, CANARY_COMPLETION_PATH, CANARY_TEST_PATH, CANARY_TEST_COMMAND, DEFAULT_CANARY_LIMITS, DEFAULT_CANARY_MAX_ATTEMPTS, canaryOracle, qualificationContract, sameQualificationContract } from './qualification-contract.ts';
 import { budgetExhaustionFromLoop } from '../budget-exhaustion.ts';
 import { readNativeTranscriptEvents, resolveNativeStageTimeSplit } from '../stage-time-split.ts';
-import { ProviderIdentityMismatchError } from '../provider-identity.ts';
+import { ProviderIdentityMismatchError, extractProviderReportedIdentity } from '../provider-identity.ts';
 import { createRunTestsTool } from '../tools/command-tools.ts';
 import { recordLaunch } from '../../session-ownership.ts';
 import { meterWorkflowCost } from '../../sdk-task-cost/meter.ts';
@@ -16,13 +16,13 @@ import type { ExactPricingOptions } from '../../pricing/openrouter-exact-pricing
  *
  * Proves that a native provider/model can drive the PRODUCTION coding
  * mutation tool path: one structured `apply_patch` call that mutates a
- * sentinel file to exact expected bytes, plus the standard `.coding-complete`
+ * sentinel file to the declared literal/functional contract, plus the standard `.coding-complete`
  * completion artifact — inside a disposable, isolated git repository with
  * strict wall-clock/turn/tool-call/token/cost budgets.
  *
  * ## Verdict taxonomy
  *
- * - `pass`         — structured mutation observed, sentinel exactly matches,
+ * - `pass`         — structured mutation observed, final repository satisfies the contract,
  *                    no out-of-scope repository changes, valid completion artifact
  * - `fail`         — definitive protocol/mutation/artifact/budget failure
  * - `inconclusive` — transient provider error, wall-clock expiry, or harness
@@ -267,6 +267,7 @@ async function runSingleCanaryAttempt(input: {
   let workspace: CanaryWorkspace | undefined;
   let transcript: TranscriptWriter | undefined;
   let evidenceDir: string | undefined;
+  const pricing = options.endpointPricing ?? resolveModelPricing(options);
   const sessionId = randomUUID();
   let faultClass: ArmFaultClass = 'unknown-fault';
   try {
@@ -308,7 +309,6 @@ async function runSingleCanaryAttempt(input: {
         tools: descriptors.map((descriptor) => toPiAgentTool(descriptor) as AgentTool<unknown, unknown>),
       };
 
-      const pricing = options.endpointPricing ?? resolveModelPricing(options);
       const budget = {
         maxTurns: limits.maxTurns,
         maxToolCalls: limits.maxToolCalls,
@@ -344,7 +344,14 @@ async function runSingleCanaryAttempt(input: {
           maxTokens: 4096,
           signal: options.signal,
           providerErrorRetry: { maxAttempts: 2 },
-          onEvent(event) { transcript!.handleEvent(event); evidenceRecorder.onEvent(event); },
+          onEvent(event) {
+            // HOK-3501's canonical Pi echo attestation must survive the transcript boundary.
+            const reported = event.type === 'message_end' && event.message.role === 'assistant'
+              ? extractProviderReportedIdentity(event.message, options.subject.providerNativeId) : undefined;
+            transcript!.handleEvent(reported?.reportedModel && event.type === 'message_end'
+              ? { ...event, message: { ...event.message, responseModel: reported.reportedModel } } : event);
+            evidenceRecorder.onEvent(event);
+          },
         });
       } catch (error) {
         if (error instanceof ProviderIdentityMismatchError) return { status: 'fail', reason: 'identity_mismatch', detail: sanitizeDetail(error.message, tmpRoot) };
@@ -402,7 +409,7 @@ async function runSingleCanaryAttempt(input: {
       if (workspace && transcript && evidenceDir) {
         const metered = await meterWorkflowCost({ repoDir: options.repoDir, worktreePath: workspace.repoDir, featureDir: evidenceDir,
           branchName: '', issueId: sessionId, slug: 'live-canary', label: 'Certification canary',
-          ...(options.endpointPricing ? { pricingTable: { [options.registryModelId]: options.endpointPricing } } : {}),
+          ...(pricing ? { pricingTable: { [options.registryModelId]: pricing, [options.subject.providerNativeId]: pricing } } : {}),
           ownership: [ { sessionRef: sessionId, harness: 'native', kind: 'coding', stage: 'coding', model: options.registryModelId, attemptId: sessionId, launchedAt: input.now().toISOString(), cwd: workspace.repoDir } ],
           exactPricing: { ...(authEnv && options.provider === 'openrouter' ? { apiKey: authEnv.apiKey } : {}), ...options.exactPricing }, logger: { log() {}, warn() {} } });
         if (metered.outcome.status === 'success' && metered.summaries?.length) {
@@ -761,7 +768,7 @@ async function verifyCanaryRepository(
     return {
       status: 'fail',
       reason: 'protocol_failure',
-      detail: 'no structured apply_patch tool call was executed (assistant text is not tool use)',
+      detail: events.failedMutationToolCalls ? 'Structured mutation call failed validation or execution.' : 'No structured apply_patch tool call executed (assistant text is not tool use).',
       evidence,
     };
   }
@@ -815,7 +822,7 @@ async function verifyCanaryRepository(
       if (!details.ok || details.timedOut || details.signal || details.exitCode === null)
         return { status: 'inconclusive', reason: 'internal_error', detail: 'Final verification could not execute reliably.', evidence };
       if (details.exitCode !== 0) return { status: 'fail', reason: 'wrong_mutation', detail: 'Final repository failed the trusted functional oracle.', evidence };
-      evidence.formattingDifference = actualSentinel !== CANARY_SENTINEL_EXPECTED;
+      evidence.formattingDifference = actualSentinel !== CANARY_SENTINEL_EXPECTED || (workspace.profile !== 'standard' && readFileSync(join(workspace.repoDir, 'src/payload.ts'), 'utf8') !== `export const payload = ${JSON.stringify(CANARY_PAYLOAD)};\n`);
     } catch {
       return { status: 'inconclusive', reason: 'internal_error', detail: 'Final verification command failed to execute.', evidence };
     }

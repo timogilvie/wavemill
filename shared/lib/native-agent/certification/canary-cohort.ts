@@ -385,7 +385,7 @@ function resolveAttemptCachePath(options: {
 }
 
 function memberKey(member: CanaryCohortMember): string {
-  return `${member.provider}/${member.model}${member.endpoint ? `@${endpointIdentity(member.endpoint)}:${JSON.stringify(member.qualificationContract ?? qualificationContract())}` : ''}`;
+  return `${member.provider}/${member.model}${member.endpoint ? `@${endpointIdentity(member.endpoint)}` : ''}`;
 }
 
 /**
