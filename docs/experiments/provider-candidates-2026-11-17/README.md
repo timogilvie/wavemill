@@ -44,7 +44,9 @@ No candidate qualifies under the unchanged protocol, and 73 complete repetitions
 
 `streamlake-mutation.json` retains the captured synthetic patch arguments without model reasoning or raw response identifiers. The edit's `oldText` omitted the existing final newline, while `newText` included a final newline. The untouched original newline therefore remained, leaving one additional trailing blank line. Hashing the expected sentinel plus one newline reproduces the recorded actual hash exactly.
 
-That violates the task's explicit full-content contract. It is **not evidence of semantic TypeScript corruption**. The original `wrong_mutation` result is preserved and is not retrospectively converted to a pass.
+The retained `run_tests` event also records `node --test tests/canary.test.ts` exiting successfully with code 0. The functional fixture passed.
+
+The extra blank line violates the task's explicit full-content contract. It is **not evidence of semantic TypeScript corruption**. The original `wrong_mutation` result is preserved and is not retrospectively converted to a pass.
 
 ### Interpretation and next decision
 

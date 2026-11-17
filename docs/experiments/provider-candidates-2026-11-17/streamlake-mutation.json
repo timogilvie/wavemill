@@ -44,5 +44,10 @@
     "completionArtifactHash": "34706b4aa8118ebf1298c5b69b36a4f4927c795768c5ef27383ff3003ca1d55e"
   },
   "additionalNewlineExplainsRecordedHash": true,
-  "interpretation": "The edit omits the original trailing newline from oldText and includes one in newText. One extra trailing blank line exactly explains the recorded hash. This fails the exact-byte fixture, not a demonstrated semantic-code corruption."
+  "interpretation": "The edit omits the original trailing newline from oldText and includes one in newText. One extra trailing blank line exactly explains the recorded hash. This fails the exact-byte fixture, not a demonstrated semantic-code corruption.",
+  "focusedTest": {
+    "command": "node --test tests/canary.test.ts",
+    "exitCode": 0,
+    "isError": false
+  }
 }
