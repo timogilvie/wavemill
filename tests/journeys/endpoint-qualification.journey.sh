@@ -11,6 +11,8 @@ import { join } from 'node:path';
 const [install, root] = process.argv.slice(2);
 const { replayEndpointQualification, replayCohortReadiness } = await import(pathToFileURL(join(install, 'tests/fixtures/endpoint-qualification/replay.ts')));
 replayEndpointQualification(root);
+const { assertFunctionalQualificationJourney } = await import(pathToFileURL(join(install, 'tests/fixtures/endpoint-qualification/functional-replay.ts')));
+await assertFunctionalQualificationJourney(root);
 await replayCohortReadiness(root);
 JS
 }

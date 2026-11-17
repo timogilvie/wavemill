@@ -2162,7 +2162,7 @@ export function getDefaultScenarios(endpoint = false): CertificationScenario[] {
 /** Scoped additions: legacy model certificates keep their existing suite contract. */
 export function getEndpointQualificationScenarios(): CertificationScenario[] {
   return [{ id: 'endpoint.patch.nested-escaping-atomic-operations.v1', phase: 'patch', category: 'tool', classification: 'deterministic',
-    description: 'Reconstructed nested NativePatch arguments round-trip through the production mutation tool; corrupted flattened arguments are refused.',
+    description: 'Nested NativePatch escaping round-trips through the production mutation tool; reconstructed flattening and captured corrupt argument keys are refused.',
     async assertion() {
       // allow-source-text-assertion: reconstructed JSON input, never implementation source.
       const fixture = JSON.parse(readFileSync(new URL('../../../../tests/fixtures/endpoint-qualification/nested-patch.json', import.meta.url), 'utf8'));
@@ -2174,6 +2174,13 @@ export function getEndpointQualificationScenarios(): CertificationScenario[] {
         if (!valid.details.ok || readFileSync(join(repo, 'src/payload.ts'), 'utf8') !== fixture.expected) return { kind: 'fail', detail: 'Nested patch escaping or multiple operations changed bytes.' };
         const invalid = await tool.execute('nested-corrupt', { patch: JSON.stringify(fixture.arguments.patch) } as never);
         if (invalid.details.ok) return { kind: 'fail', detail: 'Flattened nested patch unexpectedly accepted.' };
+        // allow-source-text-assertion: captured synthetic-workload tool arguments, never implementation source.
+        const captured = JSON.parse(readFileSync(new URL('../../../../tests/fixtures/endpoint-qualification/captured-corrupt-arguments.json', import.meta.url), 'utf8'));
+        writeFixture(repo, 'src/canary.ts', "export const CANARY_STATE = 'pending';\n");
+        for (const args of captured.arguments) {
+          const rejected = await tool.execute('captured-corrupt', args);
+          if (rejected.details.ok || readFileSync(join(repo, 'src/canary.ts'), 'utf8') !== "export const CANARY_STATE = 'pending';\n") return { kind: 'fail', detail: 'Captured malformed patch was accepted or changed source.' };
+        }
         return { kind: 'pass' };
       } finally { rmSync(repo, { recursive: true, force: true }); }
     },

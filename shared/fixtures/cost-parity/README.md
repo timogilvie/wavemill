@@ -173,6 +173,19 @@ would have (a session is owned unless the case marks it `owned: false`), and
 
 The SDK report also adds `byHarness` to every success outcome.
 
+## Re-baseline: `@hokusai/costs` 0.9.0 and resolved per-model cost
+
+Wavemill pins `@hokusai/core` / `@hokusai/costs` 0.9.0. Per-model `costUsd`
+now comes from the report's `byModel` breakdown, which resolves each event as
+`actual ?? estimated`. It used to add a model segment's `actual` and
+`estimated` sums, which double-counted any turn carrying both a provider
+charge and a list-price estimate. No task total changes.
+
+| caseId | per-model before | per-model after | why changed |
+|---|---|---|---|
+| `native-priced-complete`, `native-provider-reported-cost` | gpt-4o $0.016 (`mixed`) | $0.0095 (`openrouter_api`) | the $0.0065 estimate was added to the $0.0095 charge for the same turn |
+| `hok-3237-cross-harness` | `qwen-3-coder` $4.93, reason `unpriced_model` | `qwen3-coder` $4.93, reason `mixed_coverage` | 0.9.0 canonicalizes the alias and puts `qwen3-coder` in the price table, so the unpriced-model diagnostic no longer fires; the reported charge still wins |
+
 ## SDK migration gate (HOK-3076, historical)
 
 Before HOK-3077 the legacy and SDK outcomes were compared on this corpus and

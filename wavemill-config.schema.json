@@ -389,7 +389,7 @@
                 "enabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "When true (the default), every mill session launches a dedicated Backstage pane running wavemill observer --loop. Detection-only unless observer.autoFix is opted in."
+                    "description": "When true (the default), every mill session launches a dedicated Backstage pane running wavemill observer --loop. Detection-only: findings and evidence only."
                 },
                 "intervalSeconds": {
                     "type": "integer",
@@ -630,50 +630,6 @@
                                     "default": ["cleanup_dirty_worktree", "arm_died_with_unpushed_work"],
                                     "description": "Root cause classes that are dropped before Linear filing (shadow and live). Still recorded in .wavemill/incidents/ for local analysis."
                                 }
-                            },
-                            "additionalProperties": false
-                        }
-                    },
-                    "additionalProperties": false
-                },
-                "autoFix": {
-                    "type": "object",
-                    "description": "Opt-in observer self-repair actions (HOK-3097). Disabled by default; each fix is independently gated. Every fix is bounded by shared bounded-retry buckets, skipped when the worktree is dirty or the agent is working, and logged as a greppable action record under the incident store directory.",
-                    "properties": {
-                        "enabled": {
-                            "type": "boolean",
-                            "default": false,
-                            "description": "Master switch for every observer auto-fix. When false (the default), observer behaviour is byte-identical to detection-only."
-                        },
-                        "quietMinutes": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "default": 10,
-                            "description": "Minimum age (minutes) of the blocked state before a fix runs; avoids racing the monitor's own update-from-base path."
-                        },
-                        "updateBranchFromBase": {
-                            "type": "object",
-                            "description": "Merge origin/<base> into a task's worktree branch and push (reuses HOK-3092's updateBranchWithBase). Also fast-forwards a worktree whose origin/<branch> has moved ahead.",
-                            "properties": {
-                                "enabled": { "type": "boolean", "default": false },
-                                "maxAttempts": { "type": "integer", "minimum": 1, "default": 2 }
-                            },
-                            "additionalProperties": false
-                        },
-                        "resetReadyRecheckBudget": {
-                            "type": "object",
-                            "description": "Clear an exhausted failed-ready-recheck/pending-ready-recheck bucket once the head or base SHA has changed since the budget ran out.",
-                            "properties": {
-                                "enabled": { "type": "boolean", "default": false }
-                            },
-                            "additionalProperties": false
-                        },
-                        "forfeitStuckChallengeArm": {
-                            "type": "object",
-                            "description": "Abort a terminally stuck challenge arm whose sibling has evalCompleted. Closes the arm's PR; never forfeits when both sides are stuck.",
-                            "properties": {
-                                "enabled": { "type": "boolean", "default": false },
-                                "stuckHours": { "type": "integer", "minimum": 1, "default": 2 }
                             },
                             "additionalProperties": false
                         }
@@ -1783,6 +1739,8 @@
                                 "type": "object",
                                 "required": ["provider", "model"],
                                 "properties": {
+                                    "qualificationContract": { "$ref": "#/definitions/endpointQualificationContract" },
+                                    "endpoint": { "$ref": "#/definitions/certificationEndpoint" },
                                     "provider": {
                                         "type": "string",
                                         "enum": ["openai", "openrouter"]
@@ -3707,6 +3665,103 @@
         }
     },
     "definitions": {
+        "endpointQualificationContract": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "version",
+                "oracleHash",
+                "toolContract",
+                "limits",
+                "maxAttempts"
+            ],
+            "properties": {
+                "version": {
+                    "const": "endpoint-functional/v1"
+                },
+                "oracleHash": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                },
+                "toolContract": {
+                    "const": "native-patch-and-command-tools/v1"
+                },
+                "limits": {
+                    "$ref": "#/definitions/endpointQualificationLimits"
+                },
+                "maxAttempts": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            }
+        },
+        "endpointQualificationLimits": {
+            "type": "object",
+            "required": [
+                "maxWallClockMs",
+                "maxTurns",
+                "maxToolCalls",
+                "maxTotalTokens"
+            ],
+            "additionalProperties": false,
+            "properties": {
+                "maxWallClockMs": {
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "maxTurns": {
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "maxToolCalls": {
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "maxTotalTokens": {
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "maxCostUsd": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                }
+            }
+        },
+        "certificationEndpoint": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "tag",
+                "providerName",
+                "quantization",
+                "deploymentRevision"
+            ],
+            "properties": {
+                "tag": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*(/[a-zA-Z0-9][a-zA-Z0-9._-]*)*$"
+                },
+                "providerName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                },
+                "quantization": {
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "deploymentRevision": {
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                }
+            }
+        },
         "nativeAgentAdvancedFamily": {
             "type": "object",
             "description": "Per-family opt-in for an Epic 10 advanced tool family. Every field is optional and defaults to off/empty.",

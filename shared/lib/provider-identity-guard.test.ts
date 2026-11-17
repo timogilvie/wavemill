@@ -67,3 +67,15 @@ describe('provider-identity guard — endpoint qualification wiring', () => {
     assert.equal(check.find('options.subject.endpoint ? endpointRouting(options.subject.endpoint) : routing').length, 0);
   });
 });
+
+describe('provider-identity guard — qualification verdict ownership', () => {
+  it('rejects private any-fail promotion policy and historical-test shortcuts', () => {
+    const verdict = PROVIDER_IDENTITY_GUARD.structuralChecks!.find(check => check.name === 'endpoint-qualification-contract')!;
+    const shared = 'qualificationOutcome(run); qualificationHistory(history); referenceCharacterizationHealthy(plan);';
+    assert.equal(verdict.find(shared).length, 0);
+    assert.equal(verdict.find(shared + " if (result.status === 'fail') reject();").length, 1);
+    const oracle = PROVIDER_IDENTITY_GUARD.structuralChecks!.find(check => check.name === 'endpoint-final-oracle')!;
+    assert.equal(oracle.find('await verifyCanaryRepository(workspace);').length, 0);
+    assert.equal(oracle.find('if (testExecutionPassed) accept();').length, 1);
+  });
+});

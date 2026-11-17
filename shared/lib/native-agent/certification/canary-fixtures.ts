@@ -34,6 +34,7 @@ export function buildLiveCodingCanaryFixture(
   overrides: Partial<LiveCodingCanaryResult> = {},
 ): LiveCodingCanaryResult {
   return {
+    ...(subject.qualificationContract ? { qualificationContract: subject.qualificationContract, evidence: { structuredMutationToolCalls: 2, mutationToolNames: ['apply_patch', 'create_marker'], expectedSentinelHash: 'fixture', changedPaths: [], completionArtifactPresent: true, finalTest: { status: 'completed', exitCode: 0 } } } : {}),
     scenarioId: LIVE_CODING_CANARY_SCENARIO_ID,
     status: 'pass',
     isLive: true,
@@ -45,7 +46,7 @@ export function buildLiveCodingCanaryFixture(
     catalogHash: subject.catalogHash,
     suiteVersion,
     ranAt: new Date().toISOString(),
-    limits: { ...FIXTURE_LIMITS },
+    limits: { ...(subject.qualificationContract?.limits ?? FIXTURE_LIMITS) },
     ...overrides,
   };
 }

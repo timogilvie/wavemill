@@ -1,3 +1,4 @@
+import { qualificationContract, type QualificationContract } from './qualification-contract.ts';
 import { resolvePiRuntimeVersions } from '../pi-runtime-version.ts';
 import { NATIVE_PATCH_VERSION } from '../patch-contract.ts';
 import { certificationEndpointKey } from './schema.ts';
@@ -106,6 +107,7 @@ export function resolveCertificationSubject(input: {
   registry: ModelRegistry;
   launchPriorityFixturePath?: string;
   endpoint?: CertificationEndpoint;
+  qualificationContract?: QualificationContract;
 }): ResolvedCertificationSubject {
   const nativeProvider = normalizeStorageSegment(input.provider);
   const registryKey = resolveModelRegistryKey(input.registry, input.model);
@@ -149,12 +151,13 @@ export function resolveCertificationSubject(input: {
       : 'registry');
   if (input.endpoint && nativeProvider !== 'openrouter') throw new Error('Endpoint qualification requires OpenRouter');
   const endpoint = input.endpoint ? validateCertificationEndpoint(input.endpoint) : undefined;
+  const qualification = endpoint ? input.qualificationContract ?? qualificationContract() : undefined;
   const runtimeVersions = endpoint ? resolvePiRuntimeVersions() : undefined;
   if (endpoint && (!runtimeVersions?.['pi-ai'] || !runtimeVersions?.['pi-agent-core'])) throw new Error('Endpoint qualification requires resolvable installed Pi runtime versions');
   const compat = Object.entries(capabilities.nativeCapability?.compatFlags ?? {}).filter(([key]) => key !== 'openRouterRouting').sort(([a], [b]) => a.localeCompare(b));
   const endpointBaseHash = endpoint ? createHash('sha256').update(JSON.stringify({ baseCatalogHash, runtimeVersions,
     patchVersion: NATIVE_PATCH_VERSION, suiteVersion: capabilities.nativeCapability?.certification?.certificationSuiteVersion,
-    transport: capabilities.nativeCapability?.piTransportKind, compatibility: compat, contract: 'endpoint-qualification/v1' })).digest('hex') : baseCatalogHash;
+    transport: capabilities.nativeCapability?.piTransportKind, compatibility: compat, contract: qualification })).digest('hex') : baseCatalogHash;
   const catalogHash = foldOpenRouterRoutingIntoCatalogHash(
     endpointBaseHash,
     (endpoint ? endpointRouting(endpoint) : getOpenRouterRouting(input.registry, registryKey)) as Record<string, unknown> | undefined,
@@ -165,7 +168,7 @@ export function resolveCertificationSubject(input: {
     storageIdentity,
     ...(catalogHash !== baseCatalogHash ? { unpinnedCatalogHash: baseCatalogHash } : {}),
     subject: {
-      ...(endpoint ? { endpoint, runtimeVersions } : {}),
+      ...(endpoint ? { endpoint, runtimeVersions, qualificationContract: qualification } : {}),
       registryKey,
       nativeProvider,
       providerId: split.providerId,

@@ -1,0 +1,4553 @@
+{
+  "schemaVersion": "provider-endpoint-audit/v1",
+  "unmeasuredModels": [
+    {
+      "model": "gemini-3.1-pro-preview-customtools",
+      "catalogEndpoints": 1,
+      "reason": "no-retained-sdk-segments"
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "catalogEndpoints": 3,
+      "reason": "no-retained-sdk-segments"
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "catalogEndpoints": 7,
+      "reason": "no-retained-sdk-segments"
+    },
+    {
+      "model": "llama-4-maverick",
+      "catalogEndpoints": 2,
+      "reason": "no-retained-sdk-segments"
+    },
+    {
+      "model": "mistral-large-2",
+      "catalogEndpoints": 2,
+      "reason": "no-retained-sdk-segments"
+    },
+    {
+      "model": "mistral-medium-3",
+      "catalogEndpoints": 2,
+      "reason": "no-retained-sdk-segments"
+    },
+    {
+      "model": "devstral-medium",
+      "catalogEndpoints": 1,
+      "reason": "no-retained-sdk-segments"
+    },
+    {
+      "model": "qwen-3-235b",
+      "catalogEndpoints": 6,
+      "reason": "no-retained-sdk-segments"
+    },
+    {
+      "model": "kimi-k2",
+      "catalogEndpoints": 1,
+      "reason": "no-retained-sdk-segments"
+    },
+    {
+      "model": "glm-5.2",
+      "catalogEndpoints": 34,
+      "reason": "no-retained-sdk-segments"
+    },
+    {
+      "model": "glm-5.3",
+      "catalogEndpoints": 48,
+      "reason": "no-retained-sdk-segments"
+    },
+    {
+      "model": "kimi-k2-thinking",
+      "catalogEndpoints": 1,
+      "reason": "no-retained-sdk-segments"
+    },
+    {
+      "model": "kimi-k3.1-pro",
+      "catalogEndpoints": 24,
+      "reason": "no-retained-sdk-segments"
+    },
+    {
+      "model": "ox-alpha",
+      "catalogEndpoints": 0,
+      "reason": "no-retained-sdk-segments"
+    },
+    {
+      "model": "grok-code-fast",
+      "catalogEndpoints": 0,
+      "reason": "no-retained-sdk-segments"
+    }
+  ],
+  "inputRecords": 355,
+  "evaluatedTasks": 109,
+  "exclusions": [
+    {
+      "issueId": "HOK-3493_c",
+      "reason": "no-sdk-summary"
+    },
+    {
+      "issueId": "HOK-3406",
+      "reason": "no-sdk-summary"
+    },
+    {
+      "issueId": "HOK-3382_c",
+      "reason": "no-sdk-summary"
+    },
+    {
+      "issueId": "HOK-3471_c",
+      "reason": "no-sdk-summary"
+    },
+    {
+      "issueId": "HOK-3471",
+      "reason": "no-sdk-summary"
+    },
+    {
+      "issueId": "HOK-3478",
+      "reason": "no-sdk-summary"
+    },
+    {
+      "issueId": "HOK-3478",
+      "reason": "no-sdk-summary"
+    },
+    {
+      "issueId": "HOK-3447",
+      "reason": "no-sdk-summary"
+    },
+    {
+      "issueId": "HOK-3447_c",
+      "reason": "no-sdk-summary"
+    },
+    {
+      "issueId": "HOK-3424",
+      "reason": "no-sdk-summary"
+    },
+    {
+      "issueId": "HOK-3448_c",
+      "reason": "no-sdk-summary"
+    },
+    {
+      "issueId": "HOK-3424_c",
+      "reason": "no-sdk-summary"
+    },
+    {
+      "issueId": "HOK-3429",
+      "reason": "no-sdk-summary"
+    },
+    {
+      "issueId": "HOK-3385_c",
+      "reason": "no-sdk-summary"
+    },
+    {
+      "issueId": "HOK-3339",
+      "harness": "codex",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3339",
+      "harness": "claude-code",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3361",
+      "harness": "codex",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3361",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3361",
+      "harness": "claude-code",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3322",
+      "harness": "codex",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3322",
+      "harness": "claude-code",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3312",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3306",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3228",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3237",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3313",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3313",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3316",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3313",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3313",
+      "harness": "claude-code",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3313",
+      "harness": "claude-code",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3313",
+      "harness": "codex",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3314",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3313",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3313",
+      "harness": "claude-code",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3313",
+      "harness": "codex",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3261",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3260",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3236",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3293",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3303",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3273",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3244",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3249",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3271",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3272",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3262",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3243",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3245",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3252",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3241",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3241",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3241",
+      "harness": "claude-code",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3241",
+      "harness": "codex",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3253",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3242",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3256",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3240",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3239",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3221",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3238",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3232",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3248",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3223",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3254",
+      "harness": "native",
+      "reason": "overlapping-sdk-events"
+    },
+    {
+      "issueId": "HOK-3076",
+      "reason": "no-sdk-summary"
+    },
+    {
+      "issueId": "HOK-3227",
+      "reason": "no-sdk-summary"
+    },
+    {
+      "issueId": "HOK-3229",
+      "reason": "no-sdk-summary"
+    },
+    {
+      "issueId": "HOK-3076",
+      "reason": "no-sdk-summary"
+    },
+    {
+      "issueId": "HOK-3220",
+      "reason": "no-sdk-summary"
+    },
+    {
+      "issueId": "HOK-3075",
+      "reason": "no-sdk-summary"
+    }
+  ],
+  "models": [
+    {
+      "model": "kimi-k2.7-code",
+      "nativeProvider": "openrouter",
+      "tasks": 5,
+      "harnesses": [
+        "native"
+      ],
+      "measuredSdkReport": {
+        "taskId": "endpoint-audit",
+        "totalUsd": 47.90176129,
+        "actualUsd": 3.67370029,
+        "estimatedUsd": 44.228061,
+        "byModel": {
+          "kimi-k2.7-code": {
+            "totalUsd": 47.90176129,
+            "actualUsd": 3.67370029,
+            "estimatedUsd": 44.228061,
+            "usage": {
+              "inputTokens": 12919482,
+              "outputTokens": 595051,
+              "cacheReadTokens": 201720832,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 5,
+            "turnCount": 5,
+            "costSource": "mixed",
+            "coverage": "partial"
+          }
+        },
+        "byHarness": {
+          "native": {
+            "totalUsd": 47.90176129,
+            "actualUsd": 3.67370029,
+            "estimatedUsd": 44.228061,
+            "usage": {
+              "inputTokens": 12919482,
+              "outputTokens": 595051,
+              "cacheReadTokens": 201720832,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 5,
+            "turnCount": 5,
+            "costSource": "mixed",
+            "coverage": "partial"
+          }
+        },
+        "usage": {
+          "inputTokens": 12919482,
+          "outputTokens": 595051,
+          "cacheReadTokens": 201720832,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": null
+        },
+        "eventCount": 5,
+        "turnCount": 5,
+        "source": {
+          "cost": "mixed",
+          "basis": "per_token_api",
+          "capture": [
+            "manual"
+          ],
+          "sessionFileCount": 0
+        },
+        "pricing": {
+          "source": "local_estimate",
+          "revision": null,
+          "effectiveDate": "2026-11-04",
+          "revisions": [],
+          "priceTables": [
+            "external"
+          ],
+          "builtInTableAsOf": "2026-11-04",
+          "overrideCount": 0,
+          "currency": "USD"
+        },
+        "coverage": {
+          "status": "partial",
+          "pricedEvents": 5,
+          "unpricedEvents": 0,
+          "unknownModels": []
+        },
+        "diagnostics": [
+          {
+            "code": "mixed_coverage",
+            "level": "warn",
+            "message": "coverage is partial: some events are missing cost or usage",
+            "count": 1
+          },
+          {
+            "code": "provider_reported_cost",
+            "level": "info",
+            "message": "at least one event carries a provider-reported charge",
+            "count": 1
+          }
+        ],
+        "summaries": [
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-audit",
+            "session_ids": [
+              "redacted-01b1f9cb77a73d94",
+              "redacted-50d8f76b9b4b0e2f",
+              "redacted-935092a7de76f32b",
+              "redacted-e179aa1d11f64958",
+              "redacted-fd11948f5789d24f"
+            ],
+            "harness": "native",
+            "provider_contract_version": "native/1",
+            "models": [
+              "kimi-k2.7-code"
+            ],
+            "model_segments": [
+              {
+                "model": "kimi-k2.7-code",
+                "turn_count": 5,
+                "usage": {
+                  "input_tokens": 12919482,
+                  "output_tokens": 595051,
+                  "cache_read_tokens": 201720832,
+                  "cache_write_tokens": 0,
+                  "reasoning_tokens": null
+                },
+                "actual_cost_usd": 3.67370029,
+                "estimated_cost_usd": 44.228061,
+                "cost_source": "mixed"
+              }
+            ],
+            "turn_count": 5,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 12919482,
+              "output_tokens": 595051,
+              "cache_read_tokens": 201720832,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 3.67370029,
+            "estimated_cost_usd": 44.228061,
+            "total_cost_usd": 47.90176129,
+            "cost_source": "mixed",
+            "cost_basis": "per_token_api",
+            "coverage": "partial",
+            "field_availability": {
+              "usage": "partial",
+              "actual_cost": "partial",
+              "estimated_cost": "partial",
+              "pricing": "partial"
+            },
+            "pricing_source": "local_estimate",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-11-13T15:48:05.102Z",
+            "event_count": 5,
+            "event_ids": [
+              "native.4.0",
+              "native.3.0",
+              "native.2.0",
+              "native.1.0",
+              "native.0.0"
+            ],
+            "diagnostics": [
+              "mixed_coverage",
+              "provider_reported_cost"
+            ]
+          }
+        ]
+      },
+      "currentRouting": {
+        "order": [
+          "moonshotai"
+        ],
+        "allow_fallbacks": false
+      },
+      "catalogCapturedAt": "2026-11-16T21:04:13.508Z",
+      "catalogError": null,
+      "endpoints": [
+        {
+          "tag": "coreweave/int4",
+          "providerName": "CoreWeave",
+          "quantization": "int4",
+          "historicalMixEstimateUsd": 33.743342
+        },
+        {
+          "tag": "streamlake",
+          "providerName": "StreamLake",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 39.735501
+        },
+        {
+          "tag": "inceptron/int4",
+          "providerName": "Inceptron",
+          "quantization": "int4",
+          "historicalMixEstimateUsd": 42.1097
+        },
+        {
+          "tag": "venice/int4",
+          "providerName": "Venice",
+          "quantization": "int4",
+          "historicalMixEstimateUsd": 44.047623
+        },
+        {
+          "tag": "siliconflow/fp8",
+          "providerName": "SiliconFlow",
+          "quantization": "fp8",
+          "historicalMixEstimateUsd": 49.656725
+        },
+        {
+          "tag": "novita/int4",
+          "providerName": "Novita",
+          "quantization": "int4",
+          "historicalMixEstimateUsd": 50.861443
+        },
+        {
+          "tag": "gmicloud/fp8",
+          "providerName": "GMICloud",
+          "quantization": "fp8",
+          "historicalMixEstimateUsd": 52.98067
+        },
+        {
+          "tag": "alibaba/fp8",
+          "providerName": "Alibaba",
+          "quantization": "fp8",
+          "historicalMixEstimateUsd": 52.98067
+        },
+        {
+          "tag": "cloudflare",
+          "providerName": "Cloudflare",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 52.98067
+        },
+        {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 52.98067
+        },
+        {
+          "tag": "moonshotai/highspeed",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 105.96134
+        }
+      ],
+      "referenceTag": "moonshotai",
+      "referenceSource": "configured-restriction",
+      "potentialSavingsUsd": 19.237328000000005
+    },
+    {
+      "model": "gemini-2.5-pro",
+      "nativeProvider": "openrouter",
+      "tasks": 2,
+      "harnesses": [
+        "native"
+      ],
+      "measuredSdkReport": {
+        "taskId": "endpoint-audit",
+        "totalUsd": 29.927550125,
+        "actualUsd": null,
+        "estimatedUsd": 29.927550125,
+        "byModel": {
+          "gemini-2.5-pro": {
+            "totalUsd": 29.927550125,
+            "actualUsd": null,
+            "estimatedUsd": 29.927550125,
+            "usage": {
+              "inputTokens": 14036085,
+              "outputTokens": 1234692,
+              "cacheReadTokens": 284191,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 11,
+            "turnCount": 11,
+            "costSource": "local_estimate",
+            "coverage": "partial"
+          }
+        },
+        "byHarness": {
+          "native": {
+            "totalUsd": 29.927550125,
+            "actualUsd": null,
+            "estimatedUsd": 29.927550125,
+            "usage": {
+              "inputTokens": 14036085,
+              "outputTokens": 1234692,
+              "cacheReadTokens": 284191,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 11,
+            "turnCount": 11,
+            "costSource": "local_estimate",
+            "coverage": "partial"
+          }
+        },
+        "usage": {
+          "inputTokens": 14036085,
+          "outputTokens": 1234692,
+          "cacheReadTokens": 284191,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": null
+        },
+        "eventCount": 11,
+        "turnCount": 11,
+        "source": {
+          "cost": "local_estimate",
+          "basis": "per_token_api",
+          "capture": [
+            "manual"
+          ],
+          "sessionFileCount": 0
+        },
+        "pricing": {
+          "source": "local_estimate",
+          "revision": null,
+          "effectiveDate": "2026-11-04",
+          "revisions": [],
+          "priceTables": [
+            "external"
+          ],
+          "builtInTableAsOf": "2026-11-04",
+          "overrideCount": 0,
+          "currency": "USD"
+        },
+        "coverage": {
+          "status": "partial",
+          "pricedEvents": 11,
+          "unpricedEvents": 0,
+          "unknownModels": []
+        },
+        "diagnostics": [
+          {
+            "code": "mixed_coverage",
+            "level": "warn",
+            "message": "coverage is partial: some events are missing cost or usage",
+            "count": 1
+          }
+        ],
+        "summaries": [
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-audit",
+            "session_ids": [
+              "redacted-d21dd5a553bccd13",
+              "redacted-f041251b64ef00a6"
+            ],
+            "harness": "native",
+            "provider_contract_version": "native/1",
+            "models": [
+              "gemini-2.5-pro"
+            ],
+            "model_segments": [
+              {
+                "model": "gemini-2.5-pro",
+                "turn_count": 11,
+                "usage": {
+                  "input_tokens": 14036085,
+                  "output_tokens": 1234692,
+                  "cache_read_tokens": 284191,
+                  "cache_write_tokens": 0,
+                  "reasoning_tokens": null
+                },
+                "actual_cost_usd": null,
+                "estimated_cost_usd": 29.927550125,
+                "cost_source": "local_estimate"
+              }
+            ],
+            "turn_count": 11,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 14036085,
+              "output_tokens": 1234692,
+              "cache_read_tokens": 284191,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": null,
+            "estimated_cost_usd": 29.927550125,
+            "total_cost_usd": 29.927550125,
+            "cost_source": "local_estimate",
+            "cost_basis": "per_token_api",
+            "coverage": "partial",
+            "field_availability": {
+              "usage": "partial",
+              "actual_cost": "unavailable",
+              "estimated_cost": "available",
+              "pricing": "available"
+            },
+            "pricing_source": "local_estimate",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-10-29T20:11:18.591Z",
+            "event_count": 11,
+            "event_ids": [
+              "native.1.0",
+              "native.10.0",
+              "native.2.0",
+              "native.3.0",
+              "native.4.0",
+              "native.5.0",
+              "native.6.0",
+              "native.7.0",
+              "native.8.0",
+              "native.9.0",
+              "native.0.0"
+            ],
+            "diagnostics": [
+              "mixed_coverage"
+            ]
+          }
+        ]
+      },
+      "currentRouting": null,
+      "catalogCapturedAt": "2026-11-16T21:04:12.677Z",
+      "catalogError": null,
+      "endpoints": [
+        {
+          "tag": "google-ai-studio/flex",
+          "providerName": "Google AI Studio",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 14.963776
+        },
+        {
+          "tag": "google-ai-studio",
+          "providerName": "Google AI Studio",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 29.92755
+        },
+        {
+          "tag": "google-ai-studio/priority",
+          "providerName": "Google AI Studio",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 53.86959
+        }
+      ],
+      "referenceTag": "google-ai-studio",
+      "referenceSource": "operator-comparison-reference",
+      "potentialSavingsUsd": 14.963774
+    },
+    {
+      "model": "glm-5.3-flash",
+      "nativeProvider": "openrouter",
+      "tasks": 8,
+      "harnesses": [
+        "native"
+      ],
+      "measuredSdkReport": {
+        "taskId": "endpoint-audit",
+        "totalUsd": 28.88015665,
+        "actualUsd": 0.32244895,
+        "estimatedUsd": 29.0487657,
+        "byModel": {
+          "glm-5.3-flash": {
+            "totalUsd": 28.88015665,
+            "actualUsd": 0.32244895,
+            "estimatedUsd": 29.0487657,
+            "usage": {
+              "inputTokens": 11919351,
+              "outputTokens": 2052131,
+              "cacheReadTokens": 524694857,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 8,
+            "turnCount": 8,
+            "costSource": "mixed",
+            "coverage": "partial"
+          }
+        },
+        "byHarness": {
+          "native": {
+            "totalUsd": 28.88015665,
+            "actualUsd": 0.32244895,
+            "estimatedUsd": 29.0487657,
+            "usage": {
+              "inputTokens": 11919351,
+              "outputTokens": 2052131,
+              "cacheReadTokens": 524694857,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 8,
+            "turnCount": 8,
+            "costSource": "mixed",
+            "coverage": "partial"
+          }
+        },
+        "usage": {
+          "inputTokens": 11919351,
+          "outputTokens": 2052131,
+          "cacheReadTokens": 524694857,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": null
+        },
+        "eventCount": 8,
+        "turnCount": 8,
+        "source": {
+          "cost": "mixed",
+          "basis": "per_token_api",
+          "capture": [
+            "manual"
+          ],
+          "sessionFileCount": 0
+        },
+        "pricing": {
+          "source": "local_estimate",
+          "revision": null,
+          "effectiveDate": "2026-11-04",
+          "revisions": [],
+          "priceTables": [
+            "external"
+          ],
+          "builtInTableAsOf": "2026-11-04",
+          "overrideCount": 0,
+          "currency": "USD"
+        },
+        "coverage": {
+          "status": "partial",
+          "pricedEvents": 8,
+          "unpricedEvents": 0,
+          "unknownModels": []
+        },
+        "diagnostics": [
+          {
+            "code": "mixed_coverage",
+            "level": "warn",
+            "message": "coverage is partial: some events are missing cost or usage",
+            "count": 1
+          },
+          {
+            "code": "provider_reported_cost",
+            "level": "info",
+            "message": "at least one event carries a provider-reported charge",
+            "count": 1
+          }
+        ],
+        "summaries": [
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-audit",
+            "session_ids": [
+              "redacted-013229b0972febb8",
+              "redacted-846de3425eb8ae42",
+              "redacted-d03ce82b8c681789",
+              "redacted-d05f3c5dbca3904c",
+              "redacted-d21dd5a553bccd13",
+              "redacted-eb5d7e67ed1797ab",
+              "redacted-f77ff8d0bfac4fce"
+            ],
+            "harness": "native",
+            "provider_contract_version": "native/1",
+            "models": [
+              "glm-5.3-flash"
+            ],
+            "model_segments": [
+              {
+                "model": "glm-5.3-flash",
+                "turn_count": 8,
+                "usage": {
+                  "input_tokens": 11919351,
+                  "output_tokens": 2052131,
+                  "cache_read_tokens": 524694857,
+                  "cache_write_tokens": 0,
+                  "reasoning_tokens": null
+                },
+                "actual_cost_usd": 0.32244895,
+                "estimated_cost_usd": 29.0487657,
+                "cost_source": "mixed"
+              }
+            ],
+            "turn_count": 8,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 11919351,
+              "output_tokens": 2052131,
+              "cache_read_tokens": 524694857,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.32244895,
+            "estimated_cost_usd": 29.0487657,
+            "total_cost_usd": 28.88015665,
+            "cost_source": "mixed",
+            "cost_basis": "per_token_api",
+            "coverage": "partial",
+            "field_availability": {
+              "usage": "partial",
+              "actual_cost": "partial",
+              "estimated_cost": "available",
+              "pricing": "available"
+            },
+            "pricing_source": "local_estimate",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-11-11T14:38:46.891Z",
+            "event_count": 8,
+            "event_ids": [
+              "native.7.0",
+              "native.6.0",
+              "native.5.0",
+              "native.4.0",
+              "native.3.0",
+              "native.2.0",
+              "native.1.0",
+              "native.0.0"
+            ],
+            "diagnostics": [
+              "mixed_coverage",
+              "provider_reported_cost"
+            ]
+          }
+        ]
+      },
+      "currentRouting": {
+        "order": [
+          "z-ai"
+        ],
+        "allow_fallbacks": false
+      },
+      "catalogCapturedAt": "2026-11-16T21:04:13.951Z",
+      "catalogError": null,
+      "endpoints": [
+        {
+          "tag": "darkbloom/fp4",
+          "providerName": "Darkbloom",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 7.440479
+        },
+        {
+          "tag": "near-ai/fp8",
+          "providerName": "Near AI",
+          "quantization": "fp8",
+          "historicalMixEstimateUsd": 8.275952
+        },
+        {
+          "tag": "tenstorrent/fp8",
+          "providerName": "Tenstorrent",
+          "quantization": "fp8",
+          "historicalMixEstimateUsd": 9.277408
+        },
+        {
+          "tag": "gmicloud/fp8",
+          "providerName": "GMICloud",
+          "quantization": "fp8",
+          "historicalMixEstimateUsd": 9.277408
+        },
+        {
+          "tag": "novita/fp8",
+          "providerName": "Novita",
+          "quantization": "fp8",
+          "historicalMixEstimateUsd": 10.390695
+        },
+        {
+          "tag": "streamlake/fp8",
+          "providerName": "StreamLake",
+          "quantization": "fp8",
+          "historicalMixEstimateUsd": 10.94734
+        },
+        {
+          "tag": "particle-ai/nvfp4/flex",
+          "providerName": "Particle AI",
+          "quantization": "nvfp4",
+          "historicalMixEstimateUsd": 11.722092
+        },
+        {
+          "tag": "river",
+          "providerName": "River",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 11.87508
+        },
+        {
+          "tag": "coreweave/nvfp4",
+          "providerName": "CoreWeave",
+          "quantization": "nvfp4",
+          "historicalMixEstimateUsd": 12.704028
+        },
+        {
+          "tag": "morph/fp8",
+          "providerName": "Morph",
+          "quantization": "fp8",
+          "historicalMixEstimateUsd": 13.447999
+        },
+        {
+          "tag": "sail-research/us",
+          "providerName": "Sail Research",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 15.174101
+        },
+        {
+          "tag": "sail-research/fp4",
+          "providerName": "Sail Research",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 15.174101
+        },
+        {
+          "tag": "relace/fp4",
+          "providerName": "Relace",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 16.377314
+        },
+        {
+          "tag": "open-inference/fp4",
+          "providerName": "OpenInference",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 17.071646
+        },
+        {
+          "tag": "siliconflow/fp8",
+          "providerName": "SiliconFlow",
+          "quantization": "fp8",
+          "historicalMixEstimateUsd": 17.753632
+        },
+        {
+          "tag": "reka",
+          "providerName": "Reka",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 17.786808
+        },
+        {
+          "tag": "digitalocean",
+          "providerName": "DigitalOcean",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 17.851323
+        },
+        {
+          "tag": "makora/fp4",
+          "providerName": "Makora",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 17.902066
+        },
+        {
+          "tag": "dekallm",
+          "providerName": "DekaLLM",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 17.958846
+        },
+        {
+          "tag": "nextbit/fp4",
+          "providerName": "NextBit",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 18.094626
+        },
+        {
+          "tag": "mistral",
+          "providerName": "Mistral",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 18.554814
+        },
+        {
+          "tag": "kt",
+          "providerName": "KT",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 18.554814
+        },
+        {
+          "tag": "cohere/nvfp4",
+          "providerName": "Cohere",
+          "quantization": "nvfp4",
+          "historicalMixEstimateUsd": 18.554814
+        },
+        {
+          "tag": "nebius/fp4",
+          "providerName": "Nebius",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 18.554814
+        },
+        {
+          "tag": "modal/fp4",
+          "providerName": "Modal",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 18.554814
+        },
+        {
+          "tag": "crusoe/fp4",
+          "providerName": "Crusoe",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 18.554814
+        },
+        {
+          "tag": "atlas-cloud/fp8",
+          "providerName": "AtlasCloud",
+          "quantization": "fp8",
+          "historicalMixEstimateUsd": 18.554814
+        },
+        {
+          "tag": "fireworks",
+          "providerName": "Fireworks",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 18.554814
+        },
+        {
+          "tag": "friendli",
+          "providerName": "Friendli",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 18.554814
+        },
+        {
+          "tag": "together",
+          "providerName": "Together",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 18.554814
+        },
+        {
+          "tag": "parasail/fp4",
+          "providerName": "Parasail",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 18.554814
+        },
+        {
+          "tag": "baseten/fp8",
+          "providerName": "BaseTen",
+          "quantization": "fp8",
+          "historicalMixEstimateUsd": 18.554814
+        },
+        {
+          "tag": "venice",
+          "providerName": "Venice",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 18.554814
+        },
+        {
+          "tag": "deepinfra/fp4",
+          "providerName": "DeepInfra",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 18.554814
+        },
+        {
+          "tag": "z-ai/fp8",
+          "providerName": "Z.AI",
+          "quantization": "fp8",
+          "historicalMixEstimateUsd": 18.554814
+        },
+        {
+          "tag": "inference-net/us",
+          "providerName": "InferenceNet",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 20.369855
+        },
+        {
+          "tag": "inference-net/fp4",
+          "providerName": "InferenceNet",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 20.369855
+        },
+        {
+          "tag": "wafer/us",
+          "providerName": "Wafer",
+          "quantization": "nvfp4",
+          "historicalMixEstimateUsd": 22.390693
+        },
+        {
+          "tag": "parasail/fast",
+          "providerName": "Parasail",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 23.193517
+        },
+        {
+          "tag": "particle-ai/nvfp4",
+          "providerName": "Particle AI",
+          "quantization": "nvfp4",
+          "historicalMixEstimateUsd": 23.44418
+        },
+        {
+          "tag": "inceptron/fp8",
+          "providerName": "Inceptron",
+          "quantization": "fp8",
+          "historicalMixEstimateUsd": 24.079225
+        },
+        {
+          "tag": "fireworks/us",
+          "providerName": "Fireworks",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 27.832221
+        },
+        {
+          "tag": "wafer/nvfp4",
+          "providerName": "Wafer",
+          "quantization": "nvfp4",
+          "historicalMixEstimateUsd": 34.847739
+        }
+      ],
+      "referenceTag": "z-ai/fp8",
+      "referenceSource": "operator-comparison-reference",
+      "potentialSavingsUsd": 11.114335
+    },
+    {
+      "model": "gemini-3.1-pro-preview",
+      "nativeProvider": "openrouter",
+      "tasks": 6,
+      "harnesses": [
+        "native"
+      ],
+      "measuredSdkReport": {
+        "taskId": "endpoint-audit",
+        "totalUsd": 21.8390082,
+        "actualUsd": null,
+        "estimatedUsd": 21.8390082,
+        "byModel": {
+          "gemini-3.1-pro-preview": {
+            "totalUsd": 21.8390082,
+            "actualUsd": null,
+            "estimatedUsd": 21.8390082,
+            "usage": {
+              "inputTokens": 9065551,
+              "outputTokens": 201234,
+              "cacheReadTokens": 6465491,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 11,
+            "turnCount": 11,
+            "costSource": "local_estimate",
+            "coverage": "partial"
+          }
+        },
+        "byHarness": {
+          "native": {
+            "totalUsd": 21.8390082,
+            "actualUsd": null,
+            "estimatedUsd": 21.8390082,
+            "usage": {
+              "inputTokens": 9065551,
+              "outputTokens": 201234,
+              "cacheReadTokens": 6465491,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 11,
+            "turnCount": 11,
+            "costSource": "local_estimate",
+            "coverage": "partial"
+          }
+        },
+        "usage": {
+          "inputTokens": 9065551,
+          "outputTokens": 201234,
+          "cacheReadTokens": 6465491,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": null
+        },
+        "eventCount": 11,
+        "turnCount": 11,
+        "source": {
+          "cost": "local_estimate",
+          "basis": "per_token_api",
+          "capture": [
+            "manual"
+          ],
+          "sessionFileCount": 0
+        },
+        "pricing": {
+          "source": "local_estimate",
+          "revision": null,
+          "effectiveDate": "2026-11-04",
+          "revisions": [],
+          "priceTables": [
+            "external"
+          ],
+          "builtInTableAsOf": "2026-11-04",
+          "overrideCount": 0,
+          "currency": "USD"
+        },
+        "coverage": {
+          "status": "partial",
+          "pricedEvents": 11,
+          "unpricedEvents": 0,
+          "unknownModels": []
+        },
+        "diagnostics": [
+          {
+            "code": "mixed_coverage",
+            "level": "warn",
+            "message": "coverage is partial: some events are missing cost or usage",
+            "count": 1
+          }
+        ],
+        "summaries": [
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-audit",
+            "session_ids": [
+              "redacted-d21dd5a553bccd13",
+              "redacted-f041251b64ef00a6"
+            ],
+            "harness": "native",
+            "provider_contract_version": "native/1",
+            "models": [
+              "gemini-3.1-pro-preview"
+            ],
+            "model_segments": [
+              {
+                "model": "gemini-3.1-pro-preview",
+                "turn_count": 11,
+                "usage": {
+                  "input_tokens": 9065551,
+                  "output_tokens": 201234,
+                  "cache_read_tokens": 6465491,
+                  "cache_write_tokens": 0,
+                  "reasoning_tokens": null
+                },
+                "actual_cost_usd": null,
+                "estimated_cost_usd": 21.8390082,
+                "cost_source": "local_estimate"
+              }
+            ],
+            "turn_count": 11,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 9065551,
+              "output_tokens": 201234,
+              "cache_read_tokens": 6465491,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": null,
+            "estimated_cost_usd": 21.8390082,
+            "total_cost_usd": 21.8390082,
+            "cost_source": "local_estimate",
+            "cost_basis": "per_token_api",
+            "coverage": "partial",
+            "field_availability": {
+              "usage": "partial",
+              "actual_cost": "unavailable",
+              "estimated_cost": "available",
+              "pricing": "available"
+            },
+            "pricing_source": "local_estimate",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-10-29T20:11:18.591Z",
+            "event_count": 11,
+            "event_ids": [
+              "native.10.0",
+              "native.5.0",
+              "native.6.0",
+              "native.7.0",
+              "native.8.0",
+              "native.9.0",
+              "native.4.0",
+              "native.3.0",
+              "native.2.0",
+              "native.1.0",
+              "native.0.0"
+            ],
+            "diagnostics": [
+              "mixed_coverage"
+            ]
+          }
+        ]
+      },
+      "currentRouting": null,
+      "catalogCapturedAt": "2026-11-16T21:04:12.861Z",
+      "catalogError": null,
+      "endpoints": [
+        {
+          "tag": "google-vertex/global/flex",
+          "providerName": "Google",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 10.919504
+        },
+        {
+          "tag": "google-ai-studio/flex",
+          "providerName": "Google AI Studio",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 10.919504
+        },
+        {
+          "tag": "google-vertex/global",
+          "providerName": "Google",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 21.839009
+        },
+        {
+          "tag": "google-ai-studio",
+          "providerName": "Google AI Studio",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 21.839009
+        },
+        {
+          "tag": "google-vertex/global/priority",
+          "providerName": "Google",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 39.310217
+        },
+        {
+          "tag": "google-ai-studio/priority",
+          "providerName": "Google AI Studio",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 39.310217
+        }
+      ],
+      "referenceTag": "google-ai-studio",
+      "referenceSource": "operator-comparison-reference",
+      "potentialSavingsUsd": 10.919505000000001
+    },
+    {
+      "model": "kimi-k3",
+      "nativeProvider": "openrouter",
+      "tasks": 1,
+      "harnesses": [
+        "native"
+      ],
+      "measuredSdkReport": {
+        "taskId": "endpoint-audit",
+        "totalUsd": 0.945098,
+        "actualUsd": null,
+        "estimatedUsd": 0.945098,
+        "byModel": {
+          "kimi-k3": {
+            "totalUsd": 0.945098,
+            "actualUsd": null,
+            "estimatedUsd": 0.945098,
+            "usage": {
+              "inputTokens": 131232,
+              "outputTokens": 24925,
+              "cacheReadTokens": 508672,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 1,
+            "turnCount": 1,
+            "costSource": "local_estimate",
+            "coverage": "partial"
+          }
+        },
+        "byHarness": {
+          "native": {
+            "totalUsd": 0.945098,
+            "actualUsd": null,
+            "estimatedUsd": 0.945098,
+            "usage": {
+              "inputTokens": 131232,
+              "outputTokens": 24925,
+              "cacheReadTokens": 508672,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 1,
+            "turnCount": 1,
+            "costSource": "local_estimate",
+            "coverage": "partial"
+          }
+        },
+        "usage": {
+          "inputTokens": 131232,
+          "outputTokens": 24925,
+          "cacheReadTokens": 508672,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": null
+        },
+        "eventCount": 1,
+        "turnCount": 1,
+        "source": {
+          "cost": "local_estimate",
+          "basis": "per_token_api",
+          "capture": [
+            "manual"
+          ],
+          "sessionFileCount": 0
+        },
+        "pricing": {
+          "source": "local_estimate",
+          "revision": null,
+          "effectiveDate": "2026-11-04",
+          "revisions": [],
+          "priceTables": [
+            "external"
+          ],
+          "builtInTableAsOf": "2026-11-04",
+          "overrideCount": 0,
+          "currency": "USD"
+        },
+        "coverage": {
+          "status": "partial",
+          "pricedEvents": 1,
+          "unpricedEvents": 0,
+          "unknownModels": []
+        },
+        "diagnostics": [
+          {
+            "code": "mixed_coverage",
+            "level": "warn",
+            "message": "coverage is partial: some events are missing cost or usage",
+            "count": 1
+          }
+        ],
+        "summaries": [
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-audit",
+            "session_ids": [
+              "redacted-eb439ed8158fad29"
+            ],
+            "harness": "native",
+            "provider_contract_version": "native/1",
+            "models": [
+              "kimi-k3"
+            ],
+            "model_segments": [
+              {
+                "model": "kimi-k3",
+                "turn_count": 1,
+                "usage": {
+                  "input_tokens": 131232,
+                  "output_tokens": 24925,
+                  "cache_read_tokens": 508672,
+                  "cache_write_tokens": 0,
+                  "reasoning_tokens": null
+                },
+                "actual_cost_usd": null,
+                "estimated_cost_usd": 0.945098,
+                "cost_source": "local_estimate"
+              }
+            ],
+            "turn_count": 1,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 131232,
+              "output_tokens": 24925,
+              "cache_read_tokens": 508672,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": null,
+            "estimated_cost_usd": 0.945098,
+            "total_cost_usd": 0.945098,
+            "cost_source": "local_estimate",
+            "cost_basis": "per_token_api",
+            "coverage": "partial",
+            "field_availability": {
+              "usage": "partial",
+              "actual_cost": "unavailable",
+              "estimated_cost": "available",
+              "pricing": "available"
+            },
+            "pricing_source": "local_estimate",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-11-13T21:54:27.716Z",
+            "event_count": 1,
+            "event_ids": [
+              "native.0.0"
+            ],
+            "diagnostics": [
+              "mixed_coverage"
+            ]
+          }
+        ]
+      },
+      "currentRouting": {
+        "order": [
+          "moonshotai"
+        ],
+        "allow_fallbacks": false
+      },
+      "catalogCapturedAt": "2026-11-16T21:04:13.599Z",
+      "catalogError": null,
+      "endpoints": [
+        {
+          "tag": "wafer/us",
+          "providerName": "Wafer",
+          "quantization": "mxfp4",
+          "historicalMixEstimateUsd": 0.341627
+        },
+        {
+          "tag": "relace/fp4",
+          "providerName": "Relace",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 0.38981
+        },
+        {
+          "tag": "wafer/fast",
+          "providerName": "Wafer",
+          "quantization": "mxfp4",
+          "historicalMixEstimateUsd": 0.496197
+        },
+        {
+          "tag": "inference-net/us",
+          "providerName": "InferenceNet",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 0.508352
+        },
+        {
+          "tag": "inference-net/fp4",
+          "providerName": "InferenceNet",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 0.508352
+        },
+        {
+          "tag": "wafer",
+          "providerName": "Wafer",
+          "quantization": "mxfp4",
+          "historicalMixEstimateUsd": 0.516575
+        },
+        {
+          "tag": "chutes/mxfp4",
+          "providerName": "Chutes",
+          "quantization": "mxfp4",
+          "historicalMixEstimateUsd": 0.573671
+        },
+        {
+          "tag": "inference-net/us/fast",
+          "providerName": "InferenceNet",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 0.667936
+        },
+        {
+          "tag": "inference-net/fast",
+          "providerName": "InferenceNet",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 0.667936
+        },
+        {
+          "tag": "io-net/fp4",
+          "providerName": "Io Net",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 0.731358
+        },
+        {
+          "tag": "digitalocean",
+          "providerName": "DigitalOcean",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 0.787132
+        },
+        {
+          "tag": "makora/fp4",
+          "providerName": "Makora",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 0.834218
+        },
+        {
+          "tag": "deepinfra/mxfp4",
+          "providerName": "DeepInfra",
+          "quantization": "mxfp4",
+          "historicalMixEstimateUsd": 0.874164
+        },
+        {
+          "tag": "nebius/fp4",
+          "providerName": "Nebius",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 0.920173
+        },
+        {
+          "tag": "river",
+          "providerName": "River",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 0.920173
+        },
+        {
+          "tag": "kt",
+          "providerName": "KT",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 0.920173
+        },
+        {
+          "tag": "amazon-bedrock/us-east-2",
+          "providerName": "Amazon Bedrock",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 0.920173
+        },
+        {
+          "tag": "alibaba",
+          "providerName": "Alibaba",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 0.920173
+        },
+        {
+          "tag": "parasail/fp4",
+          "providerName": "Parasail",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 0.920173
+        },
+        {
+          "tag": "modal/mxfp4",
+          "providerName": "Modal",
+          "quantization": "mxfp4",
+          "historicalMixEstimateUsd": 0.920173
+        },
+        {
+          "tag": "together",
+          "providerName": "Together",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 0.920173
+        },
+        {
+          "tag": "fireworks",
+          "providerName": "Fireworks",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 0.920173
+        },
+        {
+          "tag": "baseten/fp8",
+          "providerName": "BaseTen",
+          "quantization": "fp8",
+          "historicalMixEstimateUsd": 0.920173
+        },
+        {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 0.920173
+        },
+        {
+          "tag": "parasail/fast",
+          "providerName": "Parasail",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 1.380259
+        },
+        {
+          "tag": "fireworks/us",
+          "providerName": "Fireworks",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 1.380259
+        },
+        {
+          "tag": "fireworks/fast",
+          "providerName": "Fireworks",
+          "quantization": "unknown",
+          "historicalMixEstimateUsd": 1.380259
+        }
+      ],
+      "referenceTag": "moonshotai",
+      "referenceSource": "configured-restriction",
+      "potentialSavingsUsd": 0.578546
+    },
+    {
+      "model": "claude-opus-4-7",
+      "nativeProvider": null,
+      "tasks": 72,
+      "harnesses": [
+        "claude-code"
+      ],
+      "measuredSdkReport": {
+        "taskId": "endpoint-audit",
+        "totalUsd": 2072.10329275,
+        "actualUsd": null,
+        "estimatedUsd": 2072.10329275,
+        "byModel": {
+          "claude-opus-4-7": {
+            "totalUsd": 2072.10329275,
+            "actualUsd": null,
+            "estimatedUsd": 2072.10329275,
+            "usage": {
+              "inputTokens": 19128,
+              "outputTokens": 9895783,
+              "cacheReadTokens": 2981704758,
+              "cacheWriteTokens": 53401604,
+              "reasoningTokens": 3366853
+            },
+            "eventCount": 120,
+            "turnCount": 120,
+            "costSource": "local_estimate",
+            "coverage": "complete"
+          }
+        },
+        "byHarness": {
+          "claude-code": {
+            "totalUsd": 2072.10329275,
+            "actualUsd": null,
+            "estimatedUsd": 2072.10329275,
+            "usage": {
+              "inputTokens": 19128,
+              "outputTokens": 9895783,
+              "cacheReadTokens": 2981704758,
+              "cacheWriteTokens": 53401604,
+              "reasoningTokens": 3366853
+            },
+            "eventCount": 120,
+            "turnCount": 120,
+            "costSource": "local_estimate",
+            "coverage": "complete"
+          }
+        },
+        "usage": {
+          "inputTokens": 19128,
+          "outputTokens": 9895783,
+          "cacheReadTokens": 2981704758,
+          "cacheWriteTokens": 53401604,
+          "reasoningTokens": 3366853
+        },
+        "eventCount": 120,
+        "turnCount": 120,
+        "source": {
+          "cost": "local_estimate",
+          "basis": "unknown",
+          "capture": [
+            "manual"
+          ],
+          "sessionFileCount": 0
+        },
+        "pricing": {
+          "source": "local_estimate",
+          "revision": null,
+          "effectiveDate": "2026-11-04",
+          "revisions": [],
+          "priceTables": [
+            "external"
+          ],
+          "builtInTableAsOf": "2026-11-04",
+          "overrideCount": 0,
+          "currency": "USD"
+        },
+        "coverage": {
+          "status": "complete",
+          "pricedEvents": 120,
+          "unpricedEvents": 0,
+          "unknownModels": []
+        },
+        "diagnostics": [],
+        "summaries": [
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-audit",
+            "session_ids": [
+              "redacted-0019742cf95fe41e",
+              "redacted-01f7b337809f85bd",
+              "redacted-02bf7c8c3001449a",
+              "redacted-0733060efe703263",
+              "redacted-0870b48cb0afda83",
+              "redacted-0970facf2d0fbf1c",
+              "redacted-0972711246da8cac",
+              "redacted-09a5bcb88e50cfde",
+              "redacted-0e6da07dfcf76bd3",
+              "redacted-1ab65dbd4b072c3e",
+              "redacted-1c5ba366e288ec62",
+              "redacted-1c8e92d94ff86200",
+              "redacted-1ea298807baf91de",
+              "redacted-1f1397eb431ba94a",
+              "redacted-1f8ce5848c70943c",
+              "redacted-1f9323bf3a470e06",
+              "redacted-1fe81a353c6abb98",
+              "redacted-20ec646dd01a1f25",
+              "redacted-25bfc47a006a8c6d",
+              "redacted-26221e16f39846f3",
+              "redacted-26785d960b80f8c0",
+              "redacted-26cbc399c978240c",
+              "redacted-279d7a715693a28a",
+              "redacted-29e7396365384f47",
+              "redacted-340dcb1a4fc208b4",
+              "redacted-37aa0a751d801dc5",
+              "redacted-3aefe7325cfc2a62",
+              "redacted-3b7784fe026d75c2",
+              "redacted-4783a6de5b4eae76",
+              "redacted-4f5f279b8e81ed14",
+              "redacted-4f7cc124c11c8924",
+              "redacted-5c127cf4c78d96ae",
+              "redacted-5f21a20b837a8c7a",
+              "redacted-60553e5447e667c9",
+              "redacted-657a538fd7a51195",
+              "redacted-68e55188a0a8fd90",
+              "redacted-694b19b51335361a",
+              "redacted-765296eac99fb716",
+              "redacted-7be3a84cef1d5b1f",
+              "redacted-7d1c7538aa67552d",
+              "redacted-86e2c4966323557f",
+              "redacted-9680b82ef8e6124a",
+              "redacted-a0064a4cfb3d1b54",
+              "redacted-a496b698638d6f44",
+              "redacted-a609300056200612",
+              "redacted-a8608127785a1641",
+              "redacted-aa82b6a542f14bc9",
+              "redacted-af3280af910c9a10",
+              "redacted-affa8296f990fc43",
+              "redacted-b092ba1f5c8ca2a8",
+              "redacted-b11b3c33609bc055",
+              "redacted-b205e08a7b176bbe",
+              "redacted-b988e9c2c316b2e2",
+              "redacted-bd10fff64de7b096",
+              "redacted-bd978a83c3c59a85",
+              "redacted-c560301774a0368c",
+              "redacted-c846c57555593182",
+              "redacted-c8f2506231b984fa",
+              "redacted-cc55fcf01ea5691d",
+              "redacted-cd22fad4df08a40d",
+              "redacted-cf6f07a62c7dff95",
+              "redacted-cfd05b2ddd5467e4",
+              "redacted-d948a5cf02083c73",
+              "redacted-e1ad21dd584df4bb",
+              "redacted-e2830628ffb1c5d1",
+              "redacted-e336bcb38ea10f88",
+              "redacted-f0d3848407bec095",
+              "redacted-f298373d46ae71f2",
+              "redacted-f660f7e41fef5a0d",
+              "redacted-f9698783ae3a90eb",
+              "redacted-f9a9225b71e11114",
+              "redacted-f9f16994133a5146",
+              "redacted-fb2120e7ba85c63b"
+            ],
+            "harness": "claude-code",
+            "provider_contract_version": "claude-code/1",
+            "models": [
+              "claude-opus-4-7"
+            ],
+            "model_segments": [
+              {
+                "model": "claude-opus-4-7",
+                "turn_count": 120,
+                "usage": {
+                  "input_tokens": 19128,
+                  "output_tokens": 9895783,
+                  "cache_read_tokens": 2981704758,
+                  "cache_write_tokens": 53401604,
+                  "reasoning_tokens": 3366853
+                },
+                "actual_cost_usd": null,
+                "estimated_cost_usd": 2072.10329275,
+                "cost_source": "local_estimate"
+              }
+            ],
+            "turn_count": 120,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 19128,
+              "output_tokens": 9895783,
+              "cache_read_tokens": 2981704758,
+              "cache_write_tokens": 53401604,
+              "reasoning_tokens": 3366853
+            },
+            "actual_cost_usd": null,
+            "estimated_cost_usd": 2072.10329275,
+            "total_cost_usd": 2072.10329275,
+            "cost_source": "local_estimate",
+            "cost_basis": "unknown",
+            "coverage": "complete",
+            "field_availability": {
+              "usage": "available",
+              "actual_cost": "unavailable",
+              "estimated_cost": "available",
+              "pricing": "available"
+            },
+            "pricing_source": "local_estimate",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-11-12T21:01:38.778Z",
+            "event_count": 120,
+            "event_ids": [
+              "claude-code.118.0",
+              "claude-code.119.0",
+              "claude-code.117.0",
+              "claude-code.115.0",
+              "claude-code.116.0",
+              "claude-code.111.0",
+              "claude-code.112.0",
+              "claude-code.113.0",
+              "claude-code.114.0",
+              "claude-code.109.0",
+              "claude-code.110.0",
+              "claude-code.108.0",
+              "claude-code.107.0",
+              "claude-code.106.0",
+              "claude-code.105.0",
+              "claude-code.102.0",
+              "claude-code.103.0",
+              "claude-code.104.0",
+              "claude-code.101.0",
+              "claude-code.100.0",
+              "claude-code.99.0",
+              "claude-code.98.0",
+              "claude-code.97.0",
+              "claude-code.94.0",
+              "claude-code.95.0",
+              "claude-code.96.0",
+              "claude-code.92.0",
+              "claude-code.93.0",
+              "claude-code.91.0",
+              "claude-code.90.0",
+              "claude-code.88.0",
+              "claude-code.89.0",
+              "claude-code.84.0",
+              "claude-code.85.0",
+              "claude-code.86.0",
+              "claude-code.87.0",
+              "claude-code.80.0",
+              "claude-code.81.0",
+              "claude-code.82.0",
+              "claude-code.83.0",
+              "claude-code.78.0",
+              "claude-code.79.0",
+              "claude-code.77.0",
+              "claude-code.76.0",
+              "claude-code.74.0",
+              "claude-code.75.0",
+              "claude-code.69.0",
+              "claude-code.70.0",
+              "claude-code.71.0",
+              "claude-code.72.0",
+              "claude-code.73.0",
+              "claude-code.68.0",
+              "claude-code.65.0",
+              "claude-code.66.0",
+              "claude-code.67.0",
+              "claude-code.64.0",
+              "claude-code.62.0",
+              "claude-code.63.0",
+              "claude-code.55.0",
+              "claude-code.56.0",
+              "claude-code.57.0",
+              "claude-code.61.0",
+              "claude-code.59.0",
+              "claude-code.60.0",
+              "claude-code.58.0",
+              "claude-code.49.0",
+              "claude-code.50.0",
+              "claude-code.51.0",
+              "claude-code.52.0",
+              "claude-code.53.0",
+              "claude-code.54.0",
+              "claude-code.48.0",
+              "claude-code.43.0",
+              "claude-code.44.0",
+              "claude-code.45.0",
+              "claude-code.46.0",
+              "claude-code.47.0",
+              "claude-code.42.0",
+              "claude-code.40.0",
+              "claude-code.41.0",
+              "claude-code.39.0",
+              "claude-code.38.0",
+              "claude-code.37.0",
+              "claude-code.36.0",
+              "claude-code.35.0",
+              "claude-code.34.0",
+              "claude-code.30.0",
+              "claude-code.32.0",
+              "claude-code.33.0",
+              "claude-code.31.0",
+              "claude-code.29.0",
+              "claude-code.28.0",
+              "claude-code.27.0",
+              "claude-code.26.0",
+              "claude-code.24.0",
+              "claude-code.25.0",
+              "claude-code.23.0",
+              "claude-code.22.0",
+              "claude-code.20.0",
+              "claude-code.21.0",
+              "claude-code.19.0",
+              "claude-code.17.0",
+              "claude-code.18.0",
+              "claude-code.15.0",
+              "claude-code.16.0",
+              "claude-code.14.0",
+              "claude-code.13.0",
+              "claude-code.11.0",
+              "claude-code.12.0",
+              "claude-code.10.0",
+              "claude-code.9.0",
+              "claude-code.8.0",
+              "claude-code.7.0",
+              "claude-code.6.0",
+              "claude-code.5.0",
+              "claude-code.4.0",
+              "claude-code.3.0",
+              "claude-code.2.0",
+              "claude-code.1.0",
+              "claude-code.0.0"
+            ],
+            "diagnostics": []
+          }
+        ]
+      },
+      "currentRouting": null,
+      "catalogCapturedAt": null,
+      "catalogError": null,
+      "endpoints": [],
+      "referenceTag": null,
+      "referenceSource": "configured-restriction",
+      "potentialSavingsUsd": null
+    },
+    {
+      "model": "claude-fable-5",
+      "nativeProvider": null,
+      "tasks": 14,
+      "harnesses": [
+        "claude-code",
+        "native"
+      ],
+      "measuredSdkReport": {
+        "taskId": "endpoint-audit",
+        "totalUsd": 503.995161,
+        "actualUsd": null,
+        "estimatedUsd": 503.995161,
+        "byModel": {
+          "claude-fable-5": {
+            "totalUsd": 503.995161,
+            "actualUsd": null,
+            "estimatedUsd": 503.995161,
+            "usage": {
+              "inputTokens": 3350,
+              "outputTokens": 1457712,
+              "cacheReadTokens": 339788355,
+              "cacheWriteTokens": 7302982,
+              "reasoningTokens": 793398
+            },
+            "eventCount": 17,
+            "turnCount": 17,
+            "costSource": "local_estimate",
+            "coverage": "partial"
+          }
+        },
+        "byHarness": {
+          "claude-code": {
+            "totalUsd": 503.995161,
+            "actualUsd": null,
+            "estimatedUsd": 503.995161,
+            "usage": {
+              "inputTokens": 3350,
+              "outputTokens": 1457712,
+              "cacheReadTokens": 339788355,
+              "cacheWriteTokens": 7302982,
+              "reasoningTokens": 793398
+            },
+            "eventCount": 14,
+            "turnCount": 14,
+            "costSource": "local_estimate",
+            "coverage": "complete"
+          },
+          "native": {
+            "totalUsd": 0,
+            "actualUsd": null,
+            "estimatedUsd": 0,
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 3,
+            "turnCount": 3,
+            "costSource": "local_estimate",
+            "coverage": "partial"
+          }
+        },
+        "usage": {
+          "inputTokens": 3350,
+          "outputTokens": 1457712,
+          "cacheReadTokens": 339788355,
+          "cacheWriteTokens": 7302982,
+          "reasoningTokens": 793398
+        },
+        "eventCount": 17,
+        "turnCount": 17,
+        "source": {
+          "cost": "local_estimate",
+          "basis": "per_token_api",
+          "capture": [
+            "manual"
+          ],
+          "sessionFileCount": 0
+        },
+        "pricing": {
+          "source": "local_estimate",
+          "revision": null,
+          "effectiveDate": "2026-11-04",
+          "revisions": [],
+          "priceTables": [
+            "external"
+          ],
+          "builtInTableAsOf": "2026-11-04",
+          "overrideCount": 0,
+          "currency": "USD"
+        },
+        "coverage": {
+          "status": "partial",
+          "pricedEvents": 17,
+          "unpricedEvents": 0,
+          "unknownModels": []
+        },
+        "diagnostics": [
+          {
+            "code": "mixed_coverage",
+            "level": "warn",
+            "message": "coverage is partial: some events are missing cost or usage",
+            "count": 1
+          }
+        ],
+        "summaries": [
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-audit",
+            "session_ids": [
+              "redacted-2b6202dbdaa724c6",
+              "redacted-32f147ae92b52508",
+              "redacted-3ecf1cc93d37af91",
+              "redacted-59b48d5b9d9d53d7",
+              "redacted-75a3f30393f178f2",
+              "redacted-7d1c7538aa67552d",
+              "redacted-811eb861e0c4bf45",
+              "redacted-81cf50c2254c1fd6",
+              "redacted-a683469e37b985c9",
+              "redacted-d1ba9ccd5087891c",
+              "redacted-db3c0703504a9a53",
+              "redacted-f9e1ed5e7a8a2c5e"
+            ],
+            "harness": "claude-code",
+            "provider_contract_version": "claude-code/1",
+            "models": [
+              "claude-fable-5"
+            ],
+            "model_segments": [
+              {
+                "model": "claude-fable-5",
+                "turn_count": 14,
+                "usage": {
+                  "input_tokens": 3350,
+                  "output_tokens": 1457712,
+                  "cache_read_tokens": 339788355,
+                  "cache_write_tokens": 7302982,
+                  "reasoning_tokens": 793398
+                },
+                "actual_cost_usd": null,
+                "estimated_cost_usd": 503.995161,
+                "cost_source": "local_estimate"
+              }
+            ],
+            "turn_count": 14,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 3350,
+              "output_tokens": 1457712,
+              "cache_read_tokens": 339788355,
+              "cache_write_tokens": 7302982,
+              "reasoning_tokens": 793398
+            },
+            "actual_cost_usd": null,
+            "estimated_cost_usd": 503.995161,
+            "total_cost_usd": 503.995161,
+            "cost_source": "local_estimate",
+            "cost_basis": "per_token_api",
+            "coverage": "complete",
+            "field_availability": {
+              "usage": "available",
+              "actual_cost": "unavailable",
+              "estimated_cost": "available",
+              "pricing": "available"
+            },
+            "pricing_source": "local_estimate",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-11-13T21:40:52.356Z",
+            "event_count": 14,
+            "event_ids": [
+              "claude-code.12.0",
+              "claude-code.13.0",
+              "claude-code.11.0",
+              "claude-code.10.0",
+              "claude-code.9.0",
+              "claude-code.8.0",
+              "claude-code.7.0",
+              "claude-code.6.0",
+              "claude-code.5.0",
+              "claude-code.4.0",
+              "claude-code.3.0",
+              "claude-code.2.0",
+              "claude-code.1.0",
+              "claude-code.0.0"
+            ],
+            "diagnostics": []
+          },
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-audit",
+            "session_ids": [
+              "redacted-d21dd5a553bccd13",
+              "redacted-f041251b64ef00a6"
+            ],
+            "harness": "native",
+            "provider_contract_version": "native/1",
+            "models": [
+              "claude-fable-5"
+            ],
+            "model_segments": [
+              {
+                "model": "claude-fable-5",
+                "turn_count": 3,
+                "usage": {
+                  "input_tokens": 0,
+                  "output_tokens": 0,
+                  "cache_read_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "reasoning_tokens": null
+                },
+                "actual_cost_usd": null,
+                "estimated_cost_usd": 0,
+                "cost_source": "local_estimate"
+              }
+            ],
+            "turn_count": 3,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 0,
+              "output_tokens": 0,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": null,
+            "estimated_cost_usd": 0,
+            "total_cost_usd": 0,
+            "cost_source": "local_estimate",
+            "cost_basis": "per_token_api",
+            "coverage": "partial",
+            "field_availability": {
+              "usage": "partial",
+              "actual_cost": "unavailable",
+              "estimated_cost": "known_zero",
+              "pricing": "available"
+            },
+            "pricing_source": "local_estimate",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-10-29T20:11:18.591Z",
+            "event_count": 3,
+            "event_ids": [
+              "native.15.0",
+              "native.16.0",
+              "native.14.0"
+            ],
+            "diagnostics": [
+              "mixed_coverage"
+            ]
+          }
+        ]
+      },
+      "currentRouting": null,
+      "catalogCapturedAt": null,
+      "catalogError": null,
+      "endpoints": [],
+      "referenceTag": null,
+      "referenceSource": "configured-restriction",
+      "potentialSavingsUsd": null
+    },
+    {
+      "model": "claude-opus-5-5",
+      "nativeProvider": null,
+      "tasks": 39,
+      "harnesses": [
+        "claude-code"
+      ],
+      "measuredSdkReport": {
+        "taskId": "endpoint-audit",
+        "totalUsd": 471.9038928,
+        "actualUsd": null,
+        "estimatedUsd": 471.9038928,
+        "byModel": {
+          "claude-opus-5-5": {
+            "totalUsd": 471.9038928,
+            "actualUsd": null,
+            "estimatedUsd": 471.9038928,
+            "usage": {
+              "inputTokens": 13266,
+              "outputTokens": 4816780,
+              "cacheReadTokens": 1393242118,
+              "cacheWriteTokens": 19373364,
+              "reasoningTokens": 1471340
+            },
+            "eventCount": 53,
+            "turnCount": 53,
+            "costSource": "local_estimate",
+            "coverage": "complete"
+          }
+        },
+        "byHarness": {
+          "claude-code": {
+            "totalUsd": 471.9038928,
+            "actualUsd": null,
+            "estimatedUsd": 471.9038928,
+            "usage": {
+              "inputTokens": 13266,
+              "outputTokens": 4816780,
+              "cacheReadTokens": 1393242118,
+              "cacheWriteTokens": 19373364,
+              "reasoningTokens": 1471340
+            },
+            "eventCount": 53,
+            "turnCount": 53,
+            "costSource": "local_estimate",
+            "coverage": "complete"
+          }
+        },
+        "usage": {
+          "inputTokens": 13266,
+          "outputTokens": 4816780,
+          "cacheReadTokens": 1393242118,
+          "cacheWriteTokens": 19373364,
+          "reasoningTokens": 1471340
+        },
+        "eventCount": 53,
+        "turnCount": 53,
+        "source": {
+          "cost": "local_estimate",
+          "basis": "unknown",
+          "capture": [
+            "manual"
+          ],
+          "sessionFileCount": 0
+        },
+        "pricing": {
+          "source": "local_estimate",
+          "revision": null,
+          "effectiveDate": "2026-11-04",
+          "revisions": [],
+          "priceTables": [
+            "external"
+          ],
+          "builtInTableAsOf": "2026-11-04",
+          "overrideCount": 0,
+          "currency": "USD"
+        },
+        "coverage": {
+          "status": "complete",
+          "pricedEvents": 53,
+          "unpricedEvents": 0,
+          "unknownModels": []
+        },
+        "diagnostics": [],
+        "summaries": [
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-audit",
+            "session_ids": [
+              "redacted-0972711246da8cac",
+              "redacted-1c8e92d94ff86200",
+              "redacted-1d010dcaa211a1e5",
+              "redacted-1f1397eb431ba94a",
+              "redacted-1f8ce5848c70943c",
+              "redacted-1fe81a353c6abb98",
+              "redacted-26cbc399c978240c",
+              "redacted-29e7396365384f47",
+              "redacted-32f147ae92b52508",
+              "redacted-3ecf1cc93d37af91",
+              "redacted-4783a6de5b4eae76",
+              "redacted-4f5f279b8e81ed14",
+              "redacted-5c127cf4c78d96ae",
+              "redacted-5f21a20b837a8c7a",
+              "redacted-694b19b51335361a",
+              "redacted-75a3f30393f178f2",
+              "redacted-765296eac99fb716",
+              "redacted-7be3a84cef1d5b1f",
+              "redacted-80b17378b9546f88",
+              "redacted-81cf50c2254c1fd6",
+              "redacted-8db6ca0195581d60",
+              "redacted-9680b82ef8e6124a",
+              "redacted-9ce688339894bbd3",
+              "redacted-a0064a4cfb3d1b54",
+              "redacted-a037d0639b38b745",
+              "redacted-a683469e37b985c9",
+              "redacted-aa82b6a542f14bc9",
+              "redacted-af3280af910c9a10",
+              "redacted-affa8296f990fc43",
+              "redacted-bd978a83c3c59a85",
+              "redacted-bf702b0710223e00",
+              "redacted-cc55fcf01ea5691d",
+              "redacted-ccbb866b531aebe6",
+              "redacted-cf6f07a62c7dff95",
+              "redacted-cfd05b2ddd5467e4",
+              "redacted-d1ba9ccd5087891c",
+              "redacted-d948a5cf02083c73",
+              "redacted-f298373d46ae71f2",
+              "redacted-f9e1ed5e7a8a2c5e",
+              "redacted-fb2120e7ba85c63b"
+            ],
+            "harness": "claude-code",
+            "provider_contract_version": "claude-code/1",
+            "models": [
+              "claude-opus-5-5"
+            ],
+            "model_segments": [
+              {
+                "model": "claude-opus-5-5",
+                "turn_count": 53,
+                "usage": {
+                  "input_tokens": 13266,
+                  "output_tokens": 4816780,
+                  "cache_read_tokens": 1393242118,
+                  "cache_write_tokens": 19373364,
+                  "reasoning_tokens": 1471340
+                },
+                "actual_cost_usd": null,
+                "estimated_cost_usd": 471.9038928,
+                "cost_source": "local_estimate"
+              }
+            ],
+            "turn_count": 53,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 13266,
+              "output_tokens": 4816780,
+              "cache_read_tokens": 1393242118,
+              "cache_write_tokens": 19373364,
+              "reasoning_tokens": 1471340
+            },
+            "actual_cost_usd": null,
+            "estimated_cost_usd": 471.9038928,
+            "total_cost_usd": 471.9038928,
+            "cost_source": "local_estimate",
+            "cost_basis": "unknown",
+            "coverage": "complete",
+            "field_availability": {
+              "usage": "available",
+              "actual_cost": "unavailable",
+              "estimated_cost": "available",
+              "pricing": "available"
+            },
+            "pricing_source": "local_estimate",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-11-16T00:18:35.516Z",
+            "event_count": 53,
+            "event_ids": [
+              "claude-code.52.0",
+              "claude-code.51.0",
+              "claude-code.49.0",
+              "claude-code.50.0",
+              "claude-code.48.0",
+              "claude-code.47.0",
+              "claude-code.46.0",
+              "claude-code.45.0",
+              "claude-code.44.0",
+              "claude-code.43.0",
+              "claude-code.41.0",
+              "claude-code.42.0",
+              "claude-code.40.0",
+              "claude-code.38.0",
+              "claude-code.39.0",
+              "claude-code.36.0",
+              "claude-code.37.0",
+              "claude-code.35.0",
+              "claude-code.33.0",
+              "claude-code.34.0",
+              "claude-code.31.0",
+              "claude-code.32.0",
+              "claude-code.29.0",
+              "claude-code.30.0",
+              "claude-code.27.0",
+              "claude-code.28.0",
+              "claude-code.21.0",
+              "claude-code.26.0",
+              "claude-code.24.0",
+              "claude-code.25.0",
+              "claude-code.22.0",
+              "claude-code.23.0",
+              "claude-code.20.0",
+              "claude-code.19.0",
+              "claude-code.17.0",
+              "claude-code.18.0",
+              "claude-code.15.0",
+              "claude-code.16.0",
+              "claude-code.14.0",
+              "claude-code.13.0",
+              "claude-code.11.0",
+              "claude-code.12.0",
+              "claude-code.10.0",
+              "claude-code.9.0",
+              "claude-code.8.0",
+              "claude-code.7.0",
+              "claude-code.6.0",
+              "claude-code.5.0",
+              "claude-code.4.0",
+              "claude-code.3.0",
+              "claude-code.2.0",
+              "claude-code.1.0",
+              "claude-code.0.0"
+            ],
+            "diagnostics": []
+          }
+        ]
+      },
+      "currentRouting": null,
+      "catalogCapturedAt": null,
+      "catalogError": null,
+      "endpoints": [],
+      "referenceTag": null,
+      "referenceSource": "configured-restriction",
+      "potentialSavingsUsd": null
+    },
+    {
+      "model": "claude-sonnet-5",
+      "nativeProvider": null,
+      "tasks": 12,
+      "harnesses": [
+        "claude-code"
+      ],
+      "measuredSdkReport": {
+        "taskId": "endpoint-audit",
+        "totalUsd": 351.08121,
+        "actualUsd": null,
+        "estimatedUsd": 351.08121,
+        "byModel": {
+          "claude-sonnet-5": {
+            "totalUsd": 351.08121,
+            "actualUsd": null,
+            "estimatedUsd": 351.08121,
+            "usage": {
+              "inputTokens": 10876,
+              "outputTokens": 5053235,
+              "cacheReadTokens": 1181312591,
+              "cacheWriteTokens": 25705753,
+              "reasoningTokens": 3592659
+            },
+            "eventCount": 17,
+            "turnCount": 17,
+            "costSource": "local_estimate",
+            "coverage": "complete"
+          }
+        },
+        "byHarness": {
+          "claude-code": {
+            "totalUsd": 351.08121,
+            "actualUsd": null,
+            "estimatedUsd": 351.08121,
+            "usage": {
+              "inputTokens": 10876,
+              "outputTokens": 5053235,
+              "cacheReadTokens": 1181312591,
+              "cacheWriteTokens": 25705753,
+              "reasoningTokens": 3592659
+            },
+            "eventCount": 17,
+            "turnCount": 17,
+            "costSource": "local_estimate",
+            "coverage": "complete"
+          }
+        },
+        "usage": {
+          "inputTokens": 10876,
+          "outputTokens": 5053235,
+          "cacheReadTokens": 1181312591,
+          "cacheWriteTokens": 25705753,
+          "reasoningTokens": 3592659
+        },
+        "eventCount": 17,
+        "turnCount": 17,
+        "source": {
+          "cost": "local_estimate",
+          "basis": "per_token_api",
+          "capture": [
+            "manual"
+          ],
+          "sessionFileCount": 0
+        },
+        "pricing": {
+          "source": "local_estimate",
+          "revision": null,
+          "effectiveDate": "2026-11-04",
+          "revisions": [],
+          "priceTables": [
+            "external"
+          ],
+          "builtInTableAsOf": "2026-11-04",
+          "overrideCount": 0,
+          "currency": "USD"
+        },
+        "coverage": {
+          "status": "complete",
+          "pricedEvents": 17,
+          "unpricedEvents": 0,
+          "unknownModels": []
+        },
+        "diagnostics": [],
+        "summaries": [
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-audit",
+            "session_ids": [
+              "redacted-1ea298807baf91de",
+              "redacted-25bfc47a006a8c6d",
+              "redacted-3b7784fe026d75c2",
+              "redacted-657a538fd7a51195",
+              "redacted-75a3f30393f178f2",
+              "redacted-7d1c7538aa67552d",
+              "redacted-bd10fff64de7b096",
+              "redacted-bd978a83c3c59a85",
+              "redacted-c8f2506231b984fa",
+              "redacted-e2830628ffb1c5d1",
+              "redacted-f9698783ae3a90eb",
+              "redacted-f9f16994133a5146"
+            ],
+            "harness": "claude-code",
+            "provider_contract_version": "claude-code/1",
+            "models": [
+              "claude-sonnet-5"
+            ],
+            "model_segments": [
+              {
+                "model": "claude-sonnet-5",
+                "turn_count": 17,
+                "usage": {
+                  "input_tokens": 10876,
+                  "output_tokens": 5053235,
+                  "cache_read_tokens": 1181312591,
+                  "cache_write_tokens": 25705753,
+                  "reasoning_tokens": 3592659
+                },
+                "actual_cost_usd": null,
+                "estimated_cost_usd": 351.08121,
+                "cost_source": "local_estimate"
+              }
+            ],
+            "turn_count": 17,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 10876,
+              "output_tokens": 5053235,
+              "cache_read_tokens": 1181312591,
+              "cache_write_tokens": 25705753,
+              "reasoning_tokens": 3592659
+            },
+            "actual_cost_usd": null,
+            "estimated_cost_usd": 351.08121,
+            "total_cost_usd": 351.08121,
+            "cost_source": "local_estimate",
+            "cost_basis": "per_token_api",
+            "coverage": "complete",
+            "field_availability": {
+              "usage": "available",
+              "actual_cost": "unavailable",
+              "estimated_cost": "available",
+              "pricing": "available"
+            },
+            "pricing_source": "local_estimate",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-11-13T21:40:52.356Z",
+            "event_count": 17,
+            "event_ids": [
+              "claude-code.15.0",
+              "claude-code.16.0",
+              "claude-code.13.0",
+              "claude-code.14.0",
+              "claude-code.11.0",
+              "claude-code.12.0",
+              "claude-code.10.0",
+              "claude-code.9.0",
+              "claude-code.8.0",
+              "claude-code.6.0",
+              "claude-code.7.0",
+              "claude-code.5.0",
+              "claude-code.4.0",
+              "claude-code.3.0",
+              "claude-code.2.0",
+              "claude-code.0.0",
+              "claude-code.1.0"
+            ],
+            "diagnostics": []
+          }
+        ]
+      },
+      "currentRouting": null,
+      "catalogCapturedAt": null,
+      "catalogError": null,
+      "endpoints": [],
+      "referenceTag": null,
+      "referenceSource": "configured-restriction",
+      "potentialSavingsUsd": null
+    },
+    {
+      "model": "claude-opus-4-8",
+      "nativeProvider": null,
+      "tasks": 4,
+      "harnesses": [
+        "claude-code"
+      ],
+      "measuredSdkReport": {
+        "taskId": "endpoint-audit",
+        "totalUsd": 185.247625,
+        "actualUsd": null,
+        "estimatedUsd": 185.247625,
+        "byModel": {
+          "claude-opus-4-8": {
+            "totalUsd": 185.247625,
+            "actualUsd": null,
+            "estimatedUsd": 185.247625,
+            "usage": {
+              "inputTokens": 2084,
+              "outputTokens": 734526,
+              "cacheReadTokens": 300996591,
+              "cacheWriteTokens": 2620102,
+              "reasoningTokens": 347668
+            },
+            "eventCount": 5,
+            "turnCount": 5,
+            "costSource": "local_estimate",
+            "coverage": "complete"
+          }
+        },
+        "byHarness": {
+          "claude-code": {
+            "totalUsd": 185.247625,
+            "actualUsd": null,
+            "estimatedUsd": 185.247625,
+            "usage": {
+              "inputTokens": 2084,
+              "outputTokens": 734526,
+              "cacheReadTokens": 300996591,
+              "cacheWriteTokens": 2620102,
+              "reasoningTokens": 347668
+            },
+            "eventCount": 5,
+            "turnCount": 5,
+            "costSource": "local_estimate",
+            "coverage": "complete"
+          }
+        },
+        "usage": {
+          "inputTokens": 2084,
+          "outputTokens": 734526,
+          "cacheReadTokens": 300996591,
+          "cacheWriteTokens": 2620102,
+          "reasoningTokens": 347668
+        },
+        "eventCount": 5,
+        "turnCount": 5,
+        "source": {
+          "cost": "local_estimate",
+          "basis": "per_token_api",
+          "capture": [
+            "manual"
+          ],
+          "sessionFileCount": 0
+        },
+        "pricing": {
+          "source": "local_estimate",
+          "revision": null,
+          "effectiveDate": "2026-11-04",
+          "revisions": [],
+          "priceTables": [
+            "external"
+          ],
+          "builtInTableAsOf": "2026-11-04",
+          "overrideCount": 0,
+          "currency": "USD"
+        },
+        "coverage": {
+          "status": "complete",
+          "pricedEvents": 5,
+          "unpricedEvents": 0,
+          "unknownModels": []
+        },
+        "diagnostics": [],
+        "summaries": [
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-audit",
+            "session_ids": [
+              "redacted-02bf7c8c3001449a",
+              "redacted-9ce688339894bbd3",
+              "redacted-c560301774a0368c",
+              "redacted-f9f16994133a5146"
+            ],
+            "harness": "claude-code",
+            "provider_contract_version": "claude-code/1",
+            "models": [
+              "claude-opus-4-8"
+            ],
+            "model_segments": [
+              {
+                "model": "claude-opus-4-8",
+                "turn_count": 5,
+                "usage": {
+                  "input_tokens": 2084,
+                  "output_tokens": 734526,
+                  "cache_read_tokens": 300996591,
+                  "cache_write_tokens": 2620102,
+                  "reasoning_tokens": 347668
+                },
+                "actual_cost_usd": null,
+                "estimated_cost_usd": 185.247625,
+                "cost_source": "local_estimate"
+              }
+            ],
+            "turn_count": 5,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 2084,
+              "output_tokens": 734526,
+              "cache_read_tokens": 300996591,
+              "cache_write_tokens": 2620102,
+              "reasoning_tokens": 347668
+            },
+            "actual_cost_usd": null,
+            "estimated_cost_usd": 185.247625,
+            "total_cost_usd": 185.247625,
+            "cost_source": "local_estimate",
+            "cost_basis": "per_token_api",
+            "coverage": "complete",
+            "field_availability": {
+              "usage": "available",
+              "actual_cost": "unavailable",
+              "estimated_cost": "available",
+              "pricing": "available"
+            },
+            "pricing_source": "local_estimate",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-11-12T18:47:46.710Z",
+            "event_count": 5,
+            "event_ids": [
+              "claude-code.4.0",
+              "claude-code.3.0",
+              "claude-code.1.0",
+              "claude-code.2.0",
+              "claude-code.0.0"
+            ],
+            "diagnostics": []
+          }
+        ]
+      },
+      "currentRouting": null,
+      "catalogCapturedAt": null,
+      "catalogError": null,
+      "endpoints": [],
+      "referenceTag": null,
+      "referenceSource": "configured-restriction",
+      "potentialSavingsUsd": null
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "nativeProvider": null,
+      "tasks": 17,
+      "harnesses": [
+        "codex"
+      ],
+      "measuredSdkReport": {
+        "taskId": "endpoint-audit",
+        "totalUsd": 139.220791,
+        "actualUsd": null,
+        "estimatedUsd": 139.220791,
+        "byModel": {
+          "gpt-5.6-terra": {
+            "totalUsd": 139.220791,
+            "actualUsd": null,
+            "estimatedUsd": 139.220791,
+            "usage": {
+              "inputTokens": 32782344,
+              "outputTokens": 620937,
+              "cacheReadTokens": 190925952,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": 224969
+            },
+            "eventCount": 17,
+            "turnCount": 17,
+            "costSource": "local_estimate",
+            "coverage": "complete"
+          }
+        },
+        "byHarness": {
+          "codex": {
+            "totalUsd": 139.220791,
+            "actualUsd": null,
+            "estimatedUsd": 139.220791,
+            "usage": {
+              "inputTokens": 32782344,
+              "outputTokens": 620937,
+              "cacheReadTokens": 190925952,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": 224969
+            },
+            "eventCount": 17,
+            "turnCount": 17,
+            "costSource": "local_estimate",
+            "coverage": "complete"
+          }
+        },
+        "usage": {
+          "inputTokens": 32782344,
+          "outputTokens": 620937,
+          "cacheReadTokens": 190925952,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 224969
+        },
+        "eventCount": 17,
+        "turnCount": 17,
+        "source": {
+          "cost": "local_estimate",
+          "basis": "unknown",
+          "capture": [
+            "manual"
+          ],
+          "sessionFileCount": 0
+        },
+        "pricing": {
+          "source": "local_estimate",
+          "revision": null,
+          "effectiveDate": "2026-11-04",
+          "revisions": [],
+          "priceTables": [
+            "external"
+          ],
+          "builtInTableAsOf": "2026-11-04",
+          "overrideCount": 0,
+          "currency": "USD"
+        },
+        "coverage": {
+          "status": "complete",
+          "pricedEvents": 17,
+          "unpricedEvents": 0,
+          "unknownModels": []
+        },
+        "diagnostics": [],
+        "summaries": [
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-audit",
+            "session_ids": [
+              "redacted-14730d53c4b5c666",
+              "redacted-50a270ef82ee3160",
+              "redacted-52e6ae273aca0637",
+              "redacted-64f1c1bd88f4fe53",
+              "redacted-927d8f0b5daa9943",
+              "redacted-979be0e74876f955",
+              "redacted-991d06b6f5ead2b4",
+              "redacted-9c17fb87d0a91145",
+              "redacted-c456de1a2fec8e1c",
+              "redacted-d5297e2b09fbd6ee",
+              "redacted-dad86c5ff22a7a75",
+              "redacted-e9aaaeed876e6c9f",
+              "redacted-f5312ecaebf4b2e5"
+            ],
+            "harness": "codex",
+            "provider_contract_version": "codex/2",
+            "models": [
+              "gpt-5.6-terra"
+            ],
+            "model_segments": [
+              {
+                "model": "gpt-5.6-terra",
+                "turn_count": 13,
+                "usage": {
+                  "input_tokens": 7633832,
+                  "output_tokens": 549898,
+                  "cache_read_tokens": 166891520,
+                  "cache_write_tokens": 0,
+                  "reasoning_tokens": 210374
+                },
+                "actual_cost_usd": null,
+                "estimated_cost_usd": 69.056393,
+                "cost_source": "local_estimate"
+              }
+            ],
+            "turn_count": 13,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 7633832,
+              "output_tokens": 549898,
+              "cache_read_tokens": 166891520,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 210374
+            },
+            "actual_cost_usd": null,
+            "estimated_cost_usd": 69.056393,
+            "total_cost_usd": 69.056393,
+            "cost_source": "local_estimate",
+            "cost_basis": "per_token_api",
+            "coverage": "complete",
+            "field_availability": {
+              "usage": "available",
+              "actual_cost": "unavailable",
+              "estimated_cost": "available",
+              "pricing": "available"
+            },
+            "pricing_source": "local_estimate",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-11-16T00:46:14.720Z",
+            "event_count": 13,
+            "event_ids": [
+              "codex.12.0",
+              "codex.11.0",
+              "codex.10.0",
+              "codex.9.0",
+              "codex.8.0",
+              "codex.7.0",
+              "codex.6.0",
+              "codex.5.0",
+              "codex.4.0",
+              "codex.3.0",
+              "codex.2.0",
+              "codex.1.0",
+              "codex.0.0"
+            ],
+            "diagnostics": []
+          },
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-audit",
+            "session_ids": [
+              "redacted-116e12b1b03422f5",
+              "redacted-145afe39dd665ffb",
+              "redacted-ae6e525fb0167b09",
+              "redacted-f901a520b175e1d0"
+            ],
+            "harness": "codex",
+            "provider_contract_version": "codex/1",
+            "models": [
+              "gpt-5.6-terra"
+            ],
+            "model_segments": [
+              {
+                "model": "gpt-5.6-terra",
+                "turn_count": 4,
+                "usage": {
+                  "input_tokens": 25148512,
+                  "output_tokens": 71039,
+                  "cache_read_tokens": 24034432,
+                  "cache_write_tokens": 0,
+                  "reasoning_tokens": 14595
+                },
+                "actual_cost_usd": null,
+                "estimated_cost_usd": 70.164398,
+                "cost_source": "local_estimate"
+              }
+            ],
+            "turn_count": 4,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 25148512,
+              "output_tokens": 71039,
+              "cache_read_tokens": 24034432,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 14595
+            },
+            "actual_cost_usd": null,
+            "estimated_cost_usd": 70.164398,
+            "total_cost_usd": 70.164398,
+            "cost_source": "local_estimate",
+            "cost_basis": "unknown",
+            "coverage": "complete",
+            "field_availability": {
+              "usage": "available",
+              "actual_cost": "unavailable",
+              "estimated_cost": "available",
+              "pricing": "available"
+            },
+            "pricing_source": "local_estimate",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-10-26T19:43:56.607Z",
+            "event_count": 4,
+            "event_ids": [
+              "codex.16.0",
+              "codex.15.0",
+              "codex.14.0",
+              "codex.13.0"
+            ],
+            "diagnostics": []
+          }
+        ]
+      },
+      "currentRouting": null,
+      "catalogCapturedAt": null,
+      "catalogError": null,
+      "endpoints": [],
+      "referenceTag": null,
+      "referenceSource": "configured-restriction",
+      "potentialSavingsUsd": null
+    },
+    {
+      "model": "claude-haiku-4-5-20251001",
+      "nativeProvider": null,
+      "tasks": 57,
+      "harnesses": [
+        "claude-code"
+      ],
+      "measuredSdkReport": {
+        "taskId": "endpoint-audit",
+        "totalUsd": 54.6789508,
+        "actualUsd": null,
+        "estimatedUsd": 54.6789508,
+        "byModel": {
+          "claude-haiku-4-5-20251001": {
+            "totalUsd": 54.6789508,
+            "actualUsd": null,
+            "estimatedUsd": 54.6789508,
+            "usage": {
+              "inputTokens": 30116,
+              "outputTokens": 2022800,
+              "cacheReadTokens": 324684844,
+              "cacheWriteTokens": 20588871,
+              "reasoningTokens": 1014143
+            },
+            "eventCount": 76,
+            "turnCount": 76,
+            "costSource": "local_estimate",
+            "coverage": "complete"
+          }
+        },
+        "byHarness": {
+          "claude-code": {
+            "totalUsd": 54.6789508,
+            "actualUsd": null,
+            "estimatedUsd": 54.6789508,
+            "usage": {
+              "inputTokens": 30116,
+              "outputTokens": 2022800,
+              "cacheReadTokens": 324684844,
+              "cacheWriteTokens": 20588871,
+              "reasoningTokens": 1014143
+            },
+            "eventCount": 76,
+            "turnCount": 76,
+            "costSource": "local_estimate",
+            "coverage": "complete"
+          }
+        },
+        "usage": {
+          "inputTokens": 30116,
+          "outputTokens": 2022800,
+          "cacheReadTokens": 324684844,
+          "cacheWriteTokens": 20588871,
+          "reasoningTokens": 1014143
+        },
+        "eventCount": 76,
+        "turnCount": 76,
+        "source": {
+          "cost": "local_estimate",
+          "basis": "unknown",
+          "capture": [
+            "manual"
+          ],
+          "sessionFileCount": 0
+        },
+        "pricing": {
+          "source": "local_estimate",
+          "revision": null,
+          "effectiveDate": "2026-11-04",
+          "revisions": [],
+          "priceTables": [
+            "external"
+          ],
+          "builtInTableAsOf": "2026-11-04",
+          "overrideCount": 0,
+          "currency": "USD"
+        },
+        "coverage": {
+          "status": "complete",
+          "pricedEvents": 76,
+          "unpricedEvents": 0,
+          "unknownModels": []
+        },
+        "diagnostics": [],
+        "summaries": [
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-audit",
+            "session_ids": [
+              "redacted-0019742cf95fe41e",
+              "redacted-01f7b337809f85bd",
+              "redacted-0733060efe703263",
+              "redacted-0870b48cb0afda83",
+              "redacted-0970facf2d0fbf1c",
+              "redacted-0972711246da8cac",
+              "redacted-09a5bcb88e50cfde",
+              "redacted-0e6da07dfcf76bd3",
+              "redacted-1ab65dbd4b072c3e",
+              "redacted-1c5ba366e288ec62",
+              "redacted-1c8e92d94ff86200",
+              "redacted-1d010dcaa211a1e5",
+              "redacted-1f1397eb431ba94a",
+              "redacted-1f9323bf3a470e06",
+              "redacted-1fe81a353c6abb98",
+              "redacted-20ec646dd01a1f25",
+              "redacted-26221e16f39846f3",
+              "redacted-279d7a715693a28a",
+              "redacted-29e7396365384f47",
+              "redacted-2b6202dbdaa724c6",
+              "redacted-340dcb1a4fc208b4",
+              "redacted-3aefe7325cfc2a62",
+              "redacted-4783a6de5b4eae76",
+              "redacted-4f5f279b8e81ed14",
+              "redacted-4f7cc124c11c8924",
+              "redacted-5c127cf4c78d96ae",
+              "redacted-5f21a20b837a8c7a",
+              "redacted-60553e5447e667c9",
+              "redacted-68e55188a0a8fd90",
+              "redacted-694b19b51335361a",
+              "redacted-765296eac99fb716",
+              "redacted-7be3a84cef1d5b1f",
+              "redacted-80b17378b9546f88",
+              "redacted-811eb861e0c4bf45",
+              "redacted-82cf05995a7389e3",
+              "redacted-86e2c4966323557f",
+              "redacted-9680b82ef8e6124a",
+              "redacted-a0064a4cfb3d1b54",
+              "redacted-a037d0639b38b745",
+              "redacted-a496b698638d6f44",
+              "redacted-a609300056200612",
+              "redacted-a8608127785a1641",
+              "redacted-aa82b6a542f14bc9",
+              "redacted-af3280af910c9a10",
+              "redacted-affa8296f990fc43",
+              "redacted-b092ba1f5c8ca2a8",
+              "redacted-b205e08a7b176bbe",
+              "redacted-b988e9c2c316b2e2",
+              "redacted-bf702b0710223e00",
+              "redacted-ca560f1d5c3180f8",
+              "redacted-cc55fcf01ea5691d",
+              "redacted-cd22fad4df08a40d",
+              "redacted-d948a5cf02083c73",
+              "redacted-e1ad21dd584df4bb",
+              "redacted-e336bcb38ea10f88",
+              "redacted-f298373d46ae71f2",
+              "redacted-f9a9225b71e11114",
+              "redacted-fb2120e7ba85c63b",
+              "redacted-fec95f847778e76e"
+            ],
+            "harness": "claude-code",
+            "provider_contract_version": "claude-code/1",
+            "models": [
+              "claude-haiku-4-5-20251001"
+            ],
+            "model_segments": [
+              {
+                "model": "claude-haiku-4-5-20251001",
+                "turn_count": 76,
+                "usage": {
+                  "input_tokens": 30116,
+                  "output_tokens": 2022800,
+                  "cache_read_tokens": 324684844,
+                  "cache_write_tokens": 20588871,
+                  "reasoning_tokens": 1014143
+                },
+                "actual_cost_usd": null,
+                "estimated_cost_usd": 54.6789508,
+                "cost_source": "local_estimate"
+              }
+            ],
+            "turn_count": 76,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 30116,
+              "output_tokens": 2022800,
+              "cache_read_tokens": 324684844,
+              "cache_write_tokens": 20588871,
+              "reasoning_tokens": 1014143
+            },
+            "actual_cost_usd": null,
+            "estimated_cost_usd": 54.6789508,
+            "total_cost_usd": 54.6789508,
+            "cost_source": "local_estimate",
+            "cost_basis": "unknown",
+            "coverage": "complete",
+            "field_availability": {
+              "usage": "available",
+              "actual_cost": "unavailable",
+              "estimated_cost": "available",
+              "pricing": "available"
+            },
+            "pricing_source": "local_estimate",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-11-15T19:15:16.670Z",
+            "event_count": 76,
+            "event_ids": [
+              "claude-code.75.0",
+              "claude-code.74.0",
+              "claude-code.73.0",
+              "claude-code.70.0",
+              "claude-code.71.0",
+              "claude-code.72.0",
+              "claude-code.69.0",
+              "claude-code.68.0",
+              "claude-code.67.0",
+              "claude-code.66.0",
+              "claude-code.64.0",
+              "claude-code.65.0",
+              "claude-code.63.0",
+              "claude-code.62.0",
+              "claude-code.61.0",
+              "claude-code.60.0",
+              "claude-code.59.0",
+              "claude-code.58.0",
+              "claude-code.57.0",
+              "claude-code.56.0",
+              "claude-code.52.0",
+              "claude-code.53.0",
+              "claude-code.54.0",
+              "claude-code.55.0",
+              "claude-code.50.0",
+              "claude-code.51.0",
+              "claude-code.49.0",
+              "claude-code.48.0",
+              "claude-code.47.0",
+              "claude-code.46.0",
+              "claude-code.43.0",
+              "claude-code.44.0",
+              "claude-code.45.0",
+              "claude-code.42.0",
+              "claude-code.41.0",
+              "claude-code.40.0",
+              "claude-code.39.0",
+              "claude-code.34.0",
+              "claude-code.35.0",
+              "claude-code.38.0",
+              "claude-code.37.0",
+              "claude-code.36.0",
+              "claude-code.29.0",
+              "claude-code.30.0",
+              "claude-code.31.0",
+              "claude-code.32.0",
+              "claude-code.33.0",
+              "claude-code.28.0",
+              "claude-code.27.0",
+              "claude-code.24.0",
+              "claude-code.25.0",
+              "claude-code.26.0",
+              "claude-code.23.0",
+              "claude-code.22.0",
+              "claude-code.21.0",
+              "claude-code.17.0",
+              "claude-code.20.0",
+              "claude-code.19.0",
+              "claude-code.18.0",
+              "claude-code.16.0",
+              "claude-code.14.0",
+              "claude-code.15.0",
+              "claude-code.13.0",
+              "claude-code.12.0",
+              "claude-code.11.0",
+              "claude-code.10.0",
+              "claude-code.8.0",
+              "claude-code.9.0",
+              "claude-code.7.0",
+              "claude-code.6.0",
+              "claude-code.5.0",
+              "claude-code.4.0",
+              "claude-code.3.0",
+              "claude-code.2.0",
+              "claude-code.1.0",
+              "claude-code.0.0"
+            ],
+            "diagnostics": []
+          }
+        ]
+      },
+      "currentRouting": null,
+      "catalogCapturedAt": null,
+      "catalogError": null,
+      "endpoints": [],
+      "referenceTag": null,
+      "referenceSource": "configured-restriction",
+      "potentialSavingsUsd": null
+    },
+    {
+      "model": "claude-sonnet-4-6",
+      "nativeProvider": null,
+      "tasks": 1,
+      "harnesses": [
+        "claude-code"
+      ],
+      "measuredSdkReport": {
+        "taskId": "endpoint-audit",
+        "totalUsd": 44.795632,
+        "actualUsd": null,
+        "estimatedUsd": 44.795632,
+        "byModel": {
+          "claude-sonnet-4-6": {
+            "totalUsd": 44.795632,
+            "actualUsd": null,
+            "estimatedUsd": 44.795632,
+            "usage": {
+              "inputTokens": 872,
+              "outputTokens": 545924,
+              "cacheReadTokens": 96986536,
+              "cacheWriteTokens": 2002182,
+              "reasoningTokens": 353812
+            },
+            "eventCount": 2,
+            "turnCount": 2,
+            "costSource": "local_estimate",
+            "coverage": "complete"
+          }
+        },
+        "byHarness": {
+          "claude-code": {
+            "totalUsd": 44.795632,
+            "actualUsd": null,
+            "estimatedUsd": 44.795632,
+            "usage": {
+              "inputTokens": 872,
+              "outputTokens": 545924,
+              "cacheReadTokens": 96986536,
+              "cacheWriteTokens": 2002182,
+              "reasoningTokens": 353812
+            },
+            "eventCount": 2,
+            "turnCount": 2,
+            "costSource": "local_estimate",
+            "coverage": "complete"
+          }
+        },
+        "usage": {
+          "inputTokens": 872,
+          "outputTokens": 545924,
+          "cacheReadTokens": 96986536,
+          "cacheWriteTokens": 2002182,
+          "reasoningTokens": 353812
+        },
+        "eventCount": 2,
+        "turnCount": 2,
+        "source": {
+          "cost": "local_estimate",
+          "basis": "per_token_api",
+          "capture": [
+            "manual"
+          ],
+          "sessionFileCount": 0
+        },
+        "pricing": {
+          "source": "local_estimate",
+          "revision": null,
+          "effectiveDate": "2026-11-04",
+          "revisions": [],
+          "priceTables": [
+            "external"
+          ],
+          "builtInTableAsOf": "2026-11-04",
+          "overrideCount": 0,
+          "currency": "USD"
+        },
+        "coverage": {
+          "status": "complete",
+          "pricedEvents": 2,
+          "unpricedEvents": 0,
+          "unknownModels": []
+        },
+        "diagnostics": [],
+        "summaries": [
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-audit",
+            "session_ids": [
+              "redacted-f660f7e41fef5a0d"
+            ],
+            "harness": "claude-code",
+            "provider_contract_version": "claude-code/1",
+            "models": [
+              "claude-sonnet-4-6"
+            ],
+            "model_segments": [
+              {
+                "model": "claude-sonnet-4-6",
+                "turn_count": 2,
+                "usage": {
+                  "input_tokens": 872,
+                  "output_tokens": 545924,
+                  "cache_read_tokens": 96986536,
+                  "cache_write_tokens": 2002182,
+                  "reasoning_tokens": 353812
+                },
+                "actual_cost_usd": null,
+                "estimated_cost_usd": 44.795632,
+                "cost_source": "local_estimate"
+              }
+            ],
+            "turn_count": 2,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 872,
+              "output_tokens": 545924,
+              "cache_read_tokens": 96986536,
+              "cache_write_tokens": 2002182,
+              "reasoning_tokens": 353812
+            },
+            "actual_cost_usd": null,
+            "estimated_cost_usd": 44.795632,
+            "total_cost_usd": 44.795632,
+            "cost_source": "local_estimate",
+            "cost_basis": "per_token_api",
+            "coverage": "complete",
+            "field_availability": {
+              "usage": "available",
+              "actual_cost": "unavailable",
+              "estimated_cost": "available",
+              "pricing": "available"
+            },
+            "pricing_source": "local_estimate",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-10-31T22:03:02.893Z",
+            "event_count": 2,
+            "event_ids": [
+              "claude-code.0.0",
+              "claude-code.1.0"
+            ],
+            "diagnostics": []
+          }
+        ]
+      },
+      "currentRouting": null,
+      "catalogCapturedAt": null,
+      "catalogError": null,
+      "endpoints": [],
+      "referenceTag": null,
+      "referenceSource": "configured-restriction",
+      "potentialSavingsUsd": null
+    },
+    {
+      "model": "deepseek-v4-flash",
+      "nativeProvider": null,
+      "tasks": 2,
+      "harnesses": [
+        "claude-code"
+      ],
+      "measuredSdkReport": {
+        "taskId": "endpoint-audit",
+        "totalUsd": 0.896641,
+        "actualUsd": null,
+        "estimatedUsd": 0.896641,
+        "byModel": {
+          "deepseek-v4-flash": {
+            "totalUsd": 0.896641,
+            "actualUsd": null,
+            "estimatedUsd": 0.896641,
+            "usage": {
+              "inputTokens": 579482,
+              "outputTokens": 274260,
+              "cacheReadTokens": 115243520,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": 122497
+            },
+            "eventCount": 2,
+            "turnCount": 2,
+            "costSource": "local_estimate",
+            "coverage": "complete"
+          }
+        },
+        "byHarness": {
+          "claude-code": {
+            "totalUsd": 0.896641,
+            "actualUsd": null,
+            "estimatedUsd": 0.896641,
+            "usage": {
+              "inputTokens": 579482,
+              "outputTokens": 274260,
+              "cacheReadTokens": 115243520,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": 122497
+            },
+            "eventCount": 2,
+            "turnCount": 2,
+            "costSource": "local_estimate",
+            "coverage": "complete"
+          }
+        },
+        "usage": {
+          "inputTokens": 579482,
+          "outputTokens": 274260,
+          "cacheReadTokens": 115243520,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 122497
+        },
+        "eventCount": 2,
+        "turnCount": 2,
+        "source": {
+          "cost": "local_estimate",
+          "basis": "per_token_api",
+          "capture": [
+            "manual"
+          ],
+          "sessionFileCount": 0
+        },
+        "pricing": {
+          "source": "local_estimate",
+          "revision": null,
+          "effectiveDate": "2026-11-04",
+          "revisions": [],
+          "priceTables": [
+            "external"
+          ],
+          "builtInTableAsOf": "2026-11-04",
+          "overrideCount": 0,
+          "currency": "USD"
+        },
+        "coverage": {
+          "status": "complete",
+          "pricedEvents": 2,
+          "unpricedEvents": 0,
+          "unknownModels": []
+        },
+        "diagnostics": [],
+        "summaries": [
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-audit",
+            "session_ids": [
+              "redacted-ccbb866b531aebe6",
+              "redacted-dc3ece26b5456296"
+            ],
+            "harness": "claude-code",
+            "provider_contract_version": "claude-code/1",
+            "models": [
+              "deepseek-v4-flash"
+            ],
+            "model_segments": [
+              {
+                "model": "deepseek-v4-flash",
+                "turn_count": 2,
+                "usage": {
+                  "input_tokens": 579482,
+                  "output_tokens": 274260,
+                  "cache_read_tokens": 115243520,
+                  "cache_write_tokens": 0,
+                  "reasoning_tokens": 122497
+                },
+                "actual_cost_usd": null,
+                "estimated_cost_usd": 0.896641,
+                "cost_source": "local_estimate"
+              }
+            ],
+            "turn_count": 2,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 579482,
+              "output_tokens": 274260,
+              "cache_read_tokens": 115243520,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 122497
+            },
+            "actual_cost_usd": null,
+            "estimated_cost_usd": 0.896641,
+            "total_cost_usd": 0.896641,
+            "cost_source": "local_estimate",
+            "cost_basis": "per_token_api",
+            "coverage": "complete",
+            "field_availability": {
+              "usage": "available",
+              "actual_cost": "unavailable",
+              "estimated_cost": "available",
+              "pricing": "available"
+            },
+            "pricing_source": "local_estimate",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-11-16T17:44:55.284Z",
+            "event_count": 2,
+            "event_ids": [
+              "claude-code.1.0",
+              "claude-code.0.0"
+            ],
+            "diagnostics": []
+          }
+        ]
+      },
+      "currentRouting": null,
+      "catalogCapturedAt": null,
+      "catalogError": null,
+      "endpoints": [],
+      "referenceTag": null,
+      "referenceSource": "configured-restriction",
+      "potentialSavingsUsd": null
+    },
+    {
+      "model": "qwen-3-coder",
+      "nativeProvider": "openrouter",
+      "tasks": 1,
+      "harnesses": [
+        "native"
+      ],
+      "measuredSdkReport": {
+        "taskId": "endpoint-audit",
+        "totalUsd": 0.130466,
+        "actualUsd": null,
+        "estimatedUsd": 0.130466,
+        "byModel": {
+          "qwen-3-coder": {
+            "totalUsd": 0.130466,
+            "actualUsd": null,
+            "estimatedUsd": 0.130466,
+            "usage": {
+              "inputTokens": 173130,
+              "outputTokens": 2553,
+              "cacheReadTokens": 1919712,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 1,
+            "turnCount": 1,
+            "costSource": "local_estimate",
+            "coverage": "partial"
+          }
+        },
+        "byHarness": {
+          "native": {
+            "totalUsd": 0.130466,
+            "actualUsd": null,
+            "estimatedUsd": 0.130466,
+            "usage": {
+              "inputTokens": 173130,
+              "outputTokens": 2553,
+              "cacheReadTokens": 1919712,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 1,
+            "turnCount": 1,
+            "costSource": "local_estimate",
+            "coverage": "partial"
+          }
+        },
+        "usage": {
+          "inputTokens": 173130,
+          "outputTokens": 2553,
+          "cacheReadTokens": 1919712,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": null
+        },
+        "eventCount": 1,
+        "turnCount": 1,
+        "source": {
+          "cost": "local_estimate",
+          "basis": "per_token_api",
+          "capture": [
+            "manual"
+          ],
+          "sessionFileCount": 0
+        },
+        "pricing": {
+          "source": "local_estimate",
+          "revision": null,
+          "effectiveDate": "2026-11-04",
+          "revisions": [],
+          "priceTables": [
+            "external"
+          ],
+          "builtInTableAsOf": "2026-11-04",
+          "overrideCount": 0,
+          "currency": "USD"
+        },
+        "coverage": {
+          "status": "partial",
+          "pricedEvents": 1,
+          "unpricedEvents": 0,
+          "unknownModels": []
+        },
+        "diagnostics": [
+          {
+            "code": "mixed_coverage",
+            "level": "warn",
+            "message": "coverage is partial: some events are missing cost or usage",
+            "count": 1
+          }
+        ],
+        "summaries": [
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-audit",
+            "session_ids": [
+              "redacted-4d24b57e9845f598"
+            ],
+            "harness": "native",
+            "provider_contract_version": "native/1",
+            "models": [
+              "qwen-3-coder"
+            ],
+            "model_segments": [
+              {
+                "model": "qwen-3-coder",
+                "turn_count": 1,
+                "usage": {
+                  "input_tokens": 173130,
+                  "output_tokens": 2553,
+                  "cache_read_tokens": 1919712,
+                  "cache_write_tokens": 0,
+                  "reasoning_tokens": null
+                },
+                "actual_cost_usd": null,
+                "estimated_cost_usd": 0.130466,
+                "cost_source": "local_estimate"
+              }
+            ],
+            "turn_count": 1,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 173130,
+              "output_tokens": 2553,
+              "cache_read_tokens": 1919712,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": null,
+            "estimated_cost_usd": 0.130466,
+            "total_cost_usd": 0.130466,
+            "cost_source": "local_estimate",
+            "cost_basis": "per_token_api",
+            "coverage": "partial",
+            "field_availability": {
+              "usage": "partial",
+              "actual_cost": "unavailable",
+              "estimated_cost": "available",
+              "pricing": "available"
+            },
+            "pricing_source": "local_estimate",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-11-16T18:02:03.264Z",
+            "event_count": 1,
+            "event_ids": [
+              "native.0.0"
+            ],
+            "diagnostics": [
+              "mixed_coverage"
+            ]
+          }
+        ]
+      },
+      "currentRouting": null,
+      "catalogCapturedAt": "2026-11-16T21:04:13.266Z",
+      "catalogError": null,
+      "endpoints": [
+        {
+          "tag": "venice/fp8",
+          "providerName": "Venice",
+          "quantization": "fp8",
+          "historicalMixEstimateUsd": 0.141213
+        },
+        {
+          "tag": "deepinfra/turbo",
+          "providerName": "DeepInfra",
+          "quantization": "fp4",
+          "historicalMixEstimateUsd": 0.246463
+        }
+      ],
+      "referenceTag": null,
+      "referenceSource": "configured-restriction",
+      "potentialSavingsUsd": null
+    },
+    {
+      "model": "mistralai/mistral-large-2407",
+      "nativeProvider": null,
+      "tasks": 1,
+      "harnesses": [
+        "native"
+      ],
+      "measuredSdkReport": {
+        "taskId": "endpoint-audit",
+        "totalUsd": 0,
+        "actualUsd": 0,
+        "estimatedUsd": null,
+        "byModel": {
+          "mistral-large-2407": {
+            "totalUsd": 0,
+            "actualUsd": 0,
+            "estimatedUsd": null,
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 2,
+            "turnCount": 2,
+            "costSource": "provider_reported",
+            "coverage": "known_zero"
+          }
+        },
+        "byHarness": {
+          "native": {
+            "totalUsd": 0,
+            "actualUsd": 0,
+            "estimatedUsd": null,
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 2,
+            "turnCount": 2,
+            "costSource": "provider_reported",
+            "coverage": "known_zero"
+          }
+        },
+        "usage": {
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": null
+        },
+        "eventCount": 2,
+        "turnCount": 2,
+        "source": {
+          "cost": "provider_reported",
+          "basis": "per_token_api",
+          "capture": [
+            "manual"
+          ],
+          "sessionFileCount": 0
+        },
+        "pricing": {
+          "source": "none",
+          "revision": null,
+          "effectiveDate": "2026-11-04",
+          "revisions": [],
+          "priceTables": [],
+          "builtInTableAsOf": "2026-11-04",
+          "overrideCount": 0,
+          "currency": "USD"
+        },
+        "coverage": {
+          "status": "known_zero",
+          "pricedEvents": 2,
+          "unpricedEvents": 0,
+          "unknownModels": []
+        },
+        "diagnostics": [
+          {
+            "code": "provider_reported_cost",
+            "level": "info",
+            "message": "at least one event carries a provider-reported charge",
+            "count": 1
+          }
+        ],
+        "summaries": [
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-audit",
+            "session_ids": [
+              "redacted-f041251b64ef00a6"
+            ],
+            "harness": "native",
+            "provider_contract_version": "native/1",
+            "models": [
+              "mistral-large-2407"
+            ],
+            "model_segments": [
+              {
+                "model": "mistral-large-2407",
+                "turn_count": 2,
+                "usage": {
+                  "input_tokens": 0,
+                  "output_tokens": 0,
+                  "cache_read_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "reasoning_tokens": null
+                },
+                "actual_cost_usd": 0,
+                "estimated_cost_usd": null,
+                "cost_source": "provider_reported"
+              }
+            ],
+            "turn_count": 2,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 0,
+              "output_tokens": 0,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0,
+            "estimated_cost_usd": null,
+            "total_cost_usd": 0,
+            "cost_source": "provider_reported",
+            "cost_basis": "per_token_api",
+            "coverage": "known_zero",
+            "field_availability": {
+              "usage": "partial",
+              "actual_cost": "known_zero",
+              "estimated_cost": "unavailable",
+              "pricing": "unavailable"
+            },
+            "pricing_source": "none",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-10-21T17:01:25.811Z",
+            "event_count": 2,
+            "event_ids": [
+              "native.0.0",
+              "native.1.0"
+            ],
+            "diagnostics": [
+              "provider_reported_cost"
+            ]
+          }
+        ]
+      },
+      "currentRouting": null,
+      "catalogCapturedAt": null,
+      "catalogError": null,
+      "endpoints": [],
+      "referenceTag": null,
+      "referenceSource": "configured-restriction",
+      "potentialSavingsUsd": null
+    },
+    {
+      "model": "unknown",
+      "nativeProvider": null,
+      "tasks": 1,
+      "harnesses": [
+        "claude-code"
+      ],
+      "measuredSdkReport": {
+        "taskId": "endpoint-audit",
+        "totalUsd": null,
+        "actualUsd": null,
+        "estimatedUsd": null,
+        "byModel": {
+          "unknown": {
+            "totalUsd": null,
+            "actualUsd": null,
+            "estimatedUsd": null,
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 1,
+            "turnCount": 1,
+            "costSource": "none",
+            "coverage": "partial"
+          }
+        },
+        "byHarness": {
+          "claude-code": {
+            "totalUsd": null,
+            "actualUsd": null,
+            "estimatedUsd": null,
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": null
+            },
+            "eventCount": 1,
+            "turnCount": 1,
+            "costSource": "none",
+            "coverage": "partial"
+          }
+        },
+        "usage": {
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": null
+        },
+        "eventCount": 1,
+        "turnCount": 1,
+        "source": {
+          "cost": "none",
+          "basis": "per_token_api",
+          "capture": [
+            "manual"
+          ],
+          "sessionFileCount": 0
+        },
+        "pricing": {
+          "source": "none",
+          "revision": null,
+          "effectiveDate": "2026-11-04",
+          "revisions": [],
+          "priceTables": [],
+          "builtInTableAsOf": "2026-11-04",
+          "overrideCount": 0,
+          "currency": "USD"
+        },
+        "coverage": {
+          "status": "partial",
+          "pricedEvents": 0,
+          "unpricedEvents": 1,
+          "unknownModels": [
+            "unknown"
+          ]
+        },
+        "diagnostics": [
+          {
+            "code": "unpriced_model",
+            "level": "warn",
+            "message": "usage was complete enough to price but no price was available",
+            "count": 1
+          },
+          {
+            "code": "mixed_coverage",
+            "level": "warn",
+            "message": "coverage is partial: some events are missing cost or usage",
+            "count": 1
+          },
+          {
+            "code": "no_priced_sessions",
+            "level": "warn",
+            "message": "events exist but none produced a cost",
+            "count": 1
+          }
+        ],
+        "summaries": [
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-audit",
+            "session_ids": [
+              "redacted-bd978a83c3c59a85"
+            ],
+            "harness": "claude-code",
+            "provider_contract_version": "claude-code/1",
+            "models": [
+              "unknown"
+            ],
+            "model_segments": [
+              {
+                "model": "unknown",
+                "turn_count": 1,
+                "usage": {
+                  "input_tokens": 0,
+                  "output_tokens": 0,
+                  "cache_read_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "reasoning_tokens": null
+                },
+                "actual_cost_usd": null,
+                "estimated_cost_usd": null,
+                "cost_source": "none"
+              }
+            ],
+            "turn_count": 1,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 0,
+              "output_tokens": 0,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": null,
+            "estimated_cost_usd": null,
+            "total_cost_usd": null,
+            "cost_source": "none",
+            "cost_basis": "per_token_api",
+            "coverage": "partial",
+            "field_availability": {
+              "usage": "partial",
+              "actual_cost": "unavailable",
+              "estimated_cost": "unavailable",
+              "pricing": "unavailable"
+            },
+            "pricing_source": "none",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-11-06T19:35:26.287Z",
+            "event_count": 1,
+            "event_ids": [
+              "claude-code.0.0"
+            ],
+            "diagnostics": [
+              "unpriced_model",
+              "mixed_coverage",
+              "no_priced_sessions"
+            ]
+          }
+        ]
+      },
+      "currentRouting": null,
+      "catalogCapturedAt": null,
+      "catalogError": null,
+      "endpoints": [],
+      "referenceTag": null,
+      "referenceSource": "configured-restriction",
+      "potentialSavingsUsd": null
+    },
+    {
+      "model": "synthetic-",
+      "nativeProvider": null,
+      "tasks": 1,
+      "harnesses": [
+        "claude-code"
+      ],
+      "measuredSdkReport": {
+        "taskId": "endpoint-audit",
+        "totalUsd": null,
+        "actualUsd": null,
+        "estimatedUsd": null,
+        "byModel": {
+          "synthetic-": {
+            "totalUsd": null,
+            "actualUsd": null,
+            "estimatedUsd": null,
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": 0
+            },
+            "eventCount": 1,
+            "turnCount": 1,
+            "costSource": "none",
+            "coverage": "partial"
+          }
+        },
+        "byHarness": {
+          "claude-code": {
+            "totalUsd": null,
+            "actualUsd": null,
+            "estimatedUsd": null,
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0,
+              "reasoningTokens": 0
+            },
+            "eventCount": 1,
+            "turnCount": 1,
+            "costSource": "none",
+            "coverage": "partial"
+          }
+        },
+        "usage": {
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 0
+        },
+        "eventCount": 1,
+        "turnCount": 1,
+        "source": {
+          "cost": "none",
+          "basis": "unknown",
+          "capture": [
+            "manual"
+          ],
+          "sessionFileCount": 0
+        },
+        "pricing": {
+          "source": "none",
+          "revision": null,
+          "effectiveDate": "2026-11-04",
+          "revisions": [],
+          "priceTables": [],
+          "builtInTableAsOf": "2026-11-04",
+          "overrideCount": 0,
+          "currency": "USD"
+        },
+        "coverage": {
+          "status": "partial",
+          "pricedEvents": 0,
+          "unpricedEvents": 1,
+          "unknownModels": [
+            "synthetic-"
+          ]
+        },
+        "diagnostics": [
+          {
+            "code": "unpriced_model",
+            "level": "warn",
+            "message": "usage was complete enough to price but no price was available",
+            "count": 1
+          },
+          {
+            "code": "mixed_coverage",
+            "level": "warn",
+            "message": "coverage is partial: some events are missing cost or usage",
+            "count": 1
+          },
+          {
+            "code": "no_priced_sessions",
+            "level": "warn",
+            "message": "events exist but none produced a cost",
+            "count": 1
+          }
+        ],
+        "summaries": [
+          {
+            "schema_version": "task_cost_summary/v1",
+            "task_id": "endpoint-audit",
+            "session_ids": [
+              "redacted-1c5ba366e288ec62"
+            ],
+            "harness": "claude-code",
+            "provider_contract_version": "claude-code/1",
+            "models": [
+              "synthetic-"
+            ],
+            "model_segments": [
+              {
+                "model": "synthetic-",
+                "turn_count": 1,
+                "usage": {
+                  "input_tokens": 0,
+                  "output_tokens": 0,
+                  "cache_read_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "reasoning_tokens": 0
+                },
+                "actual_cost_usd": null,
+                "estimated_cost_usd": null,
+                "cost_source": "none"
+              }
+            ],
+            "turn_count": 1,
+            "turns_truncated": false,
+            "usage": {
+              "input_tokens": 0,
+              "output_tokens": 0,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 0
+            },
+            "actual_cost_usd": null,
+            "estimated_cost_usd": null,
+            "total_cost_usd": null,
+            "cost_source": "none",
+            "cost_basis": "unknown",
+            "coverage": "partial",
+            "field_availability": {
+              "usage": "known_zero",
+              "actual_cost": "unavailable",
+              "estimated_cost": "unavailable",
+              "pricing": "unavailable"
+            },
+            "pricing_source": "none",
+            "join_confidence": "unattributed",
+            "collected_at": "2026-10-28T11:42:57.260Z",
+            "event_count": 1,
+            "event_ids": [
+              "claude-code.0.0"
+            ],
+            "diagnostics": [
+              "unpriced_model",
+              "mixed_coverage",
+              "no_priced_sessions"
+            ]
+          }
+        ]
+      },
+      "currentRouting": null,
+      "catalogCapturedAt": null,
+      "catalogError": null,
+      "endpoints": [],
+      "referenceTag": null,
+      "referenceSource": "configured-restriction",
+      "potentialSavingsUsd": null
+    }
+  ],
+  "limitations": [
+    "Evaluated task cohort, not account billing or all failed/running attempts.",
+    "Latest row per eval ID retains distinct attempts; overlapping SDK summaries are excluded whole, not apportioned.",
+    "Historical token/cache mix held fixed; new-host cache hits, tokenization, success and latency are unproven.",
+    "Missing endpoint cache rates or incomplete usage prevent a counterfactual estimate.",
+    "Catalog availability and prices do not qualify an endpoint. Model/executor routing is unchanged."
+  ],
+  "since": "2026-10-19T00:00:00.000Z",
+  "until": "2026-11-16T21:00:00.000Z"
+}

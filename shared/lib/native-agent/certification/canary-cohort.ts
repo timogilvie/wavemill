@@ -1,3 +1,4 @@
+import { sameQualificationContract, qualificationContract, type QualificationContract } from './qualification-contract.ts';
 import { endpointIdentity, validateCertificationEndpoint } from './identity.ts';
 import type { CertificationEndpoint } from './schema.ts';
 /**
@@ -82,6 +83,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // ---------------------------------------------------------------------------
 
 export interface CanaryCohortMember {
+  qualificationContract?: QualificationContract;
   endpoint?: CertificationEndpoint;
   provider: NativeProviderName;
   model: string;
@@ -124,6 +126,9 @@ export function resolveCanaryCohort(options: ResolveCanaryCohortOptions): Resolv
   const seen = new Set<string>();
 
   for (const entry of configured) {
+    try {
+      if (entry.qualificationContract && (!entry.endpoint || !sameQualificationContract(entry.qualificationContract, qualificationContract(entry.qualificationContract.limits, entry.qualificationContract.maxAttempts)))) throw new Error('Invalid contract');
+    } catch { invalid.push({ ...entry, reason: 'invalid qualification contract' }); continue; }
     if (entry.endpoint) {
       try { validateCertificationEndpoint(entry.endpoint); } catch { invalid.push({ ...entry, reason: 'invalid endpoint subject' }); continue; }
       if (entry.provider !== 'openrouter') { invalid.push({ ...entry, reason: 'endpoint subjects require OpenRouter' }); continue; }
@@ -140,7 +145,7 @@ export function resolveCanaryCohort(options: ResolveCanaryCohortOptions): Resolv
       invalid.push({ ...entry, reason });
       continue;
     }
-    members.push({ provider: entry.provider, model: entry.model, ...(entry.endpoint ? { endpoint: entry.endpoint } : {}) });
+    members.push({ provider: entry.provider, model: entry.model, ...(entry.qualificationContract ? { qualificationContract: entry.qualificationContract } : {}), ...(entry.endpoint ? { endpoint: entry.endpoint } : {}) });
   }
 
   return {
@@ -220,6 +225,8 @@ const REFRESH_TARGET_STATES: ReadonlySet<CohortMemberCanaryState> = new Set([
 ]);
 
 export interface CohortMemberStatus {
+  endpoint?: CertificationEndpoint;
+  qualificationContract?: QualificationContract;
   provider: NativeProviderName;
   model: string;
   state: CohortMemberCanaryState;
@@ -310,11 +317,11 @@ interface MemberStatusInput {
 
 function evaluateMemberStatus(input: MemberStatusInput): CohortMemberStatus {
   const { member, registry, now } = input;
-  const base = { provider: member.provider, model: member.model, ...(member.endpoint ? { endpoint: member.endpoint } : {}) };
+  const base = { provider: member.provider, model: member.model, qualificationContract: member.qualificationContract, ...(member.endpoint ? { endpoint: member.endpoint } : {}) };
 
   const gate = evaluateNativeProviderGate({
     modelId: member.model, mode: 'task', requiredPhase: 'patch', launchPhase: 'coding',
-    registry, now, certificationRoot: input.certificationRoot, endpoint: member.endpoint,
+    registry, now, certificationRoot: input.certificationRoot, endpoint: member.endpoint, qualificationContract: member.qualificationContract,
     apiKeyPresent: true, apiKeyEnv: 'STORED_CERTIFICATION_HEALTH',
   });
   if (!gate.ok) {
@@ -481,6 +488,7 @@ export type CohortCertifyFn = (opts: {
   repoDir: string;
   liveCodingCanary: true;
   endpoint?: CertificationEndpoint;
+  qualificationContract?: QualificationContract;
   certificationRoot?: string;
   registry?: ModelRegistry;
   canaryLimits?: Partial<LiveCodingCanaryLimits>;
@@ -577,7 +585,7 @@ export async function refreshCanaryCohort(
   let attempted = 0;
 
   for (const status of healthBefore.members) {
-    const member: CanaryCohortMember = { provider: status.provider, model: status.model, ...(status.endpoint ? { endpoint: status.endpoint } : {}) };
+    const member: CanaryCohortMember = { qualificationContract: status.qualificationContract, provider: status.provider, model: status.model, ...(status.endpoint ? { endpoint: status.endpoint } : {}) };
     const base = {
       provider: member.provider,
       model: member.model,
@@ -607,6 +615,7 @@ export async function refreshCanaryCohort(
       provider: member.provider,
       model: member.model,
       endpoint: member.endpoint,
+      qualificationContract: member.qualificationContract,
       registry,
     });
     const episodeKey = buildEpisodeKey({
@@ -636,6 +645,7 @@ export async function refreshCanaryCohort(
         repoDir: options.repoDir,
         liveCodingCanary: true,
         endpoint: member.endpoint,
+        qualificationContract: member.qualificationContract,
         certificationRoot: options.certificationRoot,
         registry,
         ...(options.canaryLimits ? { canaryLimits: options.canaryLimits } : {}),

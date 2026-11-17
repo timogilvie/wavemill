@@ -1,4 +1,5 @@
 #!/usr/bin/env -S npx tsx
+import { qualificationContract } from '../shared/lib/native-agent/certification/qualification-contract.ts';
 /** Operator command: preregister and run an isolated fixed-model endpoint comparison. */
 import { readFileSync, writeFileSync, mkdirSync, appendFileSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -23,6 +24,9 @@ export async function runEndpointQualificationCommand(argv = process.argv.slice(
       'max-cost-usd': { type: 'string', description: 'Required experiment spend reservation, including failed/retried attempts.' },
       'max-regression': { type: 'string', description: 'Maximum completion regression as a fraction (default .05 at 95% confidence).' },
       'latency-ratio': { type: 'string', description: 'Maximum p95 latency relative to reference (default 2).' },
+      characterize: { type: 'boolean', description: 'Run three reference-only repetitions of each workload before any candidates; stop on the first non-pass.' },
+      characterization: { type: 'string', description: 'Healthy reference-only report; required for live candidate comparisons. Freezes its limits.' },
+      limits: { type: 'string', description: 'JSON limits file for reference characterization, chosen before model calls; otherwise existing canary limits.' },
       replay: { type: 'string', description: 'Reconcile an existing .plan.json and adjacent .runs.jsonl with its original catalog; no model calls or overwritten history.' },
       live: { type: 'boolean', description: 'Execute credentialed requests after writing the preregistration. Without this flag, plan only.' },
     },
@@ -49,7 +53,7 @@ export async function runEndpointQualificationCommand(argv = process.argv.slice(
       const model = args.model as string;
       const reference = args.reference as string;
       const candidates = (args.candidates as string | undefined)?.split(',').map(tag => tag.trim()).filter(Boolean) ?? [];
-      if (!model || !reference || !candidates.length || !args.output || !args['max-cost-usd']) throw new Error('--model, --reference, --candidates, --output and --max-cost-usd are required');
+      if (!model || !reference || (!args.characterize && !candidates.length) || !args.output || !args['max-cost-usd']) throw new Error('--model, --reference, --candidates, --output and --max-cost-usd are required');
       const output = resolve(args.output as string);
       for (const path of [output, output + '.plan.json', output + '.runs.jsonl']) if (existsSync(path)) throw new Error('Output evidence already exists; choose a new run path rather than overwriting history');
       const registry = getEffectiveRegistry(repoDir);
@@ -57,23 +61,27 @@ export async function runEndpointQualificationCommand(argv = process.argv.slice(
       const capturedAt = new Date().toISOString();
       const snapshot = args.catalog ? JSON.parse(readFileSync(args.catalog as string, 'utf8')) : { capturedAt, model: subject.providerNativeId, endpoints: await fetchOpenRouterModelEndpoints(subject.providerNativeId) };
       if (snapshot.model !== subject.providerNativeId || !Array.isArray(snapshot.endpoints)) throw new Error('Catalog snapshot must name the same model and contain endpoints');
-      const entries: OpenRouterEndpoint[] = [reference, ...candidates].map(tag => {
+      if (args.characterize && (candidates.length || args.characterization)) throw new Error('Reference characterization cannot include candidates');
+      if (args.limits && !args.characterize) throw new Error('Comparison limits must come from prior characterization');
+      const characterization = args.characterization ? JSON.parse(readFileSync(resolve(args.characterization as string), 'utf8')) : undefined;
+      const contract = characterization?.plan?.contract ?? qualificationContract(args.limits ? JSON.parse(readFileSync(resolve(args.limits as string), 'utf8')) : undefined);
+      const entries: OpenRouterEndpoint[] = [reference, ...(args.characterize ? [] : candidates)].map(tag => {
         const found = snapshot.endpoints.find((entry: OpenRouterEndpoint) => entry.tag === tag);
         if (!found) throw new Error(`Endpoint not found in captured catalog: ${tag}`);
         return found;
       });
-      const plan = comparisonPlan(entries, reference, { maxSpendUsd: Number(args['max-cost-usd']), maxCompletionRegression: Number(args['max-regression'] ?? .05), confidence: .95, maxP95LatencyRatio: Number(args['latency-ratio'] ?? 2) });
+      const plan = comparisonPlan(entries, reference, { maxSpendUsd: Number(args['max-cost-usd']), maxCompletionRegression: Number(args['max-regression'] ?? .05), confidence: .95, maxP95LatencyRatio: Number(args['latency-ratio'] ?? 2) }, { contract, characterizationOnly: args.characterize === true, referenceCharacterization: characterization ? { plan: characterization.plan, runs: characterization.runs } : undefined });
       mkdirSync(dirname(output), { recursive: true });
       writeFileSync(output + '.catalog.json', JSON.stringify(snapshot, null, 2) + '\n', { flag: 'wx' });
       writeFileSync(output + '.plan.json', JSON.stringify({ capturedAt, model, modelSubject: subject, plan }, null, 2) + '\n', { flag: 'wx' });
-      const runs = args.live ? await runEndpointComparison({ repoDir, model, registry, entries, plan, certificationRoot: output + '.certifications',
+      const runs = args.live ? await runEndpointComparison({ repoDir, model, registry, entries, plan, certificationRoot: output + '.certifications', evidenceRoot: output + '.private-evidence',
         async onRun(run) { appendFileSync(output + '.runs.jsonl', JSON.stringify(run) + '\n');
           const exports = await exportComparisonRuns([run], repoDir);
           appendFileSync(output + '.exports.jsonl', JSON.stringify(exports) + '\n'); },
       }) : [];
       const report = endpointComparisonReport(plan, runs);
       writeFileSync(output, JSON.stringify(report, null, 2) + '\n', { flag: 'wx' });
-      console.log(JSON.stringify({ output, live: args.live === true, requiredPairs: plan.requiredPairs, scheduledRuns: plan.runs.length,
+      console.log(JSON.stringify({ output, live: args.live === true, requiredPairs: plan.requiredPairs, scheduledRuns: plan.plannedRunCount,
         subjects: report.subjects.map(subject => ({ tag: subject.endpoint.tag, compatibility: subject.compatibility, verdict: subject.promotionVerdict })) }, null, 2));
     },
   }, argv);

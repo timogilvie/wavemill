@@ -613,9 +613,9 @@ wavemill_capture_tend_pane_output() {
 #
 # Incident-sync safety is deterministic and lives entirely in --incidents-mode;
 # the managed launcher never passes --file-linear, so the legacy --dry-run
-# guard is not needed here. (HOK-3243: auto-fix dry-run is now driven by its
-# own --autofix-dry-run flag — not emitted by default — so a generic --dry-run
-# cannot silently gate observer self-repair.)
+# guard is not needed here. (HOK-3243: dry-run behaviour is driven by the
+# explicit mode flags — not emitted by default — so a generic --dry-run
+# cannot silently gate observer work.)
 #
 # The incident sync mode is selected deterministically here via an explicit
 # --incidents-mode flag so that a bare --file-incidents can never silently

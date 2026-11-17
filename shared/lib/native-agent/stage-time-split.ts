@@ -259,6 +259,13 @@ function buildTurnIntervals(events: readonly TranscriptEvent[], windowEndFallbac
         pendingBackoffFromMs = undefined;
       }
       currentTurnStart = event;
+    } else if (event.type === 'session_ended') {
+      // Explicit windows may include final verification/accounting and later
+      // retry sessions. A closed request cannot keep charging provider wait.
+      if (currentTurnStart) out.push({ start: currentTurnStart.timestamp, end: event.timestamp, kind: 'provider' });
+      if (pendingBackoffFromMs !== undefined) out.push({ start: pendingBackoffFromMs, end: event.timestamp, kind: 'provider' });
+      currentTurnStart = undefined;
+      pendingBackoffFromMs = undefined;
     } else if (event.type === 'assistant_message') {
       if (!currentTurnStart) continue;
       const message = event as TranscriptAssistantMessage;

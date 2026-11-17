@@ -491,7 +491,7 @@
               "cacheReadTokens": 0,
               "costUsd": 4.93,
               "inputTokens": 100000,
-              "modelId": "qwen-3-coder",
+              "modelId": "qwen3-coder",
               "outputTokens": 20000,
               "priced": true,
               "pricingSource": "openrouter_api",
@@ -513,7 +513,7 @@
             }
           ],
           "pricedSessions": 2,
-          "reason": "unpriced_model",
+          "reason": "mixed_coverage",
           "sessions": 8,
           "source": "multi",
           "turns": 8,
@@ -535,7 +535,7 @@
             "inputTokens": 0,
             "outputTokens": 582800
           },
-          "qwen-3-coder": {
+          "qwen3-coder": {
             "cacheCreationTokens": 0,
             "cacheReadTokens": 0,
             "costUsd": 4.93,
@@ -758,12 +758,12 @@
             {
               "cacheCreationTokens": 0,
               "cacheReadTokens": 0,
-              "costUsd": 0.016,
+              "costUsd": 0.0095,
               "inputTokens": 1000,
               "modelId": "gpt-4o",
               "outputTokens": 100,
               "priced": true,
-              "pricingSource": "mixed",
+              "pricingSource": "openrouter_api",
               "provider": "native",
               "providerReportedCostUsd": 0.0095,
               "totalTokens": 1100
@@ -786,7 +786,7 @@
           "gpt-4o": {
             "cacheCreationTokens": 0,
             "cacheReadTokens": 0,
-            "costUsd": 0.016,
+            "costUsd": 0.0095,
             "inputTokens": 1000,
             "outputTokens": 100
           }
@@ -836,12 +836,12 @@
             {
               "cacheCreationTokens": 0,
               "cacheReadTokens": 0,
-              "costUsd": 0.016,
+              "costUsd": 0.0095,
               "inputTokens": 1000,
               "modelId": "gpt-4o",
               "outputTokens": 100,
               "priced": true,
-              "pricingSource": "mixed",
+              "pricingSource": "openrouter_api",
               "provider": "native",
               "providerReportedCostUsd": 0.0095,
               "totalTokens": 1100
@@ -864,7 +864,7 @@
           "gpt-4o": {
             "cacheCreationTokens": 0,
             "cacheReadTokens": 0,
-            "costUsd": 0.016,
+            "costUsd": 0.0095,
             "inputTokens": 1000,
             "outputTokens": 100
           }
@@ -911,12 +911,12 @@
             {
               "cacheCreationTokens": 0,
               "cacheReadTokens": 0,
-              "costUsd": 0.016,
+              "costUsd": 0.0095,
               "inputTokens": 1000,
               "modelId": "gpt-4o",
               "outputTokens": 100,
               "priced": true,
-              "pricingSource": "mixed",
+              "pricingSource": "openrouter_api",
               "provider": "native",
               "providerReportedCostUsd": 0.0095,
               "totalTokens": 1100
@@ -939,7 +939,7 @@
           "gpt-4o": {
             "cacheCreationTokens": 0,
             "cacheReadTokens": 0,
-            "costUsd": 0.016,
+            "costUsd": 0.0095,
             "inputTokens": 1000,
             "outputTokens": 100
           }
