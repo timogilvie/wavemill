@@ -16,6 +16,6 @@ Contributions use the SDK's optional `stage_executions[].provider_executions` an
 
 Canonical ingestion preserves reported charges before estimates. Mixed billed/unbilled observations retain a billed lower bound, billing coverage, trust and cost basis; endpoint estimates use the existing ingestion pricing primitives. Incomplete evidence cannot establish a full total. Charges remain `contributor_reported` evidence, not independently verified invoices. Historical records without provider fields retain their existing behavior.
 
-Rollout order: SDK contract, compatible pipeline ingestion, then Wavemill producer. `vendor/README.md` pins the owning SDK commit and built artifact so a clean install works before an npm release. Replace that artifact with the published SDK minor release when available. No deployment or npm publication is implied by these PRs.
+Rollout order: SDK contract, compatible pipeline ingestion, then Wavemill producer. The contract ships in the published `@hokusai/core` 0.9.0, which Wavemill pins exactly alongside `@hokusai/costs` 0.9.0; the pre-release vendored artifact has been removed.
 
 Tests include reconstructed generation evidence (explicitly labeled), failed/successful attempts, reused sessions, idempotent enrichment, billing-pending and billed-zero cases, request snapshots, terminal feedback, and one shared producer/redactor/SDK-builder wire replay consumed by pipeline tests. The native-arm golden journey covers failure recovery, settlement and canonical export with the existing shared fakes.

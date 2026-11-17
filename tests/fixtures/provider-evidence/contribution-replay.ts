@@ -13,7 +13,11 @@ export async function createProviderContributionReplay(repoDir: string) {
   const projection = buildHokusaiV4Projection(converted.submission, prepared.record, world.meteredCost, { repoDir, redactionSalt: 'provider-evidence-replay' });
   if (!projection) throw new Error('Replay has no stage executions');
   const row = buildTechnicalTaskRouterRowV4(projection);
-  // The SDK owns collection time; pin it only in this reconstructed replay.
-  for (const stage of row.stage_executions) stage.task_cost.collected_at = world.record.timestamp;
+  // The SDK owns collection time (and stamps it as the pricing time once a
+  // segment is priced); pin both only in this reconstructed replay.
+  for (const stage of row.stage_executions) {
+    stage.task_cost.collected_at = world.record.timestamp;
+    if (stage.task_cost.pricing_timestamp !== undefined) stage.task_cost.pricing_timestamp = world.record.timestamp;
+  }
   return row;
 }

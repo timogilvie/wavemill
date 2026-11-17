@@ -42,9 +42,29 @@ describe('projectReportToWorkflowCost (HOK-3328)', () => {
     assert.deepEqual(projected.byHarness, { 'claude-code': 7.5, native: 2 });
     assert.equal(projected.attribution?.source, 'multi');
     assert.equal(projected.sessionCount, 2);
-    assert.deepEqual(Object.keys(projected.models).sort(), ['claude-opus-4-7', 'qwen-3-coder']);
+    assert.deepEqual(Object.keys(projected.models).sort(), ['claude-opus-4-7', 'qwen3-coder']); // the SDK canonicalizes the qwen-3-coder alias (@hokusai/core 0.9.0)
     assert.equal(projected.models['claude-opus-4-7'].costUsd, 7.5);
     assert.equal(projected.attribution?.models.find((model) => model.provider === 'native')?.providerReportedCostUsd, 2);
+  });
+
+  // protects: a provider-reported charge double-counted with its own list-price estimate
+  it('takes each model cost from the SDK resolution, not actual + estimated', () => {
+    // qwen3-coder is table-priced, so this event carries a $2 charge and a $0.0004 estimate.
+    const projected = projectReportToWorkflowCost(report([NATIVE]));
+    assert.equal(projected.models['qwen3-coder'].costUsd, 2);
+    const attributed = projected.attribution?.models.find((model) => model.modelId === 'qwen3-coder');
+    assert.equal(attributed?.costUsd, 2);
+    assert.equal(attributed?.pricingSource, 'openrouter_api');
+    assert.equal(projected.totalCostUsd, 2);
+  });
+
+  // protects: one model under two harnesses counted once per harness
+  it('keeps a model shared by two harnesses summing to the total', () => {
+    const projected = projectReportToWorkflowCost(report([CLAUDE, { ...CLAUDE, harness: 'native', sessionId: 'native-2' }]));
+    assert.equal(projected.models['claude-opus-4-7'].costUsd, 15);
+    const costs = projected.attribution?.models.filter((model) => model.modelId === 'claude-opus-4-7').map((model) => model.costUsd);
+    assert.deepEqual(costs, [15, 0]);
+    assert.equal(projected.totalCostUsd, 15);
   });
 
   // protects: single-harness records changing their persisted attribution source
