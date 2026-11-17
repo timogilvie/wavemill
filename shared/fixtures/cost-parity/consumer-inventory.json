@@ -455,6 +455,7 @@
   "testOnlyConsumers": [
     "shared/lib/cost-ownership-guard.test.ts",
     "shared/lib/eval-orchestrator.test.ts",
+    "shared/lib/eval.test.js",
     "shared/lib/executed-model-resolver.test.ts",
     "shared/lib/intervention-detector.test.ts",
     "shared/lib/ready-remediation-disposition.test.ts",
