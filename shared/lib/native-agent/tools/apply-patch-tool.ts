@@ -175,13 +175,21 @@ function rejectedPatchResult(
   };
 }
 
+function formatDiagnostic(diagnostic: NativePatchValidationError): string {
+  if (diagnostic.keyword === 'additionalProperties' && diagnostic.params?.additionalProperty !== undefined) {
+    return `- ${diagnostic.path}: unknown key received: '${diagnostic.params.additionalProperty}'`;
+  }
+  if (diagnostic.keyword === 'required' && diagnostic.params?.missingProperty !== undefined) {
+    return `- ${diagnostic.path}: missing required key: '${diagnostic.params.missingProperty}'`;
+  }
+  return `- ${diagnostic.path}: ${diagnostic.message}`;
+}
+
 function formatInvalidPatchMessage(
   message: string,
   diagnostics: NativePatchValidationError[],
 ): string {
-  const diagnosticText = diagnostics
-    .map((diagnostic) => `- ${diagnostic.path}: ${diagnostic.message}`)
-    .join('\n');
+  const diagnosticText = diagnostics.map(formatDiagnostic).join('\n');
   return [
     message,
     '',
