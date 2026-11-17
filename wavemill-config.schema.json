@@ -1739,6 +1739,8 @@
                                 "type": "object",
                                 "required": ["provider", "model"],
                                 "properties": {
+                                    "qualificationContract": { "$ref": "#/definitions/endpointQualificationContract" },
+                                    "endpoint": { "$ref": "#/definitions/certificationEndpoint" },
                                     "provider": {
                                         "type": "string",
                                         "enum": ["openai", "openrouter"]
@@ -3663,6 +3665,103 @@
         }
     },
     "definitions": {
+        "endpointQualificationContract": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "version",
+                "oracleHash",
+                "toolContract",
+                "limits",
+                "maxAttempts"
+            ],
+            "properties": {
+                "version": {
+                    "const": "endpoint-functional/v1"
+                },
+                "oracleHash": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                },
+                "toolContract": {
+                    "const": "native-patch-and-command-tools/v1"
+                },
+                "limits": {
+                    "$ref": "#/definitions/endpointQualificationLimits"
+                },
+                "maxAttempts": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            }
+        },
+        "endpointQualificationLimits": {
+            "type": "object",
+            "required": [
+                "maxWallClockMs",
+                "maxTurns",
+                "maxToolCalls",
+                "maxTotalTokens"
+            ],
+            "additionalProperties": false,
+            "properties": {
+                "maxWallClockMs": {
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "maxTurns": {
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "maxToolCalls": {
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "maxTotalTokens": {
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "maxCostUsd": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                }
+            }
+        },
+        "certificationEndpoint": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "tag",
+                "providerName",
+                "quantization",
+                "deploymentRevision"
+            ],
+            "properties": {
+                "tag": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*(/[a-zA-Z0-9][a-zA-Z0-9._-]*)*$"
+                },
+                "providerName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                },
+                "quantization": {
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "deploymentRevision": {
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                }
+            }
+        },
         "nativeAgentAdvancedFamily": {
             "type": "object",
             "description": "Per-family opt-in for an Epic 10 advanced tool family. Every field is optional and defaults to off/empty.",

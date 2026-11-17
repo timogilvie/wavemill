@@ -1,3 +1,4 @@
+import { sameQualificationContract, qualificationContract, type QualificationContract } from './qualification-contract.ts';
 import type { PiRuntimeVersions } from '../pi-runtime-version.ts';
 import type { NativeProviderExecution, TechnicalTaskRouterContributionRowV4 } from '@hokusai/core';
 /**
@@ -116,6 +117,8 @@ export interface LiveCodingCanaryUsage {
  * transcripts, file contents, or provider credentials.
  */
 export interface LiveCodingCanaryEvidence {
+  formattingDifference?: boolean;
+  finalTest?: { status: string; exitCode: number | null };
   /** Failed mutation tool events, including rejected structured calls. Unknown in legacy evidence. */
   failedMutationToolCalls?: number;
   /** Count of successful structured mutation tool invocations (tool events, not prose). */
@@ -158,6 +161,9 @@ export interface CanaryAttemptEvidence {
 }
 
 export interface LiveCodingCanaryResult {
+  qualificationContract?: QualificationContract;
+  timingEvents?: Array<{ type: 'turn_started' | 'assistant_message' | 'tool_started' | 'tool_result' | 'session_ended'; timestamp: number; toolCallId?: string; toolName?: string; errorMessage?: string }>;
+  timing?: { fromMs: number; toMs: number };
   endpoint?: CertificationEndpoint;
   attemptEvidence?: CanaryAttemptEvidence[];
   scenarioId: string;
@@ -247,6 +253,7 @@ export function endpointObservationsMatch(endpoint: CertificationEndpoint, obser
 }
 
 export interface CertificationSubject {
+  qualificationContract?: QualificationContract;
   endpoint?: CertificationEndpoint;
   runtimeVersions?: PiRuntimeVersions;
   /** Stable registry key that owns this certification */
@@ -481,7 +488,8 @@ export function liveCodingCanaryMatchesSubject(
   expectedSubject: CertificationSubject,
   suiteVersion: string,
 ): boolean {
-  return certificationEndpointKey(canary.endpoint) === certificationEndpointKey(expectedSubject.endpoint)
+  return (!expectedSubject.qualificationContract || (sameQualificationContract(canary.qualificationContract, expectedSubject.qualificationContract) && sameQualificationContract(expectedSubject.qualificationContract, qualificationContract(canary.limits, expectedSubject.qualificationContract.maxAttempts)) && canary.evidence?.finalTest?.status === 'completed' && canary.evidence.finalTest.exitCode === 0))
+    && certificationEndpointKey(canary.endpoint) === certificationEndpointKey(expectedSubject.endpoint)
     && canary.phase === 'coding'
     && canary.suiteVersion === suiteVersion
     && canary.provider === expectedSubject.providerId

@@ -543,3 +543,16 @@ it('operator evidence survives disposable repository cleanup for read-only metad
   assert.equal(existsSync(join(evidenceRoot, attempt.attemptId, '.session-ownership.jsonl')), true);
   assert.equal(existsSync(join(evidenceRoot, attempt.attemptId, 'native-sessions', `${attempt.attemptId}.jsonl`)), true);
 });
+
+it('preserves canonical Pi echo attestation in endpoint feedback instead of falling back to requested-only evidence', async () => {
+  const result = await runLiveCodingCanary({ ...baseOptions(async config => {
+    config.onEvent!({ type: 'agent_start' } as never);
+    config.onEvent!({ type: 'message_end', message: { role: 'assistant', model: 'gpt-4o', api: 'openai-completions', provider: 'openrouter', responseId: 'echo-attestation',
+      content: [], timestamp: 0, stopReason: 'stop', usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 110, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } } as never);
+    return loopResult({ stopReason: 'turn_limit' });
+  }), provider: 'openrouter', exactPricing: { enabled: true, fetchGenerationCost: async () => ({ totalCostUsd: .01, providerName: 'Replay Host' }) } });
+  const stage = result.attemptEvidence![0].contribution!.stage_executions[0];
+  assert.equal(stage.executed_model, 'gpt-4o');
+  assert.equal(stage.model_evidence, 'provider_response');
+  assert.equal(stage.provider_executions![0].responseModel, 'gpt-4o');
+});

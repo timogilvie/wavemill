@@ -220,6 +220,9 @@
               "minLength": 1
             }
           }
+        },
+        "qualificationContract": {
+          "$ref": "#/$defs/QualificationContract"
         }
       }
     },
@@ -434,6 +437,61 @@
               }
             }
           }
+        },
+        "qualificationContract": {
+          "$ref": "#/$defs/QualificationContract"
+        },
+        "timing": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "fromMs",
+            "toMs"
+          ],
+          "properties": {
+            "fromMs": {
+              "type": "number",
+              "minimum": 0
+            },
+            "toMs": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "timingEvents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "type",
+              "timestamp"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "enum": [
+                  "turn_started",
+                  "assistant_message",
+                  "tool_started",
+                  "tool_result",
+                  "session_ended"
+                ]
+              },
+              "timestamp": {
+                "type": "number"
+              },
+              "toolCallId": {
+                "type": "string"
+              },
+              "toolName": {
+                "type": "string"
+              },
+              "errorMessage": {
+                "const": "provider request failed"
+              }
+            }
+          }
         }
       }
     },
@@ -517,7 +575,10 @@
       ],
       "additionalProperties": false,
       "properties": {
-        "failedMutationToolCalls": { "type": "integer", "minimum": 0 },
+        "failedMutationToolCalls": {
+          "type": "integer",
+          "minimum": 0
+        },
         "structuredMutationToolCalls": {
           "type": "integer",
           "minimum": 0
@@ -550,6 +611,28 @@
         "completionArtifactHash": {
           "type": "string",
           "minLength": 1
+        },
+        "formattingDifference": {
+          "type": "boolean"
+        },
+        "finalTest": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "exitCode"
+          ],
+          "properties": {
+            "status": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          }
         }
       }
     },
@@ -712,6 +795,36 @@
             "string",
             "null"
           ]
+        }
+      }
+    },
+    "QualificationContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "oracleHash",
+        "toolContract",
+        "limits",
+        "maxAttempts"
+      ],
+      "properties": {
+        "version": {
+          "const": "endpoint-functional/v1"
+        },
+        "oracleHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "toolContract": {
+          "const": "native-patch-and-command-tools/v1"
+        },
+        "limits": {
+          "$ref": "#/$defs/LiveCodingCanaryLimits"
+        },
+        "maxAttempts": {
+          "type": "integer",
+          "minimum": 1
         }
       }
     }

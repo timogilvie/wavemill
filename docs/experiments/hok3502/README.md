@@ -1,0 +1,35 @@
+# HOK-3502: prospective functional endpoint qualification
+
+## Preregistration (before paid requests)
+
+This study follows the immutable November 17 evidence in PR #1873. Its old literal verdicts, certificates and contributions are not reclassified. The captured StreamLake patch is replayed only in deterministic tests of the new functional contract.
+
+Model: `kimi-k2.7-code` (`moonshotai/kimi-k2.7-code`). Reference: exact `moonshotai` catalog tag. Candidate: exact `streamlake` tag. Current endpoint catalogs are captured before calls; fallback is disabled and observed generation hosts must corroborate requests. Observed display names do not attest quantization or deployment variants.
+
+Reference characterization has a **$3 cap** and three repetitions of each fixed workload (standard, workflow, cache-heavy), in that order per repetition. Every probe must be live, functionally correct and metered. The first non-pass stops characterization. There is no adaptive retry of a failed study. Only the existing two outer attempts for transient provider errors apply.
+
+The limits in `limits.json` are fixed before reference calls. Count limits come from the existing production coding budget in `shared/lib/native-agent/launch-coding.ts`: 200 turns and 1,200 tool calls. They replace the tiny compatibility probe's six turns/ten calls for this experiment only. The existing canary's stricter 240-second **model-time**, 60,000-token and $0.50 per-attempt caps remain. This choice uses the established coding count envelope, not the candidate's observed performance. Tool stagnation and production per-call command limits still apply. Model time pauses during harness tool execution. No production coding budget or model policy changes.
+
+If all nine reference runs pass, freeze the exact workload/oracle, NativePatch/command contract, limits and runtime identity in the comparison plan, with a hash of the reference characterization evidence. Candidate comparison has a separate **$20 cap**. The combined $23 reservation fits inside the user's existing $25 authorization after prior measured studies (less than $1). Admission uses the SDK's accounted spend plus the next full two-attempt reserve. Missing accounting stops requests.
+
+The common contract is identical for reference and candidate. Standard compatibility runs precede rotating paired workflow/cache-heavy repetitions. The reliability tolerance remains five percentage points at 95% confidence (73 complete pairs with zero losses, derived through the existing Wilson helper). Candidate p95 end-to-end latency must be no more than twice reference p95. Any non-passing reference stops the comparison. Functional corruption, malformed mutation calls, invalid completion, out-of-scope changes and identity contradictions disqualify; resource/availability outcomes reduce completion without automatically disqualifying. All outcomes and costs remain. No repeated probing to erase failures.
+
+The unchanged baseline test oracle runs again after the model stops. Earlier passing tests cannot certify later edits. Formatting is diagnostic under this prospective contract. Exact-byte NativePatch serialization and escaping tests remain strict. Tests/oracle changes are outside allowed scope.
+
+All attempts retain canonical redacted SDK contributions, actual/estimated coverage, token/cache facts and provider observations. Timestamp facts feed the existing native time-split derivation: the end-to-end window includes retries, final verification and accounting overhead. Unknown time remains unknown. Raw transcripts, ownership records and generation identifiers stay in private evidence outside the repository.
+
+No production routing is enabled. A small or failed study remains insufficient evidence; HOK-3497 stays gated. The command runs from this exact isolated checkout, without claiming that the running mill monitor has been rebuilt.
+
+## Results
+
+The reference-only phase completed all **nine live probes successfully** (three per workload). Observed runs used 2–6 turns and 2–8 tool calls; the declared production count envelope was not tuned from candidate outcomes. Its p95 end-to-end time was 53,809 ms. SDK-accounted spend was **$0.10125856**. Every observed generation had host/charge metadata in this phase. This is workload characterization, not comparative provider evidence; its three repeated workflow bundles are not candidate pairs.
+
+The new comparison then made **one reference compatibility probe**. The repository passed final functional verification, but one of its two generations lacked generation metadata after the existing lookup retries. The other generation attested Moonshot AI. The all-generation host rule therefore returned `inconclusive / identity_mismatch` (missing corroboration, not observed substitution). The preregistered reference-health rule stopped the study immediately. **StreamLake was not called; zero comparative pairs completed.** Neither endpoint qualifies. There is no new completion confidence interval or candidate p95 to report, and the existing 73-pair/95% bar and 2× latency bar were not reached.
+
+The stopped comparison's SDK-accounted subtotal was **$0.00098738**, with 50% generation charge/host coverage. It is not a complete invoice estimate for the missing generation. `combined-cost.json` reuses the existing SDK over all **ten attempts**: **$0.10224594** accounted total/actual subtotal, with partial coverage. Its alternative estimate is **$0.103476**; do not add that to actual charges. All ten canonical contributions were enqueued through normal consent. No provider/model routing, runtime monitor or old certificate was changed.
+
+The retained `.plan.json`, `.catalog.json`, `.runs.jsonl`, `.exports.jsonl` and final reports preserve every call and stopping outcome. Raw operator transcripts and ownership files remain private under `/private/tmp/hok3502-study`; they are excluded from this repository. No live rerun was used to erase the reference failure.
+
+Execution snapshots: reference characterization used `39528cf5`; comparison used `8f3e250a`. The functional fixture, oracle, declared limits, NativePatch/command menu and material qualification identity are the same in both. The intervening changes completed cohort gate parity, characterization evidence validation, schema generation and session-end timing facts. After the stopped study, the PR also carries HOK-3501's canonical Pi echo-attestation preservation and pricing-key propagation from main; historical contributions are not rewritten. Those retained study rows have requested-only model attribution where Pi omitted its echo field; the loop still verified endpoint model identity during execution. The missing host metadata that stopped the comparison is a separate limitation.
+
+The study establishes that the new functional workload can run under the declared controls, but supplies **no new evidence that StreamLake is cheaper and reliable enough**. HOK-3497 remains gated. Any further paid comparison should be a new, explicitly preregistered study, retaining this reference-availability failure as part of the evidence.

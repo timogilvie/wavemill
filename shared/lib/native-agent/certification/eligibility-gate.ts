@@ -10,6 +10,7 @@ import {
   type CertificationPhase,
   type LiveCodingCanaryIneligibilityReason,
   type LiveCodingCanaryStatus,
+  type LiveCodingCanaryFailureReason,
   type NativeCertificationArtifact,
 } from './schema.ts';
 
@@ -53,6 +54,7 @@ export interface NativeGateInput {
   now?: Date;
   certificationRoot?: string;
   endpoint?: import('./schema.ts').CertificationEndpoint;
+  qualificationContract?: import('./qualification-contract.ts').QualificationContract;
 }
 
 export interface NativeGateReady {
@@ -81,6 +83,7 @@ export interface NativeGateReject {
   subject?: unknown;
   /** Status of the live coding canary, when a canary-specific reason rejected the model. */
   liveCanaryStatus?: LiveCodingCanaryStatus;
+  liveCanaryFailureReason?: LiveCodingCanaryFailureReason;
   /** ISO 8601 timestamp of the live coding canary run, when one was found. */
   liveCanaryRanAt?: string;
   /** Pinned alias target (if any), for identity_mismatch diagnostics (HOK-3143). */
@@ -139,6 +142,7 @@ export function evaluateNativeProviderGate(input: NativeGateInput): NativeGateDe
     model: input.modelId,
     registry: input.registry,
     endpoint: input.endpoint,
+    qualificationContract: input.qualificationContract,
   });
   const artifactPath = buildGlobalCertificationPath(
     subject.storageIdentity.provider,
@@ -200,7 +204,7 @@ export function evaluateNativeProviderGate(input: NativeGateInput): NativeGateDe
         certifiedAt: eligibility.artifact.certifiedAt,
         artifactPath: eligibility.artifactPath ?? artifactPath,
         artifactScope: eligibility.storageScope,
-        ...(canary ? { liveCanaryStatus: canary.status, liveCanaryRanAt: canary.ranAt } : {}),
+        ...(canary ? { liveCanaryStatus: canary.status, liveCanaryRanAt: canary.ranAt, liveCanaryFailureReason: canary.reason } : {}),
       });
     }
   }

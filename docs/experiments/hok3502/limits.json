@@ -1,0 +1,7 @@
+{
+  "maxWallClockMs": 240000,
+  "maxTurns": 200,
+  "maxToolCalls": 1200,
+  "maxTotalTokens": 60000,
+  "maxCostUsd": 0.5
+}

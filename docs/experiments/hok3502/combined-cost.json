@@ -1,0 +1,171 @@
+{
+  "taskId": "hok3502",
+  "totalUsd": 0.10224594,
+  "actualUsd": 0.10224594,
+  "estimatedUsd": 0.103476,
+  "byModel": {
+    "kimi-k2.7-code": {
+      "totalUsd": 0.10224594,
+      "actualUsd": 0.10224594,
+      "estimatedUsd": 0.103476,
+      "usage": {
+        "inputTokens": 26233,
+        "outputTokens": 7685,
+        "cacheReadTokens": 251648,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": null
+      },
+      "eventCount": 10,
+      "turnCount": 10,
+      "costSource": "provider_reported",
+      "coverage": "partial"
+    }
+  },
+  "byHarness": {
+    "native": {
+      "totalUsd": 0.10224594,
+      "actualUsd": 0.10224594,
+      "estimatedUsd": 0.103476,
+      "usage": {
+        "inputTokens": 26233,
+        "outputTokens": 7685,
+        "cacheReadTokens": 251648,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": null
+      },
+      "eventCount": 10,
+      "turnCount": 10,
+      "costSource": "provider_reported",
+      "coverage": "partial"
+    }
+  },
+  "usage": {
+    "inputTokens": 26233,
+    "outputTokens": 7685,
+    "cacheReadTokens": 251648,
+    "cacheWriteTokens": 0,
+    "reasoningTokens": null
+  },
+  "eventCount": 10,
+  "turnCount": 10,
+  "source": {
+    "cost": "provider_reported",
+    "basis": "per_token_api",
+    "capture": [
+      "manual"
+    ],
+    "sessionFileCount": 0
+  },
+  "pricing": {
+    "source": "local_estimate",
+    "revision": null,
+    "effectiveDate": "2026-11-04",
+    "revisions": [],
+    "priceTables": [
+      "external"
+    ],
+    "builtInTableAsOf": "2026-11-04",
+    "overrideCount": 0,
+    "currency": "USD"
+  },
+  "coverage": {
+    "status": "partial",
+    "pricedEvents": 10,
+    "unpricedEvents": 0,
+    "unknownModels": []
+  },
+  "diagnostics": [
+    {
+      "code": "mixed_coverage",
+      "level": "warn",
+      "message": "coverage is partial: some events are missing cost or usage",
+      "count": 1
+    },
+    {
+      "code": "provider_reported_cost",
+      "level": "info",
+      "message": "at least one event carries a provider-reported charge",
+      "count": 1
+    }
+  ],
+  "summaries": [
+    {
+      "schema_version": "task_cost_summary/v1",
+      "task_id": "hok3502",
+      "session_ids": [
+        "redacted-10568bd918c26e20",
+        "redacted-145ad8e86f33050b",
+        "redacted-3795fbc80fd6017e",
+        "redacted-6a9bab6130bc9979",
+        "redacted-9ca3edd9d4c037ad",
+        "redacted-c62980f55ae5edf7",
+        "redacted-d7c7439ed89da285",
+        "redacted-f36c28370e238873",
+        "redacted-f41900cbc0602859",
+        "redacted-f4d30ecc17f9cd10"
+      ],
+      "harness": "native",
+      "provider_contract_version": "native/1",
+      "models": [
+        "kimi-k2.7-code"
+      ],
+      "model_segments": [
+        {
+          "model": "kimi-k2.7-code",
+          "turn_count": 10,
+          "usage": {
+            "input_tokens": 26233,
+            "output_tokens": 7685,
+            "cache_read_tokens": 251648,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": null
+          },
+          "actual_cost_usd": 0.10224594,
+          "estimated_cost_usd": 0.103476,
+          "cost_source": "provider_reported"
+        }
+      ],
+      "turn_count": 10,
+      "turns_truncated": false,
+      "usage": {
+        "input_tokens": 26233,
+        "output_tokens": 7685,
+        "cache_read_tokens": 251648,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": null
+      },
+      "actual_cost_usd": 0.10224594,
+      "estimated_cost_usd": 0.103476,
+      "total_cost_usd": 0.10224594,
+      "cost_source": "provider_reported",
+      "cost_basis": "per_token_api",
+      "coverage": "partial",
+      "field_availability": {
+        "usage": "partial",
+        "actual_cost": "available",
+        "estimated_cost": "available",
+        "pricing": "available"
+      },
+      "pricing_source": "local_estimate",
+      "join_confidence": "unattributed",
+      "collected_at": "2026-11-17T14:20:24.750Z",
+      "event_count": 10,
+      "event_ids": [
+        "native.0.0",
+        "native.1.0",
+        "native.2.0",
+        "native.3.0",
+        "native.4.0",
+        "native.5.0",
+        "native.6.0",
+        "native.7.0",
+        "native.8.0",
+        "native.9.0"
+      ],
+      "diagnostics": [
+        "mixed_coverage",
+        "provider_reported_cost"
+      ]
+    }
+  ]
+}

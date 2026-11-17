@@ -58,6 +58,26 @@ export const PROVIDER_IDENTITY_GUARD: GuardSpec = {
         return /options\.subject\.endpoint\s*\?\s*endpointRouting\(/.test(source) ? [] : [{ line: 1, detail: 'endpoint request bypasses the shared restriction' }];
       },
     },
+    {
+      name: 'endpoint-qualification-contract',
+      description: 'Stopping, stored evidence and promotion share the preregistered outcome interpretation',
+      paths: ['shared/lib/native-agent/certification/endpoint-comparison.ts'],
+      find(source) {
+        const findings = [];
+        if (!source.includes('qualificationOutcome(') || !source.includes('qualificationHistory(') || !source.includes('referenceCharacterizationHealthy(')) findings.push({ line: 1, detail: 'Qualification consumers bypass the shared contract' });
+        if (/result\.status\s*===\s*['"]fail['"]/.test(source)) findings.push({ line: 1, detail: 'Private any-fail qualification policy; use qualificationOutcome/qualificationHistory' });
+        return findings;
+      },
+    },
+    {
+      name: 'endpoint-final-oracle',
+      description: 'A historical model test pass or payload substring cannot stand in for final verification',
+      paths: ['shared/lib/native-agent/certification/live-coding-canary.ts'],
+      find(source) {
+        return /testExecutionPassed|includes\(['"]\\?["']pending/.test(source) || !source.includes('await verifyCanaryRepository(')
+          ? [{ line: 1, detail: 'Final qualification bypasses the trusted oracle' }] : [];
+      },
+    },
   ],
   remediation: [
     'A stage result\'s executedModel is the provider-reported identity with',

@@ -1,4 +1,5 @@
 #!/usr/bin/env -S npx tsx
+import { qualificationContract, DEFAULT_CANARY_LIMITS } from '../shared/lib/native-agent/certification/qualification-contract.ts';
 import { endpointFromCatalog, endpointRates } from '../shared/lib/native-agent/certification/endpoint-comparison.ts';
 import { endpointIdentity } from '../shared/lib/native-agent/certification/identity.ts';
 import type { CertificationEndpoint } from '../shared/lib/native-agent/certification/schema.ts';
@@ -71,6 +72,7 @@ export interface CertifyOptions {
   phase: CertificationPhase;
   repoDir: string;
   dryRun?: boolean;
+  qualificationContract?: import('../shared/lib/native-agent/certification/qualification-contract.ts').QualificationContract;
   endpoint?: CertificationEndpoint;
   endpointPricing?: ModelPricing;
   certificationRoot?: string;
@@ -225,6 +227,7 @@ export async function certifyNativeAgent(opts: CertifyOptions): Promise<CertifyR
     model: registryModelId,
     registry: baseRegistry,
     endpoint: opts.endpoint,
+    qualificationContract: opts.qualificationContract ?? (opts.endpoint && opts.canaryLimits ? qualificationContract({ ...DEFAULT_CANARY_LIMITS, ...opts.canaryLimits }) : undefined),
   });
 
   let endpointPricing = opts.endpointPricing;
