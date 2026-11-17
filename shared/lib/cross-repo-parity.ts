@@ -39,7 +39,7 @@ export interface ParityFixture {
 
 const CERTIFIED_MODELS = [
   { provider: 'openrouter', model: 'qwen-3-coder', phase: 'patch' as const },
-  { provider: 'openrouter', model: 'glm-5.2', phase: 'workflow' as const },
+  { provider: 'openrouter', model: 'glm-5.3', phase: 'workflow' as const },
   { provider: 'openrouter', model: 'kimi-k2.7-code', phase: 'workflow' as const },
 ];
 
@@ -106,7 +106,7 @@ function writePatchCodingCertification(repoDir: string): void {
     certifiedAt: CERTIFIED_AT,
     providers: [
       { provider: 'openrouter', model: 'qwen/qwen3-coder', passed: true },
-      { provider: 'openrouter', model: 'z-ai/glm-5.2', passed: true },
+      { provider: 'openrouter', model: 'z-ai/glm-5.3', passed: true },
       { provider: 'openrouter', model: 'moonshotai/kimi-k2.7-code', passed: true },
     ],
   }, null, 2), 'utf-8');
@@ -124,10 +124,10 @@ function legacyConfigFor(name: ConsumerRepoName): Record<string, unknown> {
       ...base,
       router: {
         defaultAgent: 'claude',
-        models: ['claude-sonnet-5', 'glm-5.2'],
-        agentMap: { 'glm-5.2': 'claude' },
+        models: ['claude-sonnet-5', 'glm-5.3'],
+        agentMap: { 'glm-5.3': 'claude' },
       },
-      providers: { openrouter: { enabled: true, apiKeyEnv: 'TEST_PARITY_OPENROUTER_KEY', models: ['glm-5.2'] } },
+      providers: { openrouter: { enabled: true, apiKeyEnv: 'TEST_PARITY_OPENROUTER_KEY', models: ['glm-5.3'] } },
     };
   }
   if (name === 'gtm-backend') {

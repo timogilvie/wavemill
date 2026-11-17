@@ -45,7 +45,7 @@ describe('certify-launch-priority-model', () => {
 
     try {
       const report = await runCertifyLaunchPriorityModelCommand({
-        model: 'glm-5.2',
+        model: 'glm-5.3',
         target: '3',
         live: false,
         persist: false,
@@ -59,7 +59,7 @@ describe('certify-launch-priority-model', () => {
 
       assert.equal(report.persist, false);
       assert.equal(report.eval.executedRuns, 0);
-      assert.equal(report.model.wavemillAlias, 'glm-5.2');
+      assert.equal(report.model.wavemillAlias, 'glm-5.3');
       assert.equal(existsSync(reportPath), true);
       assert.equal(existsSync(auditPath), true);
       const written = JSON.parse(readFileSync(reportPath, 'utf-8'));

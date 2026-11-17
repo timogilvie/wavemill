@@ -151,19 +151,19 @@ describe('checkNativeAgentLaunch', () => {
 
   it('accepts equivalent native OpenRouter aliases and provider ids before launch', () => {
     const repoDir = makeRepo(baseConfig());
-    writeOpenRouterCert(repoDir, 'z-ai', 'glm-5.2');
+    writeOpenRouterCert(repoDir, 'z-ai', 'glm-5.3');
     process.env.TEST_OPENROUTER_KEY = 'sk-test';
 
     const result = checkNativeAgentLaunch({
       repoDir,
       phase: 'planning',
       agent: 'native-openrouter',
-      model: 'glm-5.2',
+      model: 'glm-5.3',
     });
 
     assert.equal(result.ok, true);
-    assert.equal(result.ok ? result.command?.wavemillAlias : undefined, 'glm-5.2');
-    assert.equal(result.ok ? result.command?.openrouterId : undefined, 'z-ai/glm-5.2');
+    assert.equal(result.ok ? result.command?.wavemillAlias : undefined, 'glm-5.3');
+    assert.equal(result.ok ? result.command?.openrouterId : undefined, 'z-ai/glm-5.3');
     assert.equal(result.ok ? result.command?.apiBaseUrl : undefined, 'https://openrouter.ai/api/v1');
   });
 
@@ -241,7 +241,7 @@ describe('checkNativeAgentLaunch', () => {
       repoDir,
       phase: 'deploy',
       agent: 'native-openrouter',
-      model: 'glm-5.2',
+      model: 'glm-5.3',
     });
 
     assert.equal(result.ok, false);
@@ -251,13 +251,13 @@ describe('checkNativeAgentLaunch', () => {
 
   it('rejects missing native provider env before launch', () => {
     const repoDir = makeRepo(baseConfig());
-    writeOpenRouterCert(repoDir, 'z-ai', 'glm-5.2');
+    writeOpenRouterCert(repoDir, 'z-ai', 'glm-5.3');
 
     const result = checkNativeAgentLaunch({
       repoDir,
       phase: 'planning',
       agent: 'native-openrouter',
-      model: 'glm-5.2',
+      model: 'glm-5.3',
     });
 
     assert.equal(result.ok, false);
@@ -272,7 +272,7 @@ describe('checkNativeAgentLaunch', () => {
       repoDir,
       phase: 'planning',
       agent: '',
-      model: 'glm-5.2',
+      model: 'glm-5.3',
     });
     assert.equal(emptyAgent.ok, false);
     assert.equal(emptyAgent.ok ? undefined : emptyAgent.code, 'unsupported-native-agent');
@@ -296,7 +296,7 @@ describe('checkNativeAgentLaunch', () => {
       '--phase',
       'deploy',
       '--model',
-      'glm-5.2',
+      'glm-5.3',
     ]);
     assert.equal(unsupportedStage.ok, false);
     assert.equal(unsupportedStage.code, 'unsupported-native-stage');

@@ -82,17 +82,17 @@ test('challenge model pool ignores explicit repo-local challenge.models', () => 
     { models: ['claude-sonnet-4-5-20250929'] },
   );
   assert.ok(pool.includes('qwen-3-coder'));
-  assert.ok(pool.includes('glm-5.2'));
+  assert.ok(pool.includes('glm-5.3'));
   assert.ok(pool.includes('kimi-k2.7-code'));
 });
 
 test('challenge model pool keeps global promoted OpenRouter aliases', () => {
   const pool = getChallengeModelPool(
     'implementation',
-    { models: ['glm-5.2', 'kimi-k2.7-code', 'glm-5.2'] },
+    { models: ['glm-5.3', 'kimi-k2.7-code', 'glm-5.3'] },
     { models: ['claude-sonnet-4-5-20250929'] },
   );
-  assert.ok(pool.includes('glm-5.2'));
+  assert.ok(pool.includes('glm-5.3'));
   assert.ok(pool.includes('kimi-k2.7-code'));
 });
 
@@ -157,9 +157,9 @@ test('review-stage pool includes review-eligible models absent from coding proje
 
 test('implementation-stage pool excludes coding-ineligible models', () => {
   const codingPool = getChallengeModelPool('implementation', {}, {});
-  // gpt-4.1 / mistral-medium-3 are coding-only in the registry; a plan-stage
+  // gpt-4.1 / gemini-3.8-flash are coding/review-only in the registry; a plan-stage
   // seed would silently drop them, but implementation must retain them.
-  assert.ok(codingPool.includes('mistral-medium-3'));
+  assert.ok(codingPool.includes('gemini-3.8-flash'));
   // devstral-medium is retired (blocked lifecycle) after its OpenRouter
   // endpoint disappeared, so it must stay out of the selectable pool.
   assert.ok(!codingPool.includes('devstral-medium'));
@@ -276,6 +276,8 @@ test('repo-local all-DeepSeek pool does not remove global runnable models', () =
     pairId: 'HOK-982',
     issueId: 'HOK-982',
     slug: 'all-deepseek',
+    primaryModel: 'claude-sonnet-5',
+    suggestedChallengerModel: 'gpt-5.6-terra',
   });
   assert.ok(pair);
 });
@@ -1044,13 +1046,13 @@ test('extractChallengeRecommendation accepts top-level recommendations and prefe
       challengeRecommendation: {
         shouldChallenge: true,
         reason: 'low-data-stage',
-        challengerModel: 'glm-5.2',
+        challengerModel: 'glm-5.3',
         stage: 'implementation',
         priority: 200,
       },
     },
   });
-  assert.equal(topLevelOnly?.challengerModel, 'glm-5.2');
+  assert.equal(topLevelOnly?.challengerModel, 'glm-5.3');
   assert.equal(topLevelOnly?.stage, 'implementation');
 });
 
@@ -2087,7 +2089,7 @@ function openRouterNativeModelEntry(phase: string = 'workflow', suiteVersion: st
   };
 }
 
-const HOK_2569_OPENROUTER_ALIASES = ['qwen-3-coder', 'glm-5.2', 'kimi-k2.7-code'] as const;
+const HOK_2569_OPENROUTER_ALIASES = ['qwen-3-coder', 'glm-5.3', 'kimi-k2.7-code'] as const;
 
 function makeHok2569Repo(
   alias: typeof HOK_2569_OPENROUTER_ALIASES[number],
@@ -2778,16 +2780,16 @@ test('phase semantics match router: native implementation is fail-closed and pla
 });
 
 test('plan-stage challenge rejects role-ineligible forced native challenger before route expansion', () => {
-  // HOK-2947 retired qwen-2.5-coder-32b; mistral-medium-3 is the remaining
-  // coding-only launch-priority row that exercises the same rejection path.
+  // HOK-2947 retired qwen-2.5-coder-32b; gemini-3.8-flash is the remaining
+  // coding/review-only launch-priority row that exercises the same rejection path.
   const { repoDir, cleanup } = makeNativeTestRepo({
-    'mistral-medium-3': openRouterNativeModelEntry('workflow'),
+    'gemini-3.8-flash': openRouterNativeModelEntry('workflow'),
   });
   try {
-    writeCertArtifact(repoDir, 'mistralai', 'mistral-medium-3-5', 'v1', { phase: 'workflow' });
+    writeCertArtifact(repoDir, 'google', 'gemini-3.8-flash', 'v1', { phase: 'workflow' });
 
     const result = pickChallengeWorkflowsWithReason(
-      ['claude-opus-4-6', 'claude-sonnet-4-5-20250929', 'mistral-medium-3'],
+      ['claude-opus-4-6', 'claude-sonnet-4-5-20250929', 'gemini-3.8-flash'],
       {
         pairId: 'NC-010-R',
         issueId: 'NC-010-R',
@@ -2795,7 +2797,7 @@ test('plan-stage challenge rejects role-ineligible forced native challenger befo
         prompt: 'plan the implementation workflow',
         challengeStage: 'plan',
         primaryModel: 'claude-opus-4-6',
-        suggestedChallengerModel: 'mistral-medium-3',
+        suggestedChallengerModel: 'gemini-3.8-flash',
         repoDir,
         now: TEST_NOW,
         randomFn: () => 0,
@@ -2818,16 +2820,16 @@ test('plan-stage challenge rejects role-ineligible forced native challenger befo
 
     assert.ok(result.pair, 'eligible non-native fallback should keep plan challenge viable');
     assert.equal(result.pair!.challengeStage, 'plan');
-    assert.notEqual(result.pair!.challenger.planner, 'mistral-medium-3');
+    assert.notEqual(result.pair!.challenger.planner, 'gemini-3.8-flash');
     assert.equal(result.pair!.challenger.planner, 'claude-sonnet-4-5-20250929');
     const rejection = (result.nativeCertificationRejections || []).find(
-      (entry) => entry.modelId === 'mistral-medium-3' && entry.role === 'planner',
+      (entry) => entry.modelId === 'gemini-3.8-flash' && entry.role === 'planner',
     );
     assert.ok(rejection, 'role-ineligible native planner challenger must be reported');
     assert.equal(rejection!.reason, 'role-ineligible');
     assert.equal(rejection!.requestedLaunchPhase, 'planning');
     assert.equal(rejection!.nativeProvider, 'openrouter');
-    assert.deepEqual(rejection!.eligibleRoles, ['coding']);
+    assert.deepEqual(rejection!.eligibleRoles, ['coding', 'review']);
   } finally {
     cleanup();
   }
@@ -2836,7 +2838,7 @@ test('plan-stage challenge rejects role-ineligible forced native challenger befo
 test('workflow-certified OpenRouter aliases remain challenge-eligible for review-stage variation', () => {
   const { repoDir, cleanup } = makeNativeTestRepo(
     {
-      'glm-5.2': openRouterNativeModelEntry('workflow'),
+      'glm-5.3': openRouterNativeModelEntry('workflow'),
     },
     {
       config: {
@@ -2853,10 +2855,10 @@ test('workflow-certified OpenRouter aliases remain challenge-eligible for review
     },
   );
   try {
-    writeCertArtifact(repoDir, 'openrouter', 'glm-5.2', DEFAULT_CERTIFICATION_SUITE_VERSION, { phase: 'workflow' });
+    writeCertArtifact(repoDir, 'openrouter', 'glm-5.3', DEFAULT_CERTIFICATION_SUITE_VERSION, { phase: 'workflow' });
 
     const result = pickChallengeWorkflowsWithReason(
-      ['claude-opus-4-6', 'glm-5.2'],
+      ['claude-opus-4-6', 'glm-5.3'],
       {
         pairId: 'NC-010',
         issueId: 'NC-010',
@@ -2885,10 +2887,10 @@ test('workflow-certified OpenRouter aliases remain challenge-eligible for review
     );
 
     assert.ok(result.pair, 'pair should be selected');
-    assert.equal(result.pair!.challenger.reviewer, 'glm-5.2');
+    assert.equal(result.pair!.challenger.reviewer, 'glm-5.3');
     assert.equal(result.pair!.challenger.reviewerAgent, 'native-openrouter');
     const reviewerRejection = (result.nativeCertificationRejections || []).find(
-      (entry) => entry.modelId === 'glm-5.2' && entry.role === 'reviewer',
+      (entry) => entry.modelId === 'glm-5.3' && entry.role === 'reviewer',
     );
     assert.equal(reviewerRejection, undefined);
   } finally {
@@ -3039,13 +3041,13 @@ test('a runtime-only side is backfilled rather than persisted half-formed', () =
     challenger: {
       key: 'HOK-777_c',
       role: 'challenger',
-      planner: { model: 'glm-5.2', agent: 'native-openrouter' },
+      planner: { model: 'glm-5.3', agent: 'native-openrouter' },
       coder: { model: 'gpt-5.5', agent: 'codex' },
       reviewer: { model: '', agent: '' },
     },
   });
 
-  assert.equal(intent.challenger!.expectedStageModel, 'glm-5.2');
+  assert.equal(intent.challenger!.expectedStageModel, 'glm-5.3');
   assert.equal(intent.challenger!.expectedStageAgent, 'native-openrouter');
   assert.equal(intent.challenger!.side, 'challenger');
   assert.equal(intent.primary!.expectedStageModel, 'claude-fable-5');

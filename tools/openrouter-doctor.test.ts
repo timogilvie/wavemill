@@ -43,9 +43,9 @@ function writeConfig(repoDir: string): void {
 }
 
 function writeCert(repoDir: string): void {
-  const path = buildGlobalCertificationPath('openrouter', 'z-ai/glm-5.2', DEFAULT_CERTIFICATION_SUITE_VERSION);
+  const path = buildGlobalCertificationPath('openrouter', 'z-ai/glm-5.3', DEFAULT_CERTIFICATION_SUITE_VERSION);
   mkdirSync(dirname(path), { recursive: true });
-  const identity = resolveCertificationStorageIdentity('openrouter', 'z-ai/glm-5.2');
+  const identity = resolveCertificationStorageIdentity('openrouter', 'z-ai/glm-5.3');
   writeFileSync(path, JSON.stringify({
     schemaVersion: CERTIFICATION_SCHEMA_VERSION,
     provider: identity.provider,
@@ -93,7 +93,7 @@ describe('openrouter-doctor tool', () => {
       writeCert(repoDir);
       const result = runTool(['--repo-dir', repoDir], repoDir, { TEST_OPENROUTER_KEY: 'sk-test' });
       assert.ok(result.status === 0 || result.status === 1, result.stderr || result.stdout);
-      assert.match(result.stdout, /alias=glm-5\.2 raw=z-ai\/glm-5\.2/);
+      assert.match(result.stdout, /alias=glm-5\.3 raw=z-ai\/glm-5\.3/);
     } finally {
       cleanup(repoDir);
     }

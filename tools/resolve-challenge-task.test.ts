@@ -155,7 +155,7 @@ function makeRepo(coderHistory: string[], opts: {
   certificationPhase?: string;
 } = {}): string {
   const repoDir = mkdtempSync(join(tmpdir(), 'resolve-challenge-task-'));
-  const aliases = opts.aliases ?? ['qwen-3-coder', 'glm-5.2'];
+  const aliases = opts.aliases ?? ['qwen-3-coder', 'glm-5.3'];
   const primaryModels = opts.primaryModels ?? [];
   const suiteVersion = opts.suiteVersion ?? 'v1';
   const certificationPhase = opts.certificationPhase ?? 'workflow';
@@ -249,7 +249,7 @@ describe('resolve-challenge-task CLI', () => {
   });
 
   it('claims reservations so sequential selectors choose distinct zero-record challengers', () => {
-    const aliases = ['qwen-3-coder', 'glm-5.2'];
+    const aliases = ['qwen-3-coder', 'glm-5.3'];
     const repoDir = makeRepo([], {
       aliases,
       patchCodingEnabled: true,
@@ -351,7 +351,7 @@ describe('resolve-challenge-task CLI', () => {
 
   it('honors challenge.selectionHealth.enabled=false without writing health state', () => {
     const repoDir = makeRepo([], {
-      aliases: ['qwen-3-coder', 'glm-5.2'],
+      aliases: ['qwen-3-coder', 'glm-5.3'],
       patchCodingEnabled: true,
       suiteVersion: DEFAULT_CERTIFICATION_SUITE_VERSION,
       certificationPhase: 'patch',
@@ -380,7 +380,7 @@ describe('resolve-challenge-task CLI', () => {
   });
 
   it('falls back to global challenge candidates when repo-local native challengers are not launchable', () => {
-    const repoDir = makeRepo(['glm-5.2']);
+    const repoDir = makeRepo(['glm-5.3']);
     try {
       const result = runResolveChallengeTask(repoDir, [
         '--issue', 'HOK-2500-A',
@@ -396,17 +396,17 @@ describe('resolve-challenge-task CLI', () => {
       const entries = result.entries as Array<Record<string, unknown>>;
       const challenger = entries.find((entry) => entry.role === 'challenger');
       assert.ok(challenger);
-      assert.ok(!['qwen-3-coder', 'glm-5.2'].includes(challenger.model as string));
+      assert.ok(!['qwen-3-coder', 'glm-5.3'].includes(challenger.model as string));
       const rejections = result.nativeCertificationRejections as Array<Record<string, unknown>>;
       assert.ok(rejections.some((entry) => entry.modelId === 'qwen-3-coder' && entry.reason === 'missing-artifact'));
-      assert.ok(rejections.some((entry) => entry.modelId === 'glm-5.2' && entry.reason === 'missing-artifact'));
+      assert.ok(rejections.some((entry) => entry.modelId === 'glm-5.3' && entry.reason === 'missing-artifact'));
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
   });
 
   it('returns challenge mode for HOK-2569 v3 native patch OpenRouter challengers', () => {
-    const aliases = ['qwen-3-coder', 'glm-5.2', 'kimi-k2.7-code'];
+    const aliases = ['qwen-3-coder', 'glm-5.3', 'kimi-k2.7-code'];
     const repoDir = makeRepo([], {
       aliases,
       patchCodingEnabled: true,
@@ -477,7 +477,7 @@ describe('resolve-challenge-task CLI', () => {
   });
 
   it('keeps recommendation-driven implementation native challengers excluded before launch', () => {
-    const repoDir = makeRepo(['qwen-3-coder', 'qwen-3-coder', 'glm-5.2', 'glm-5.2', 'glm-5.2']);
+    const repoDir = makeRepo(['qwen-3-coder', 'qwen-3-coder', 'glm-5.3', 'glm-5.3', 'glm-5.3']);
     const featureDir = join(repoDir, 'features', 'fallforward');
     mkdirSync(featureDir, { recursive: true });
     writeFileSync(join(featureDir, '.post-expansion-route.json'), JSON.stringify({
@@ -488,7 +488,7 @@ describe('resolve-challenge-task CLI', () => {
       challengeRecommendation: {
         shouldChallenge: true,
         reason: 'new-model',
-        challengerModel: 'glm-5.2',
+        challengerModel: 'glm-5.3',
         priority: 200,
       },
     }), 'utf-8');
@@ -510,9 +510,9 @@ describe('resolve-challenge-task CLI', () => {
       const entries = result.entries as Array<Record<string, unknown>>;
       const challenger = entries.find((entry) => entry.role === 'challenger');
       assert.ok(challenger);
-      assert.notEqual(challenger!.model, 'glm-5.2');
+      assert.notEqual(challenger!.model, 'glm-5.3');
       const rejections = result.nativeCertificationRejections as Array<Record<string, unknown>>;
-      assert.ok(rejections.some((entry) => entry.modelId === 'glm-5.2' && entry.reason === 'missing-artifact'));
+      assert.ok(rejections.some((entry) => entry.modelId === 'glm-5.3' && entry.reason === 'missing-artifact'));
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
@@ -520,7 +520,7 @@ describe('resolve-challenge-task CLI', () => {
 
   it('finalizes expanded top-level implementation recommendations into native coder intent', () => {
     const repoDir = makeRepo([], {
-      aliases: ['glm-5.2'],
+      aliases: ['glm-5.3'],
       primaryModels: ['gpt-5.6-terra'],
       patchCodingEnabled: true,
       suiteVersion: DEFAULT_CERTIFICATION_SUITE_VERSION,
@@ -538,7 +538,7 @@ describe('resolve-challenge-task CLI', () => {
       challengeRecommendation: {
         shouldChallenge: true,
         reason: 'low-data-stage',
-        challengerModel: 'glm-5.2',
+        challengerModel: 'glm-5.3',
         stage: 'implementation',
         priority: 200,
       },
@@ -566,14 +566,14 @@ describe('resolve-challenge-task CLI', () => {
       const challenger = entries.find((entry) => entry.role === 'challenger');
       assert.equal(primary?.model, 'gpt-5.6-terra');
       assert.equal(primary?.agent, 'codex');
-      assert.equal(challenger?.model, 'glm-5.2');
+      assert.equal(challenger?.model, 'glm-5.3');
       assert.equal(challenger?.agent, 'native-openrouter');
 
       const intent = result.challengeExecutionIntent as Record<string, unknown>;
       assert.equal(intent.selectedStage, 'implementation');
       assert.equal(intent.decisionSource, 'expanded');
       assert.equal(intent.selectionPath, 'recommendation-driven');
-      assert.equal((intent.challenger as Record<string, unknown> & { coder: Record<string, unknown> }).coder.model, 'glm-5.2');
+      assert.equal((intent.challenger as Record<string, unknown> & { coder: Record<string, unknown> }).coder.model, 'glm-5.3');
       assert.equal((intent.challenger as Record<string, unknown> & { coder: Record<string, unknown> }).coder.agent, 'native-openrouter');
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
@@ -868,7 +868,7 @@ describe('resolve-challenge-task CLI', () => {
 
   it('rotates away from a failed zero-coverage challenger and reports attempt evidence (HOK-3066)', async () => {
     const repoDir = makeRepo([], {
-      aliases: ['qwen-3-coder', 'glm-5.2'],
+      aliases: ['qwen-3-coder', 'glm-5.3'],
       patchCodingEnabled: true,
       suiteVersion: DEFAULT_CERTIFICATION_SUITE_VERSION,
       certificationPhase: 'patch',
@@ -896,7 +896,7 @@ describe('resolve-challenge-task CLI', () => {
       assert.equal(result.mode, 'challenge');
       const challenger = (result.entries as Array<Record<string, unknown>>)
         .find((entry) => entry.role === 'challenger')?.model;
-      assert.equal(challenger, 'glm-5.2');
+      assert.equal(challenger, 'glm-5.3');
       assert.equal(result.attemptCount, 0);
       assert.equal(result.cooldownActive, false);
       const attemptEvidence = (result.selectionHealth as {
@@ -916,7 +916,7 @@ describe('resolve-challenge-task CLI', () => {
 
   it('attemptRanking.enabled=false restores legacy selection while preserving recorded attempts', async () => {
     const repoDir = makeRepo([], {
-      aliases: ['qwen-3-coder', 'glm-5.2'],
+      aliases: ['qwen-3-coder', 'glm-5.3'],
       patchCodingEnabled: true,
       suiteVersion: DEFAULT_CERTIFICATION_SUITE_VERSION,
       certificationPhase: 'patch',

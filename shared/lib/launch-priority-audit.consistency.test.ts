@@ -93,8 +93,8 @@ function auditReasonForRole(
   const audit = auditLaunchPriorityCoverage({
     repoDir,
     catalog: [{
-      wavemillAlias: 'glm-5.2',
-      openrouterId: 'z-ai/glm-5.2',
+      wavemillAlias: 'glm-5.3',
+      openrouterId: 'z-ai/glm-5.3',
       family: 'glm',
       status: 'active',
       priorityTier: 1,
@@ -116,7 +116,7 @@ function doctorGateReasonForRole(repoDir: string, role: LaunchPriorityRole, apiK
   const report = withEnv({ TEST_OPENROUTER_KEY: apiKey }, () =>
     diagnoseOpenRouter({ repoDir, stage: ROLE_TO_DOCTOR_STAGE[role] })
   );
-  const cell = report.models.find((model) => model.id === 'glm-5.2')?.cells[0];
+  const cell = report.models.find((model) => model.id === 'glm-5.3')?.cells[0];
   assert.ok(cell);
   const certificationReason = [
     cell.primaryReason,
@@ -146,11 +146,11 @@ describe('launch-priority native eligibility consistency', () => {
     const registry = getEffectiveRegistry(repoDir);
 
     for (const role of ['planning', 'coding', 'review'] as const) {
-      const router = filterNativeModels(['glm-5.2'], ROLE_TO_ROUTER_ROLE[role], registry, repoDir);
+      const router = filterNativeModels(['glm-5.3'], ROLE_TO_ROUTER_ROLE[role], registry, repoDir);
       assert.equal(router.eligible.length, 0);
       assert.equal(router.rejected[0]?.reason, 'missing-artifact');
 
-      const projection = explainEffectiveModelAvailability('glm-5.2', ROLE_TO_EFFECTIVE_STAGE[role], {
+      const projection = explainEffectiveModelAvailability('glm-5.3', ROLE_TO_EFFECTIVE_STAGE[role], {
         repoDir,
         registry,
         requireRuntimeReady: true,
@@ -162,16 +162,16 @@ describe('launch-priority native eligibility consistency', () => {
       assert.equal(doctorGateReasonForRole(repoDir, role, 'sk-test'), projection.nativeGate?.ok === false ? projection.nativeGate.reason : '');
     }
 
-    const challenge = pickChallengeModelsWithReason(['claude-sonnet-5', 'glm-5.2'], {
+    const challenge = pickChallengeModelsWithReason(['claude-sonnet-5', 'glm-5.3'], {
       pairId: 'pair-1',
       issueId: 'HOK-2585',
       slug: 'consistency',
       primaryModel: 'claude-sonnet-5',
-      forcedChallengerModel: 'glm-5.2',
+      forcedChallengerModel: 'glm-5.3',
       repoDir,
       randomFn: () => 0,
     });
-    const challengeRejection = challenge.nativeCertificationRejections.find((entry) => entry.modelId === 'glm-5.2');
+    const challengeRejection = challenge.nativeCertificationRejections.find((entry) => entry.modelId === 'glm-5.3');
     assert.equal(challengeRejection?.reason, 'missing-artifact');
   });
 
@@ -180,7 +180,7 @@ describe('launch-priority native eligibility consistency', () => {
     const registry = getEffectiveRegistry(repoDir);
     const apiKeyEnv = 'TEST_OPENROUTER_KEY';
 
-    const router = filterNativeModels(['glm-5.2'], 'coder', registry, repoDir, {
+    const router = filterNativeModels(['glm-5.3'], 'coder', registry, repoDir, {
       apiKeyPresent: false,
       apiKeyEnv,
     });
@@ -188,7 +188,7 @@ describe('launch-priority native eligibility consistency', () => {
     assert.equal(router.rejected[0]?.reason, 'missing-api-key');
     assert.equal(router.rejected[0]?.apiKeyEnv, apiKeyEnv);
 
-    const projection = explainEffectiveModelAvailability('glm-5.2', 'coding', {
+    const projection = explainEffectiveModelAvailability('glm-5.3', 'coding', {
       repoDir,
       registry,
       requireRuntimeReady: true,
@@ -202,18 +202,18 @@ describe('launch-priority native eligibility consistency', () => {
     assert.equal(auditReasonForRole(repoDir, 'coding', { apiKeyPresent: false, apiKeyEnv }), 'missing_api_key');
     assert.equal(doctorGateReasonForRole(repoDir, 'coding', undefined), 'missing_api_key');
 
-    const challenge = pickChallengeModelsWithReason(['claude-sonnet-5', 'glm-5.2'], {
+    const challenge = pickChallengeModelsWithReason(['claude-sonnet-5', 'glm-5.3'], {
       pairId: 'pair-2',
       issueId: 'HOK-2585',
       slug: 'consistency',
       primaryModel: 'claude-sonnet-5',
-      forcedChallengerModel: 'glm-5.2',
+      forcedChallengerModel: 'glm-5.3',
       repoDir,
       randomFn: () => 0,
       nativeCertificationApiKeyPresent: false,
       nativeCertificationApiKeyEnv: apiKeyEnv,
     });
-    const challengeRejection = challenge.nativeCertificationRejections.find((entry) => entry.modelId === 'glm-5.2');
+    const challengeRejection = challenge.nativeCertificationRejections.find((entry) => entry.modelId === 'glm-5.3');
     assert.equal(challengeRejection?.reason, 'missing-api-key');
     assert.equal(challengeRejection?.apiKeyEnv, apiKeyEnv);
   });
