@@ -8,7 +8,7 @@
 # shared/lib/stage-result.ts. New call sites must route through them.
 
 shared/lib/arbiter-r6-report.ts 1  # read-side: counts drop reasons for the R6 report; not an attribution decision.
-shared/lib/challenge-comparison.ts 1  # read-side: normalises an ineligibility reason onto a comparison snapshot (not a stage-result write).
-shared/lib/pr-route-provenance.ts 2  # read-side: classifies route provenance for display; not an attribution decision.
+shared/lib/challenge-comparison.ts 2  # read-side: normalises ineligibility reasons ('missing_execution_evidence', 'execution_contradicted') onto a comparison snapshot (not a stage-result write).
+shared/lib/pr-route-provenance.ts 3  # read-side: classifies route provenance for display; not an attribution decision.
 shared/lib/provider-identity-guard.ts 1  # guard description references the retired resolver symbol by name in prose text.
 shared/lib/wavemill-monitor.sh 1  # HOK-2811 inherited-source stamp; it does not compute or replace execution evidence.

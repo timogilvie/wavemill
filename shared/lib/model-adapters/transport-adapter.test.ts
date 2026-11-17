@@ -122,7 +122,9 @@ describe('ClaudeCliAdapter', () => {
     assert.equal(parsed.error, undefined);
     assert.equal(parsed.text, 'done');
     assert.equal(parsed.reportedModel, 'claude-haiku-4-5');
-    assert.equal(parsed.usage?.inputTokens, 15);
+    // Anthropic input excludes cache reads; the cache bucket rides along (HOK-3409).
+    assert.equal(parsed.usage?.inputTokens, 10);
+    assert.equal(parsed.usage?.cacheReadTokens, 5);
     assert.equal(parsed.usage?.outputTokens, 3);
     assert.equal(parsed.usage?.totalTokens, 18);
     assert.equal(parsed.usage?.costUsd, 0.00123);
@@ -188,8 +190,33 @@ describe('CodexCliAdapter', () => {
     assert.equal(parsed.text, 'hello');
     assert.equal(parsed.reportedModel, 'unverified');
     assert.equal(parsed.usage?.inputTokens, 10);
-    assert.equal(parsed.usage?.outputTokens, 4);
-    assert.equal(parsed.usage?.totalTokens, 14);
+    // Reasoning is a reporting-only subset of output; it is never added.
+    assert.equal(parsed.usage?.outputTokens, 3);
+    assert.equal(parsed.usage?.totalTokens, 13);
+    assert.equal(parsed.usage?.cacheReadTokens, undefined);
+    assert.equal(parsed.usage?.cacheWriteTokens, undefined);
+  });
+
+  // protects: HOK-3409 — Codex reports inclusive input, so the cached subset
+  // is split into its own bucket instead of being billed as uncached input.
+  it('parseResult splits an inclusive Codex input into uncached and cache-read buckets', () => {
+    const adapter = new CodexCliAdapter({ model: 'gpt-5.6-terra' });
+    const stdout = [
+      JSON.stringify({ type: 'thread.started', thread_id: 't' }),
+      JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'hello' } }),
+      JSON.stringify({
+        type: 'turn.completed',
+        usage: { input_tokens: 1000, cached_input_tokens: 800, output_tokens: 300 },
+      }),
+    ].join('\n');
+    const parsed = adapter.parseResult(stdout, '', 0);
+    assert.equal(parsed.error, undefined);
+    assert.deepEqual(parsed.usage, {
+      inputTokens: 200,
+      outputTokens: 300,
+      cacheReadTokens: 800,
+      totalTokens: 1300,
+    });
   });
 });
 

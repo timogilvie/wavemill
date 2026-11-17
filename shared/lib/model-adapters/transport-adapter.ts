@@ -16,6 +16,7 @@
  */
 import type { ProviderErrorKind } from '../native-agent/provider-error-classifier.ts';
 import type { ReportFindingsSource } from './claude-cli-output.ts';
+import type { TaskCostUsage } from '@hokusai/costs';
 
 export type AdapterKind =
   | 'claude-cli'
@@ -55,7 +56,36 @@ export interface AdapterUsage {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  /** Cache-read tokens; undefined when the transport did not report them. */
+  cacheReadTokens?: number;
+  /** Cache-write tokens; undefined when the transport did not report them. */
+  cacheWriteTokens?: number;
   costUsd?: number;
+}
+
+/**
+ * Project the SDK's normalized usage onto {@link AdapterUsage} (HOK-3409).
+ *
+ * `@hokusai/costs` reports an unobserved counter as `null`; adapters keep the
+ * optional cache buckets `undefined` ("not reported") and the required buckets
+ * `0`, so every downstream reader keeps working with plain numbers.
+ * `totalTokens` is the sum of the billable buckets the SDK already split apart
+ * — uncached input, output, cache read and cache write. Reasoning is a
+ * reporting-only subset of output and is never added to it.
+ */
+export function taskCostUsageToAdapterUsage(taskUsage: TaskCostUsage): AdapterUsage {
+  const inputTokens = taskUsage.inputTokens ?? 0;
+  const outputTokens = taskUsage.outputTokens ?? 0;
+  const cacheReadTokens = taskUsage.cacheReadTokens ?? undefined;
+  const cacheWriteTokens = taskUsage.cacheWriteTokens ?? undefined;
+  return {
+    inputTokens,
+    outputTokens,
+    ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
+    ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
+    totalTokens:
+      inputTokens + outputTokens + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0),
+  };
 }
 
 export interface AdapterError {

@@ -1,12 +1,14 @@
 import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { IngestUsageInput } from '@hokusai/costs';
 import {
   resolveExecutedModelFromSessions,
   resolveStageExecutedModel,
+  resolveStageExecutionTruth,
 } from './executed-model-resolver.ts';
 import {
   appendOwnershipRow,
@@ -15,6 +17,7 @@ import {
 } from './session-ownership.ts';
 import { encodeProjectDir } from './wavemill-session-paths.ts';
 import type { StageResult } from './stage-result.ts';
+import { classifyFailure, type ExecutionEvidence } from './failure-policy.ts';
 
 const cleanups: Array<() => void> = [];
 
@@ -676,5 +679,100 @@ describe('resolveStageExecutedModel (HOK-3369)', () => {
     assert.equal(result.evidenceStatus, 'direct');
     assert.equal(result.executedModel, currentModel);
     assert.equal(result.providerEvidence?.responseId, 'gen-current');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// HOK-3498: replay of the HOK-3406 planning failure
+// ────────────────────────────────────────────────────────────────
+
+const INCIDENT_FIXTURE_DIR = join(
+  dirname(fileURLToPath(import.meta.url)),
+  'native-agent',
+  'fixtures',
+  'hok3406-planning-unattributed',
+);
+
+/**
+ * Rebuild HOK-3406's on-disk evidence: four native planning launches (all
+ * `z-ai/glm-5.3-flash` on OpenRouter), one transcript appended across the
+ * attempts, and a failed `.planning-result.json` written by the launcher's
+ * validation-failure branch. The fixture keeps every identity-bearing
+ * transcript line and the real launch timestamps; paths are sanitised.
+ */
+function setupHok3406Replay(): {
+  featureDir: string;
+  repoDir: string;
+  worktreePath: string;
+} {
+  const repoDir = tempDir('resolver-hok3406-');
+  const worktreePath = join(repoDir, 'worktrees', 'one-task-repair-entry-point');
+  const featureDir = join(worktreePath, 'features', 'one-task-repair-entry-point');
+  mkdirSync(featureDir, { recursive: true });
+  copyFileSync(join(INCIDENT_FIXTURE_DIR, 'ownership.jsonl'), join(featureDir, '.session-ownership.jsonl'));
+  const sessionsDir = join(repoDir, '.wavemill', 'runs', 'wavemill', 'native-sessions');
+  mkdirSync(sessionsDir, { recursive: true });
+  copyFileSync(
+    join(INCIDENT_FIXTURE_DIR, 'planning-HOK-3406.jsonl'),
+    join(sessionsDir, 'planning-HOK-3406.jsonl'),
+  );
+  return { featureDir, repoDir, worktreePath };
+}
+
+describe('resolveStageExecutionTruth (HOK-3498)', () => {
+  it('HOK-3406 replay: a failed planning validation keeps its executed model and is model-attributed', () => {
+    const fx = setupHok3406Replay();
+    const truth = resolveStageExecutionTruth({
+      featureDir: fx.featureDir,
+      stage: 'planning',
+      // The incident's stage result: validation rejected the plan.
+      status: 'failed',
+      worktreePath: fx.worktreePath,
+      branchName: 'task/one-task-repair-entry-point',
+      repoDir: fx.repoDir,
+      existing: null,
+      agentHint: 'native',
+      flags: { model: 'glm-5.3-flash', 'intended-model': 'glm-5.3-flash' },
+    });
+
+    // The model ran with a provider-reported identity; nothing was contradicted.
+    assert.equal(truth.executedModel, 'z-ai/glm-5.3-flash');
+    assert.equal(truth.executionEvidence.status, 'direct');
+    assert.equal(truth.executionEvidence.source, 'provider-response');
+    assert.equal(truth.executionEvidence.identityVerdict, 'match');
+    assert.equal(truth.executionEvidence.requestedWireId, 'z-ai/glm-5.3-flash');
+
+    // Stage-result eligibility rules: a failed stage is not quality evidence.
+    assert.equal(truth.modelAttributionEligible, false);
+    assert.equal(truth.modelAttributionIneligibleReason, 'stage_not_completed');
+
+    // The failure decision now charges the retryable failure to the model.
+    const evidence: ExecutionEvidence = { source: 'provider-response', model: truth.executedModel! };
+    const decided = classifyFailure({
+      stage: 'planning',
+      failureKind: 'planning-artifact-invalid:missing_release_readiness_database_change_risk',
+      detail: 'Native planning final artifact rejected: missing_release_readiness_database_change_risk',
+      executionEvidence: evidence,
+    });
+    assert.equal(decided.class, 'retryable');
+    assert.equal(decided.attribution, 'model');
+  });
+
+  it('HOK-3406 replay: the same evidence is attribution-eligible when the stage completed', () => {
+    const fx = setupHok3406Replay();
+    const truth = resolveStageExecutionTruth({
+      featureDir: fx.featureDir,
+      stage: 'planning',
+      status: 'completed',
+      worktreePath: fx.worktreePath,
+      branchName: 'task/one-task-repair-entry-point',
+      repoDir: fx.repoDir,
+      existing: null,
+      agentHint: 'native',
+      flags: { model: 'glm-5.3-flash', 'intended-model': 'glm-5.3-flash' },
+    });
+    assert.equal(truth.executedModel, 'z-ai/glm-5.3-flash');
+    assert.equal(truth.modelAttributionEligible, true);
+    assert.equal(truth.modelAttributionIneligibleReason, undefined);
   });
 });

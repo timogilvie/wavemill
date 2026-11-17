@@ -27,13 +27,40 @@ describe('parseClaudeCliOutput', () => {
     });
     const out = parseClaudeCliOutput(stdout);
     assert.equal(out.text, 'done');
-    assert.equal(out.usage?.inputTokens, 15);
+    // Anthropic input excludes cache reads, so the buckets map one-to-one (HOK-3409).
+    assert.equal(out.usage?.inputTokens, 10);
+    assert.equal(out.usage?.cacheReadTokens, 5);
     assert.equal(out.usage?.outputTokens, 3);
     assert.equal(out.usage?.totalTokens, 18);
     assert.equal(out.costUsd, 0.00123);
     assert.equal(out.reportedModel, 'claude-haiku-4-5');
     assert.equal(out.error, undefined);
     assert.equal(out.toolReport, undefined);
+  });
+
+  // protects: HOK-3409 — a `null` usage block is "not reported", not a
+  // known-zero charge, so the envelope yields no usage at all.
+  it('treats a null usage block as unreported', () => {
+    const stdout = JSON.stringify({ result: 'done', usage: null, total_cost_usd: 0.00123 });
+    const out = parseClaudeCliOutput(stdout);
+    assert.equal(out.text, 'done');
+    assert.equal(out.usage, undefined);
+    assert.equal(out.costUsd, 0.00123);
+  });
+
+  // protects: HOK-3409 — Anthropic cache writes ride in their own bucket and
+  // count towards the billable total instead of being folded into input.
+  it('maps cache creation tokens into their own bucket', () => {
+    const stdout = JSON.stringify({
+      result: 'done',
+      usage: { input_tokens: 10, cache_creation_input_tokens: 7, output_tokens: 3 },
+    });
+    const out = parseClaudeCliOutput(stdout);
+    assert.equal(out.usage?.inputTokens, 10);
+    assert.equal(out.usage?.cacheWriteTokens, 7);
+    assert.equal(out.usage?.cacheReadTokens, undefined);
+    assert.equal(out.usage?.outputTokens, 3);
+    assert.equal(out.usage?.totalTokens, 20);
   });
 
   // protects: the verbose array form is supported and the result element wins.

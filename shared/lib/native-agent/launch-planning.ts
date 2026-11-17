@@ -31,7 +31,6 @@ import { createNativeModelsCollection } from './models.ts';
 import {
   ProviderIdentityMismatchError,
   ProviderIdentityTracker,
-  type ProviderIdentitySummary,
 } from './provider-identity.ts';
 import { invalidateCertificationIdentity } from './certification/identity-invalidation.ts';
 import { classifyProviderError } from './provider-error-classifier.ts';
@@ -69,7 +68,8 @@ import { getNativeCodeSearchConfig, loadWavemillConfig } from '../config.ts';
 import { loadNativePhasePrompt, registerAndRecordNativeProvenance } from './prompts.ts';
 import { isTaskPacketContent } from '../task-packet-utils.ts';
 import { createCleanupTracker, runCleanup, type CleanupReason } from './cleanup.ts';
-import { updateStageResult, type StageExecutionUsage } from '../stage-result.ts';
+import { updateStageResult, readStageResult, type StageExecutionUsage, type StageStatus } from '../stage-result.ts';
+import { resolveStageExecutionTruth, type StageExecutionTruth } from '../executed-model-resolver.ts';
 import { buildStageExecutionUsage, EMPTY_PROMPT_CACHE_SUMMARY, type LoopUsageSource } from './prompt-cache.ts';
 import { reportPromptCacheHitRate } from './prompt-cache-detector.ts';
 import {
@@ -566,6 +566,36 @@ function makeTranscriptPath(repoDir: string, session: string, issue: string): st
   return join(baseDir, `planning-${safeIssue}.jsonl`);
 }
 
+/**
+ * HOK-3498: the executed-model record for any planning exit. Identity comes
+ * from the one resolver over the owned native session stream; the launcher
+ * contributes only descriptive facts (Pi runtime versions) and the failure
+ * text, which belongs on `failureReason` — never in the evidence.
+ */
+async function planningExecutionTruth(input: {
+  featureDir: string;
+  wtDir: string;
+  repoDir: string;
+  branch?: string;
+  status: StageStatus;
+  model: string;
+  intendedModel: string;
+}): Promise<StageExecutionTruth> {
+  const existing = await readStageResult({ featureDir: input.featureDir, stage: 'planning' });
+  return resolveStageExecutionTruth({
+    featureDir: input.featureDir,
+    stage: 'planning',
+    status: input.status,
+    worktreePath: input.wtDir,
+    branchName: input.branch,
+    repoDir: input.repoDir,
+    existing,
+    agentHint: 'native',
+    flags: { model: input.model, 'intended-model': input.intendedModel },
+    evidenceFacts: piRuntimeVersionsField(),
+  });
+}
+
 export async function launchNativePlanning(options: LaunchNativePlanningOptions): Promise<{
   planPath: string;
   approvalMarkerPath: string;
@@ -914,22 +944,28 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         }
       }
       clearRejectedPlanningArtifacts(planPath, approvalMarkerPath);
+      const failureStatus: StageStatus = stopFailureReason === 'aborted' ? 'aborted' : 'failed';
+      const truth = await planningExecutionTruth({
+        featureDir,
+        wtDir: options.wtDir,
+        repoDir: options.repoDir,
+        branch: options.branch,
+        status: failureStatus,
+        model: modelName,
+        intendedModel: requestedModelName,
+      });
       await updateStageResult(featureDir, 'planning', {
-        status: stopFailureReason === 'aborted' ? 'aborted' : 'failed',
+        status: failureStatus,
         finishedAt: new Date().toISOString(),
         agent: 'native',
         model: modelName,
-        intendedModel: requestedModelName,
-        executedModel: null,
-        executionEvidence: {
-          status: 'contradicted',
-          source: 'native-runtime',
-          ...piRuntimeVersionsField(),
-          detail: providerFailureReason || stopFailureReason,
-          recordedAt: new Date().toISOString(),
-        },
-        modelAttributionEligible: false,
-        modelAttributionIneligibleReason: 'execution_contradicted',
+        intendedModel: truth.intendedModel,
+        executedModel: truth.executedModel,
+        executionEvidence: truth.executionEvidence,
+        modelAttributionEligible: truth.modelAttributionEligible,
+        ...(truth.modelAttributionIneligibleReason
+          ? { modelAttributionIneligibleReason: truth.modelAttributionIneligibleReason }
+          : {}),
         notes: budgetDescription
           ? `Native planning failed: ${budgetDescription}`
           : `Native planning rejected before approval: ${stopFailureReason}.`,
@@ -955,22 +991,27 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
     if (rawFinalText.trim() === '') {
       const providerError = finalProviderErrorMessage(result);
       clearRejectedPlanningArtifacts(planPath, approvalMarkerPath);
+      const truth = await planningExecutionTruth({
+        featureDir,
+        wtDir: options.wtDir,
+        repoDir: options.repoDir,
+        branch: options.branch,
+        status: 'failed',
+        model: modelName,
+        intendedModel: requestedModelName,
+      });
       await updateStageResult(featureDir, 'planning', {
         status: 'failed',
         finishedAt: new Date().toISOString(),
         agent: 'native',
         model: modelName,
-        intendedModel: requestedModelName,
-        executedModel: null,
-        executionEvidence: {
-          status: 'contradicted',
-          source: 'native-runtime',
-          ...piRuntimeVersionsField(),
-          detail: providerError || 'empty_final_plan',
-          recordedAt: new Date().toISOString(),
-        },
-        modelAttributionEligible: false,
-        modelAttributionIneligibleReason: 'execution_contradicted',
+        intendedModel: truth.intendedModel,
+        executedModel: truth.executedModel,
+        executionEvidence: truth.executionEvidence,
+        modelAttributionEligible: truth.modelAttributionEligible,
+        ...(truth.modelAttributionIneligibleReason
+          ? { modelAttributionIneligibleReason: truth.modelAttributionIneligibleReason }
+          : {}),
         notes: providerError
           ? `Native planning failed: ${providerError}`
           : `Native planning completed without a final plan (stopReason=${result.stopReason})`,
@@ -1035,22 +1076,27 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
 
     if (!validation.valid) {
       clearRejectedPlanningArtifacts(planPath, approvalMarkerPath);
+      const truth = await planningExecutionTruth({
+        featureDir,
+        wtDir: options.wtDir,
+        repoDir: options.repoDir,
+        branch: options.branch,
+        status: 'failed',
+        model: modelName,
+        intendedModel: requestedModelName,
+      });
       await updateStageResult(featureDir, 'planning', {
         status: 'failed',
         finishedAt: new Date().toISOString(),
         agent: 'native',
         model: modelName,
-        intendedModel: requestedModelName,
-        executedModel: null,
-        executionEvidence: {
-          status: 'contradicted',
-          source: 'native-runtime',
-          ...piRuntimeVersionsField(),
-          detail: validation.reason ?? 'invalid',
-          recordedAt: new Date().toISOString(),
-        },
-        modelAttributionEligible: false,
-        modelAttributionIneligibleReason: 'execution_contradicted',
+        intendedModel: truth.intendedModel,
+        executedModel: truth.executedModel,
+        executionEvidence: truth.executionEvidence,
+        modelAttributionEligible: truth.modelAttributionEligible,
+        ...(truth.modelAttributionIneligibleReason
+          ? { modelAttributionIneligibleReason: truth.modelAttributionIneligibleReason }
+          : {}),
         notes: `Native planning final artifact rejected: ${validation.reason ?? 'invalid'}.`,
         artifacts: {
           type: 'planning',
@@ -1070,51 +1116,30 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
 
     clearApprovalMarkerCreatedDuringPlanning(approvalMarkerPath);
     atomicWriteText(planPath, finalText);
-    // HOK-3143: record the provider-reported model when it is verified, so
-    // planning stage attribution does not blindly trust the requested id.
-    const planningIdentitySummary: ProviderIdentitySummary | undefined =
-      providerIdentityConfig ? providerIdentityTracker.summary() : undefined;
-    const planningExecutedModel = planningIdentitySummary
-      && (planningIdentitySummary.identityVerdict === 'match'
-        || planningIdentitySummary.identityVerdict === 'alias-resolved')
-      ? planningIdentitySummary.executedModel ?? modelName
-      : modelName;
-    const planningExecutionEvidence = planningIdentitySummary
-      && (planningIdentitySummary.identityVerdict === 'match'
-        || planningIdentitySummary.identityVerdict === 'alias-resolved')
-      ? {
-        status: 'direct' as const,
-        source: 'provider-response',
-        ...piRuntimeVersionsField(),
-        detail: `verified ${planningIdentitySummary.identityVerdict} after ${planningIdentitySummary.turnsVerified} turn(s)`,
-        recordedAt: new Date().toISOString(),
-        ...(planningIdentitySummary.providerReportedModel
-          ? { providerReportedModel: planningIdentitySummary.providerReportedModel }
-          : {}),
-        requestedWireId: providerIdentityExpectation!.requestedWireId,
-        certifiedTarget: providerIdentityExpectation!.expectedModel,
-        identityVerdict: planningIdentitySummary.identityVerdict,
-        transportProvider: 'openrouter',
-        ...(planningIdentitySummary.lastResponseId
-          ? { responseId: planningIdentitySummary.lastResponseId }
-          : {}),
-      }
-      : {
-        status: 'direct' as const,
-        source: 'native-runtime',
-        ...piRuntimeVersionsField(),
-        recordedAt: new Date().toISOString(),
-      };
+    // HOK-3498: the success exit records the same one resolver-derived
+    // executed-model block as every failure exit. `awaiting_user` keeps the
+    // stage attribution-ineligible (`stage_not_completed`) until approval.
+    const truth = await planningExecutionTruth({
+      featureDir,
+      wtDir: options.wtDir,
+      repoDir: options.repoDir,
+      branch: options.branch,
+      status: 'awaiting_user',
+      model: modelName,
+      intendedModel: requestedModelName,
+    });
     await updateStageResult(featureDir, 'planning', {
       status: 'awaiting_user',
       finishedAt: null,
       agent: 'native',
       model: modelName,
-      intendedModel: requestedModelName,
-      executedModel: planningExecutedModel,
-      executionEvidence: planningExecutionEvidence,
-      modelAttributionEligible: false,
-      modelAttributionIneligibleReason: 'stage_not_completed',
+      intendedModel: truth.intendedModel,
+      executedModel: truth.executedModel,
+      executionEvidence: truth.executionEvidence,
+      modelAttributionEligible: truth.modelAttributionEligible,
+      ...(truth.modelAttributionIneligibleReason
+        ? { modelAttributionIneligibleReason: truth.modelAttributionIneligibleReason }
+        : {}),
       notes: 'Native planning ready for approval',
       artifacts: {
         type: 'planning',
@@ -1168,6 +1193,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
           model: options.loopModelOverride?.name ?? options.resolvedModel ?? '',
           intendedModel: options.resolvedModel ?? options.loopModelOverride?.name ?? null,
           executedModel: err.reportedModel,
+          // allow-executed-model-resolver: HOK-3498 reserves contradicted + provider_substitution for a provider-identity mismatch; the live error is the authoritative evidence.
           executionEvidence: {
             status: 'contradicted',
             source: 'provider-response',
