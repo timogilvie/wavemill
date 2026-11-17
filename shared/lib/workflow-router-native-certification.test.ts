@@ -87,28 +87,28 @@ await test('valid patch cert accepted for coder and reviewer roles', () => {
 await test('patch cert rejects planner role which requires workflow certification', () => {
   const { repoDir, cleanup } = makeOpenRouterReadyRepo();
   try {
-    writeCertArtifact(repoDir, 'z-ai', 'glm-5.2', DEFAULT_CERTIFICATION_SUITE_VERSION, { phase: 'patch' });
+    writeCertArtifact(repoDir, 'z-ai', 'glm-5.3', DEFAULT_CERTIFICATION_SUITE_VERSION, { phase: 'patch' });
 
     const decision = routeWorkflow('Plan and implement a new auth workflow.', {
       repoDir,
-      plannerModelsAvailable: ['glm-5.2', 'claude-haiku-4-5-20251001'],
-      modelsAvailable: ['glm-5.2', 'claude-haiku-4-5-20251001'],
+      plannerModelsAvailable: ['glm-5.3', 'claude-haiku-4-5-20251001'],
+      modelsAvailable: ['glm-5.3', 'claude-haiku-4-5-20251001'],
       skipDifficultyClassification: true,
     });
 
     const plannerRejection = (decision.nativeCertificationRejections ?? [])
-      .find((r) => r.modelId === 'glm-5.2' && r.role === 'planner');
+      .find((r) => r.modelId === 'glm-5.3' && r.role === 'planner');
     assert.ok(plannerRejection, 'patch-cert native model should be rejected for planner (requires workflow)');
     assert.equal(plannerRejection?.reason, 'insufficient-phase');
     assert.equal(plannerRejection?.requestedPhase, 'workflow');
-    assert.notEqual(decision.planner, 'glm-5.2', 'planner must not be the rejected native model');
+    assert.notEqual(decision.planner, 'glm-5.3', 'planner must not be the rejected native model');
   } finally {
     cleanup();
   }
 });
 
-await test('launch-priority roleEligibility removes coding-only aliases from planner pool with diagnostics', () => {
-  // mistral-medium-3 is the remaining coding-only launch-priority row
+await test('launch-priority roleEligibility removes coding/review-only aliases from planner pool with diagnostics', () => {
+  // gemini-3.8-flash is the remaining coding/review-only launch-priority row
   // (qwen-2.5-coder-32b was retired by HOK-2947).
   const previousApiKey = process.env.HOK2540_OPENROUTER_KEY;
   process.env.HOK2540_OPENROUTER_KEY = 'test-openrouter-key';
@@ -117,13 +117,13 @@ await test('launch-priority roleEligibility removes coding-only aliases from pla
       openrouter: {
         enabled: true,
         apiKeyEnv: 'HOK2540_OPENROUTER_KEY',
-        models: ['mistral-medium-3'],
+        models: ['gemini-3.8-flash'],
         stages: ['planner'],
       },
     },
     modelRegistry: {
       models: {
-        'mistral-medium-3': {
+        'gemini-3.8-flash': {
           class: 'strong_generalist',
           nativeCapability: {
             nativeProvider: 'openrouter',
@@ -141,26 +141,26 @@ await test('launch-priority roleEligibility removes coding-only aliases from pla
     },
   });
   try {
-    writeCertArtifact(repoDir, 'mistralai', 'mistral-medium-3-5', DEFAULT_CERTIFICATION_SUITE_VERSION, { phase: 'workflow' });
+    writeCertArtifact(repoDir, 'google', 'gemini-3.8-flash', DEFAULT_CERTIFICATION_SUITE_VERSION, { phase: 'workflow' });
 
     const decision = routeWorkflow('Plan a new multi-stage workflow.', {
       repoDir,
-      plannerModelsAvailable: ['mistral-medium-3', 'claude-haiku-4-5-20251001'],
-      modelsAvailable: ['mistral-medium-3', 'claude-haiku-4-5-20251001'],
+      plannerModelsAvailable: ['gemini-3.8-flash', 'claude-haiku-4-5-20251001'],
+      modelsAvailable: ['gemini-3.8-flash', 'claude-haiku-4-5-20251001'],
       skipDifficultyClassification: true,
     });
 
-    assert.notEqual(decision.planner, 'mistral-medium-3');
+    assert.notEqual(decision.planner, 'gemini-3.8-flash');
     const rejection = (decision.nativeCertificationRejections ?? [])
-      .find((r) => r.modelId === 'mistral-medium-3' && r.role === 'planner');
-    assert.ok(rejection, 'coding-only planner candidate must be rejected before selection');
+      .find((r) => r.modelId === 'gemini-3.8-flash' && r.role === 'planner');
+    assert.ok(rejection, 'coding/review-only planner candidate must be rejected before selection');
     assert.equal(rejection?.reason, 'role-ineligible');
     assert.equal(rejection?.requestedLaunchPhase, 'planning');
     assert.equal(rejection?.nativeProvider, 'openrouter');
-    assert.deepEqual(rejection?.eligibleRoles, ['coding']);
+    assert.deepEqual(rejection?.eligibleRoles, ['coding', 'review']);
     assert.ok(
       decision.reasoning.some((line) => (
-        line.includes('mistral-medium-3')
+        line.includes('gemini-3.8-flash')
         && line.includes('role-ineligible')
         && line.includes('provider=openrouter')
         && line.includes('eligibleRoles=coding')

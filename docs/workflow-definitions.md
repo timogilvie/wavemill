@@ -2,22 +2,33 @@
 
 Labeling guide for the `Workflow` label group. Use it to label issues by hand, and as the spec for the classifier prompt.
 
-Status: draft for HOK-3485. Examples were picked from issue titles, except where a description is cited.
+Status: v2, revised after the 150-issue gold set (HOK-3486, HOK-3487). Examples marked (gold) were labeled by Tim from the full description.
 
 ## How to label
 
 Read the title and the full description. Then ask these questions in order. Stop at the first yes.
 
 1. Does the work live in child issues? → `workflow:decompose`
-2. Is the deliverable an action run against a live system? → `workflow:operate`
-3. Is a decision open, the goal unclear, the result a matter of taste, or the task something only a person can do? → `workflow:interactive`
-4. Is the output a report, measurement, audit, spike result or design memo, with no change to production behavior? → `workflow:investigate`
+2. Is the deliverable an action run against a live system, or a step a person must do by hand? → `workflow:operate`
+3. Does the work need a person in the loop to decide or judge: an open decision, an unclear goal, or a design or taste call that iterates? → `workflow:interactive`
+4. Is the output a report, measurement, audit, spike result or design memo, with no change to production behavior? Tests, docs and scripts added along the way count as no change. → `workflow:investigate`
 5. Does it pass every test in "Low-risk enough for direct"? → `workflow:direct`
 6. Otherwise → `workflow:standard`
 
 The order is the tie-break. An issue that fits two workflows takes the earlier one.
 
 One issue, one label. If an issue needs two workflows, it is two issues. Split it, or label it decompose.
+
+## Operate against interactive
+
+Both run the same way: the mill launches no unattended arm, and a person works in a session with a top model. What the session needs differs.
+
+- **Interactive** needs judgment. A person decides, or iterates on a design or wording until it is right. It may end in a PR, such as the final version of a page, or in rewritten issues.
+- **Operate** needs a hand on a live system. A person runs, approves or performs the step: a transaction, a deploy, a promotion, a sign-up, a key ceremony. It needs a runbook, a rehearsal where one is possible, and a gate.
+
+If both apply, operate wins. A person deciding what to deploy is still an operate issue.
+
+The two may later merge into one workflow with a live-system flag. The flag would also cover a direct or standard issue that ends in a production step. Keep both labels until the classifier shadow data (HOK-3480) shows whether the mill treats them differently.
 
 ## The six workflows
 
@@ -63,43 +74,46 @@ Examples:
 - HOK-3336: MQ-0.1: Baseline cost-per-task decomposition and queue depth.
 - HOK-3150: Spike: run a native coding arm on Pi 1.0 + pi-durable and test crash resume.
 - HOK-3289: Security review of the fresh upgradeable-AMM release.
+- HOK-2423: Verify the native provider certification gate. It adds tests, but the goal is the finding. (gold)
+- HOK-2713: Multi-thousand-episode soak. It runs and reports back; nothing is open. (gold)
 
 Near-misses:
 - HOK-2205: Investigate: replace prose regex closure with structured evidence requirements. This is a feature for MTTR's Investigate stage. → standard
 - HOK-3153: Pi Durable: go/no-go decision and file the follow-on issues. A person makes the decision. → interactive
-- HOK-3268: Full corpus run to S3 plus a per-repo sanity report. There is a report, but the deliverable is the run. → operate
+- HOK-1783: Add regression tests for separated token allocation accounting. The tests are the goal, not a by-product of a finding. → standard
 
 ### `workflow:interactive`
 
-The issue cannot be executed as written. A decision is open, the goal is unclear, the result depends on taste, or a person has to do it. The session often ends by rewriting the issue into runnable ones.
+The issue needs a person to decide or judge. A decision is open, the goal is unclear, or the result depends on taste and takes several rounds. The session can end in a PR, such as a redesigned page, or in issues rewritten so they can run.
 
 Examples:
 - HOK-3405: Decide whether to cap local test concurrency across mill agents.
 - HOK-3195: Diligence: channel test go/no-go decision.
-- HOK-3192: Diligence: legal check on using and retaining git history under an engagement letter.
-- HOK-3193: Diligence: channel outreach to 5 tech-DD providers and 5 search-fund buyers.
+- HOK-1939: Improve the left-hand side of login pages. Design iteration that ends in a PR. (gold)
+- HOK-1825: Update the explore-models page. (gold)
 - HOK-3028: Train Rework Risk on outcome labels and run the full comparison.
 
 Near-misses:
 - HOK-3319: Realign the homepage wording with the positioning docs. It is copy, but the source of truth exists. → direct
 - HOK-2722: Error when trying to generate recommendations. A bare bug report; the planner diagnoses it. → standard
 - HOK-3026: Design the Jev question set for merge-time snap judgment. The output is a document a person reviews afterward. → investigate
+- HOK-3025: Sign up for TypeSafe early access. A person does it by hand. → operate (gold)
 
 ### `workflow:operate`
 
-The deliverable is an action run against a live system: mainnet, production infrastructure, production data or a model registry. A PR may be part of it, but the risk is in the execution, so it needs a runbook, a rehearsal where one is possible, and a human gate.
+The deliverable is an action, not a change to code: a step run against a live system (mainnet, a testnet, production infrastructure, production data, a model registry), or a step a person does by hand (an account, a sign-up, a key, a meeting). A PR may be part of it, but the risk is in the execution, so it needs a runbook, a rehearsal where one is possible, and a human gate.
 
 Examples:
 - HOK-3396: Mainnet: admin Safe `resetModelHead(30)` to Technical Task Router v8.
 - HOK-3291: Execute the mainnet redeploy, retire the legacy deployment, cut over consumers.
-- HOK-3287: Drain the legacy HROUT pool and retire the July 2026 mainnet deployment.
 - HOK-3410: Model 30 v10: rebuild with the cheap-model batch, gate against v9, release with one Safe reset.
 - HOK-2531: Certify zero-evidence Kimi launch-priority models.
+- HOK-659: Create an ETH address in Ledger. (gold)
 
 Near-misses:
 - HOK-3281: Implement the upgradeable AMM pool. Contract code, with no execution in the issue. → standard
-- HOK-2169: Gate 8: deployment-state verification script. It builds the script; running it against mainnet is a separate issue. → standard
-- HOK-3024: Run trivial and classical JIT defect-prediction baselines. It runs on offline data and touches nothing live. → investigate
+- HOK-2217: Run the composite benchmark cutover rehearsal and publish the Model 30 v2 baseline. It runs on offline data and needs no operator. → investigate (gold)
+- HOK-1939: Improve the login pages. A person is in the loop and it ends in a PR, but nothing live is touched by hand. → interactive (gold)
 
 ### `workflow:decompose`
 
@@ -115,7 +129,7 @@ Examples:
 Near-misses:
 - HOK-3061: Native runtime — Epic 10.9: Bounded eval/scoring tools in native review. "Epic 10.9" is a number. The issue is a leaf. → standard
 - HOK-1124: Automate the feedback loop. Too vague to split; it needs a scoping session first. → interactive
-- HOK-2118: Contract-deployer: burn down about 1,700 eslint warnings. Large, but mechanical and needs no children. → direct
+- HOK-2810: Arbiter P2.4 — challenge.fork() "(epic)". The title says epic, but the work was done in one issue. → standard (gold)
 
 ## Low-risk enough for direct
 
@@ -134,8 +148,11 @@ If a direct task's diff leaves the predicted touch set, the task falls back to s
 
 ## Fixed rules
 
-- Smart-contract changes are never direct.
-- Anything run against mainnet, production data or a model registry is operate.
+- Smart-contract changes are never direct. This includes config and wiring in the contracts project (HOK-2459, gold: standard).
+- Anything run against mainnet, a testnet, production data or a model registry is operate. Sepolia deploys and rehearsals count (HOK-2177, HOK-3290, gold).
+- A step a person must do by hand is operate.
+- A run on offline or staging data that reports back is investigate, even when it takes hours.
+- A PR that changes only tests, docs, scripts or reports keeps investigate when the goal is the finding. It is direct or standard when the tests are the goal.
 - A bare bug report is standard. The planner does the diagnosis. This holds for auto-filed errors such as "TypeError: Failed to fetch".
 - "Diagnose and fix" is standard. Diagnosis alone, ending in a report, is investigate.
 - An infrastructure-as-code change that ships through the normal deploy is standard at a high risk tier. It is operate when a person must run a step by hand.
@@ -152,6 +169,7 @@ If the goal is still unclear after reading the description, label it interactive
 ## Known traps
 
 - **"Investigate:" in MTTR.** It names the Investigate stage of the MTTR agent. These are features. → standard (HOK-2201 to HOK-2205)
+- **"Epic" or "(epic)" in a title.** Check for children. A title that says epic with no children is a leaf (HOK-2810, gold).
 - **"Epic N.M" in a title.** Numbered leaves under the Native runtime epics. → usually standard (HOK-3053 to HOK-3061)
 - **"Phase N —" in a title.** Often a leaf in a sequence, not a parent. Check for children. (HOK-2225 to HOK-2229)
 - **"Verify ..." and "Verification companion".** They check a rollout and write no production code. → investigate (HOK-2413 to HOK-2425)

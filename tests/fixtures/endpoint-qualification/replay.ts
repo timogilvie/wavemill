@@ -40,3 +40,28 @@ export function replayEndpointQualification(root: string) {
   assert.ok(first.startsWith(join(root, 'moonshotai', 'kimi-k3')));
   return { artifact, endpoint, registry, first, gate, contribution };
 }
+
+/** Replays the 2026-11-16 K3.1 false-ready incident with sanitized current-schema evidence. */
+export async function replayCohortReadiness(root: string) {
+  const { evaluateCanaryCohortHealth, resolveCanaryCohort } = await import('../../../shared/lib/native-agent/certification/canary-cohort.ts');
+  const registry = getEffectiveRegistry();
+  const model = 'kimi-k3.1-pro';
+  const resolved = resolveCertificationSubject({ provider: 'openrouter', model, registry });
+  const artifact: NativeCertificationArtifact = { schemaVersion: CERTIFICATION_SCHEMA_VERSION,
+    subject: resolved.subject, ...resolved.storageIdentity, suiteVersion: 'v3', phase: 'workflow',
+    certifiedAt: new Date().toISOString(), scenarios: [{ scenarioId: 'sanitized-readiness-replay', passed: true }],
+    liveCanary: buildLiveCodingCanaryFixture(resolved.subject, 'v3') };
+  writeGlobalCertification(artifact, { root });
+  const metadata = registry.models[model].nativeCapability!.certification;
+  delete registry.models[model].nativeCapability!.certification;
+  const cohort = resolveCanaryCohort({ repoDir: root, registry,
+    config: { canaryCohort: [{ provider: 'openrouter', model }], minCodingReady: 1 } });
+  const health = () => evaluateCanaryCohortHealth({ repoDir: root, registry, cohort, certificationRoot: root });
+  const gate = () => evaluateNativeProviderGate({ modelId: model, mode: 'task', requiredPhase: 'patch',
+    launchPhase: 'coding', registry, apiKeyPresent: true, apiKeyEnv: 'REPLAY_KEY', certificationRoot: root });
+  assert.equal(gate().ok, false);
+  assert.equal((await health()).codingReadyCount, 0, 'a stored canary cannot bypass missing registry suite metadata');
+  registry.models[model].nativeCapability!.certification = metadata;
+  assert.equal(gate().ok, true);
+  assert.equal((await health()).codingReadyCount, 1, 'restoring the contract makes health and launcher agree');
+}

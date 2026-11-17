@@ -191,18 +191,18 @@ test('limits recommendations to the configured challenge pool', () => {
           'claude-sonnet-4-5-20250929': 100,
           'gpt-5.4': 100,
           'gpt-5.3-codex': 0,
-          'glm-5.2': 0,
+          'glm-5.3': 0,
           'kimi-k2.7-code': 0,
         },
       }),
       config: { enabled: true, confidenceThreshold: 0, newModelChallengeCount: 25, minEvalRecordsPerStage: 1 },
-      challengeModels: ['glm-5.2', 'kimi-k2.7-code'],
+      challengeModels: ['glm-5.3', 'kimi-k2.7-code'],
       repoDir,
     });
 
     assert.equal(result.shouldChallenge, true);
     assert.equal(result.reason, 'new-model');
-    assert.ok(['glm-5.2', 'kimi-k2.7-code'].includes(result.challengerModel || ''));
+    assert.ok(['glm-5.3', 'kimi-k2.7-code'].includes(result.challengerModel || ''));
   } finally {
     cleanup();
   }
@@ -616,15 +616,15 @@ test('exploration recommendations prefer non-incumbent families over recency', (
   try {
     const result = evaluateChallenge({
       routingDecision: makeDecision({ confidence: 0.95 }),
-      challengeModels: ['claude-sonnet-5', 'glm-5.2'],
+      challengeModels: ['claude-sonnet-5', 'glm-5.3'],
       evalSummary: {
         totalRecords: 20,
-        recordsByModel: { 'claude-sonnet-5': 0, 'glm-5.2': 0 },
+        recordsByModel: { 'claude-sonnet-5': 0, 'glm-5.3': 0 },
         recordsByStage: { plan: 20, implementation: 20, review: 20 },
         // Both fully uncovered. claude-sonnet-5 is inside the recency window
         // and sorts first alphabetically, so it used to win every cell; the
-        // launch-priority preference must hand exploration to glm-5.2 instead.
-        recordsByModelStage: { 'claude-sonnet-5': {}, 'glm-5.2': {} },
+        // launch-priority preference must hand exploration to glm-5.3 instead.
+        recordsByModelStage: { 'claude-sonnet-5': {}, 'glm-5.3': {} },
       },
       config: { enabled: true, confidenceThreshold: 0.5, newModelChallengeCount: 5, minEvalRecordsPerStage: 1 },
       repoDir,
@@ -632,7 +632,7 @@ test('exploration recommendations prefer non-incumbent families over recency', (
 
     assert.equal(result.shouldChallenge, true);
     assert.equal(result.reason, 'new-model');
-    assert.equal(result.challengerModel, 'glm-5.2');
+    assert.equal(result.challengerModel, 'glm-5.3');
   } finally {
     cleanup();
   }
@@ -643,24 +643,24 @@ test('exploration recommendations skip stages a model cannot serve', () => {
   try {
     const result = evaluateChallenge({
       routingDecision: makeDecision({ confidence: 0.95 }),
-      // mistral-medium-3 is role-ineligible as a planner, so its uncovered plan
+      // gemini-3.8-flash is role-ineligible as a planner, so its uncovered plan
       // cell must not be recommended even though it sorts first on count.
-      // This model must stay active and coding-only: qwen-3-coder was used here
+      // This model must stay active and coding/review-only: qwen-3-coder was used here
       // until it gained planning eligibility, qwen-2.5-coder-32b until it was
       // retired, and devstral-medium until it was retired, each of which
       // silently broke this assertion.
-      challengeModels: ['mistral-medium-3'],
+      challengeModels: ['gemini-3.8-flash'],
       evalSummary: {
         totalRecords: 20,
-        recordsByModel: { 'mistral-medium-3': 0 },
+        recordsByModel: { 'gemini-3.8-flash': 0 },
         recordsByStage: { plan: 20, implementation: 20, review: 20 },
-        recordsByModelStage: { 'mistral-medium-3': {} },
+        recordsByModelStage: { 'gemini-3.8-flash': {} },
       },
       config: { enabled: true, confidenceThreshold: 0.5, newModelChallengeCount: 5, minEvalRecordsPerStage: 1 },
       repoDir,
     });
 
-    assert.equal(result.challengerModel, 'mistral-medium-3');
+    assert.equal(result.challengerModel, 'gemini-3.8-flash');
     assert.notEqual(result.stage, 'plan');
   } finally {
     cleanup();

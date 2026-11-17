@@ -45,9 +45,9 @@ const OPENROUTER_PATCH_CASES = [
     outputCost: 1.05,
   },
   {
-    modelId: 'z-ai/glm-5.2',
+    modelId: 'z-ai/glm-5.3',
     providerPath: 'z-ai',
-    modelPath: 'glm-5.2',
+    modelPath: 'glm-5.3',
     vendor: 'z-ai',
     modelClass: 'frontier' as const,
     qualityScores: { routing: 60, planning: 80, coding: 80, review: 84, classify: 60 },
@@ -539,15 +539,15 @@ await test('qwen-3-coder patch artifact remains eligible for coding and review',
   }
 });
 
-await test('launch-priority roleEligibility rejects coding-only aliases for planner role', () => {
-  // mistral-medium-3 carries the remaining coding-only launch-priority row
+await test('launch-priority roleEligibility rejects coding/review-only aliases for planner role', () => {
+  // gemini-3.8-flash carries the remaining coding/review-only launch-priority row
   // (qwen-2.5-coder-32b was retired by HOK-2947).
   const { repoDir, cleanup } = makeRepo();
   try {
-    writeCertArtifact(repoDir, 'mistralai', 'mistral-medium-3-5', 'v1', { phase: 'workflow' });
+    writeCertArtifact(repoDir, 'google', 'gemini-3.8-flash', 'v1', { phase: 'workflow' });
     const registry: ModelRegistry = {
       models: {
-        'mistral-medium-3': {
+        'gemini-3.8-flash': {
           vendor: 'mistral',
           class: 'strong_generalist',
           strengths: [],
@@ -575,13 +575,13 @@ await test('launch-priority roleEligibility rejects coding-only aliases for plan
       ladders: {},
     };
 
-    const result = filterNativeModels(['mistral-medium-3'], 'planner', registry, repoDir);
+    const result = filterNativeModels(['gemini-3.8-flash'], 'planner', registry, repoDir);
     assert.deepEqual(result.eligible, []);
     assert.equal(result.rejected.length, 1);
     assert.equal(result.rejected[0]?.reason, 'role-ineligible');
     assert.equal(result.rejected[0]?.requestedLaunchPhase, 'planning');
     assert.equal(result.rejected[0]?.nativeProvider, 'openrouter');
-    assert.deepEqual(result.rejected[0]?.eligibleRoles, ['coding']);
+    assert.deepEqual(result.rejected[0]?.eligibleRoles, ['coding', 'review']);
   } finally {
     cleanup();
   }
@@ -621,8 +621,8 @@ await test('native OpenRouter launch matrix covers Kimi, Qwen, and GLM aliases a
     'qwen/qwen3-coder',
     'kimi-k2.7-code',
     'moonshotai/kimi-k2.7-code',
-    'glm-5.2',
-    'z-ai/glm-5.2',
+    'glm-5.3',
+    'z-ai/glm-5.3',
   ];
 
   for (const modelId of modelIds) {

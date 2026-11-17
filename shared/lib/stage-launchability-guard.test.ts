@@ -200,3 +200,12 @@ describe('stage-launchability guard — repository', () => {
     assert.deepEqual(result.findings, [], formatGuardResult(STAGE_LAUNCHABILITY_GUARD, result));
   });
 });
+
+it('rejects a cohort reader that derives coding readiness without the launch gate', () => {
+  const path = 'shared/lib/native-agent/certification/canary-cohort.ts';
+  const privateReader = 'function evaluateMemberStatus(): CohortMemberStatus {\n  return { codingEligible: true };\n}';
+  assert.ok(checkGuardSource(STAGE_LAUNCHABILITY_GUARD, path, privateReader)
+    .some(finding => finding.pattern === 'cohort-readiness-bypasses-gate'));
+  assert.deepEqual(checkGuardSource(STAGE_LAUNCHABILITY_GUARD, path,
+    'function evaluateMemberStatus(): CohortMemberStatus {\n  return evaluateNativeProviderGate(input);\n}'), []);
+});
