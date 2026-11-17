@@ -822,6 +822,37 @@ describe('resolve-challenge-task CLI', () => {
     }
   });
 
+  it('resolve-sealed keeps a sealed single as single', () => {
+    const { repoDir, featureDir } = makeSealedRepo();
+    try {
+      const singleIntent = JSON.stringify({
+        schemaVersion: 1,
+        pairId: 'HOK-3506',
+        issueId: 'HOK-3506',
+        selectedStage: 'plan',
+        challengeStage: 'plan',
+        decisionSource: 'bootstrap',
+        noChallengeReason: 'roll_not_selected',
+        primary: {
+          key: 'HOK-3506', role: 'primary',
+          planner: { model: 'bootstrap-planner', agent: 'claude' },
+          coder: { model: 'bootstrap-coder', agent: 'claude' },
+          reviewer: { model: 'bootstrap-reviewer', agent: 'claude' },
+        },
+      });
+      const result = runResolveChallengeTask(repoDir, [
+        '--resolve-sealed',
+        '--sealed-intent', singleIntent,
+        '--feature-dir', featureDir,
+        '--repo-dir', repoDir,
+      ]);
+      assert.equal(result.status, 'single');
+      assert.equal(result.reason, 'roll_not_selected');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
   it('resolve-sealed collapses when the expanded route is not yet present', () => {
     const repoDir = mkdtempSync(join(tmpdir(), 'resolve-sealed-noroute-'));
     writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify({

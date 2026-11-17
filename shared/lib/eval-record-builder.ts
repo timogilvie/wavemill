@@ -564,7 +564,7 @@ export function attachRouteProvenance(
     return;
   }
   const provenance = toEvalRouteProvenance(routeProvenance ?? {});
-  if (seal && record.challengeSide) {
+  if (seal && record.challengeSide && seal.kind === 'pair') {
     const withChallenge = applyChallengeOverride(
       provenance.stageRoutes,
       seal,
