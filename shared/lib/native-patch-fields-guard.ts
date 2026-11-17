@@ -19,7 +19,7 @@ export const NATIVE_PATCH_FIELDS_GUARD: GuardSpec = {
     'shared/lib/native-agent/patch-runtime.ts',
     'shared/lib/native-agent/tools/apply-patch-tool.ts',
     'shared/lib/native-patch-fields-guard.ts',
-    'tools/check-native-patch-fields.ts',
+    'tools/check-native-patch-fields.ts', // install-paths: allow guard reference documentation
   ],
   patterns: [
     {
