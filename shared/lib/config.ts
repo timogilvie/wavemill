@@ -472,6 +472,7 @@ export interface NativePatchCodingConfig {
 }
 
 export interface CanaryCohortMemberConfig {
+  qualificationContract?: import('./native-agent/certification/qualification-contract.ts').QualificationContract;
   endpoint?: import('./native-agent/certification/schema.ts').CertificationEndpoint;
   provider: 'openai' | 'openrouter';
   model: string;
@@ -767,25 +768,7 @@ export interface ObserverConfig {
     maxSnapshots: number;
   };
   linear?: Partial<ObserverLinearConfig>;
-  autoFix?: Partial<ObserverAutoFixConfig>;
   alerts?: Partial<ObserverAlertsConfig>;
-}
-
-/** HOK-3097: opt-in observer self-repair actions. */
-export interface ObserverAutoFixConfig {
-  enabled: boolean;
-  quietMinutes: number;
-  updateBranchFromBase: {
-    enabled: boolean;
-    maxAttempts: number;
-  };
-  resetReadyRecheckBudget: {
-    enabled: boolean;
-  };
-  forfeitStuckChallengeArm: {
-    enabled: boolean;
-    stuckHours: number;
-  };
 }
 
 export type ObserverAlertMinSeverity = 'urgent' | 'high';
@@ -1267,22 +1250,6 @@ export const OBSERVER_DEFAULTS: ObserverConfig = {
   maxLogLines: 240,
   retention: {
     maxSnapshots: 50,
-  },
-};
-
-export const OBSERVER_AUTO_FIX_DEFAULTS: ObserverAutoFixConfig = {
-  enabled: false,
-  quietMinutes: 10,
-  updateBranchFromBase: {
-    enabled: false,
-    maxAttempts: 2,
-  },
-  resetReadyRecheckBudget: {
-    enabled: false,
-  },
-  forfeitStuckChallengeArm: {
-    enabled: false,
-    stuckHours: 2,
   },
 };
 
@@ -2672,36 +2639,6 @@ export function getObserverConfig(repoDir?: string): ObserverConfig {
     retention: {
       ...OBSERVER_DEFAULTS.retention,
       ...(observer.retention ?? {}),
-    },
-  };
-}
-
-/**
- * HOK-3097: resolved observer auto-fix config with env overrides.
- *
- * `WAVEMILL_OBSERVER_AUTOFIX=0` forces the master switch off; the per-fix
- * flags still default to false, so an explicit `0` only overrides an on-disk
- * opt-in. Any other value leaves the switch alone.
- */
-export function getObserverAutoFixConfig(repoDir?: string): ObserverAutoFixConfig {
-  const observer = loadWavemillConfig(repoDir).observer ?? {};
-  const autoFix = observer.autoFix ?? {};
-  const envKill = process.env.WAVEMILL_OBSERVER_AUTOFIX;
-  const envDisabled = envKill === '0';
-  return {
-    enabled: envDisabled ? false : (autoFix.enabled ?? OBSERVER_AUTO_FIX_DEFAULTS.enabled),
-    quietMinutes: autoFix.quietMinutes ?? OBSERVER_AUTO_FIX_DEFAULTS.quietMinutes,
-    updateBranchFromBase: {
-      ...OBSERVER_AUTO_FIX_DEFAULTS.updateBranchFromBase,
-      ...(autoFix.updateBranchFromBase ?? {}),
-    },
-    resetReadyRecheckBudget: {
-      ...OBSERVER_AUTO_FIX_DEFAULTS.resetReadyRecheckBudget,
-      ...(autoFix.resetReadyRecheckBudget ?? {}),
-    },
-    forfeitStuckChallengeArm: {
-      ...OBSERVER_AUTO_FIX_DEFAULTS.forfeitStuckChallengeArm,
-      ...(autoFix.forfeitStuckChallengeArm ?? {}),
     },
   };
 }

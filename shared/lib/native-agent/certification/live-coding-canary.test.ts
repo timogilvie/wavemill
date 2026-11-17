@@ -511,7 +511,52 @@ it('attributes count budgets through the shared rule before an abort provider er
       providerError: { kind: 'provider-transient-error', retryable: true, attempts: 1, errorMessage: 'Request aborted', turnsAtFailure: 6 } });
   }), provider: 'openrouter', exactPricing: { enabled: true, fetchGenerationCost: async () => ({ totalCostUsd: .05, providerName: 'Moonshot AI' }) } });
   assert.equal(result.status, 'fail');
+  assert.ok(result.evidence, 'budget failure retains mutation/completion evidence before cleanup');
   assert.equal(result.attemptEvidence?.[0].contribution?.stage_executions[0].failure?.fault_class, 'model-fault');
+});
+
+
+it('workflow prompt orders edits and tests before completion, and budget failures retain rejected mutations', async () => {
+  const result = await runLiveCodingCanary({ ...baseOptions(async config => {
+    const task = String(config.context.messages[0].content);
+    assert.ok(task.indexOf('2. Update src/payload.ts') < task.indexOf('3. Run'));
+    assert.ok(task.indexOf('3. Run') < task.indexOf('4. Use the create_marker'));
+    assert.ok(!task.includes('exactly these two steps'));
+    emitToolEnd(config, 'apply_patch', true);
+    return loopResult({ stopReason: 'turn_limit' });
+  }), profile: 'workflow' });
+  assert.equal(result.status, 'fail');
+  assert.equal(result.evidence?.failedMutationToolCalls, 1);
+  assert.equal(result.evidence?.structuredMutationToolCalls, 0);
+  assert.equal(result.evidence?.completionArtifactPresent, false);
+});
+
+it('operator evidence survives disposable repository cleanup for read-only metadata recovery', async () => {
+  const evidenceRoot = makeScratchDir('canary-retained-');
+  let repo = '';
+  const loop = fakeLoop([GOOD_BEHAVIOR]);
+  const result = await runLiveCodingCanary({ ...baseOptions(async config => {
+    repo = config.toolPolicy!.worktreePath;
+    return loop.runLoopFn(config);
+  }), evidenceRoot });
+  assert.equal(result.status, 'pass');
+  assert.equal(existsSync(repo), false, 'disposable repo is removed');
+  const attempt = result.attemptEvidence![0];
+  assert.equal(existsSync(join(evidenceRoot, attempt.attemptId, '.session-ownership.jsonl')), true);
+  assert.equal(existsSync(join(evidenceRoot, attempt.attemptId, 'native-sessions', `${attempt.attemptId}.jsonl`)), true);
+});
+
+it('preserves canonical Pi echo attestation in endpoint feedback instead of falling back to requested-only evidence', async () => {
+  const result = await runLiveCodingCanary({ ...baseOptions(async config => {
+    config.onEvent!({ type: 'agent_start' } as never);
+    config.onEvent!({ type: 'message_end', message: { role: 'assistant', model: 'gpt-4o', api: 'openai-completions', provider: 'openrouter', responseId: 'echo-attestation',
+      content: [], timestamp: 0, stopReason: 'stop', usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 110, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } } as never);
+    return loopResult({ stopReason: 'turn_limit' });
+  }), provider: 'openrouter', exactPricing: { enabled: true, fetchGenerationCost: async () => ({ totalCostUsd: .01, providerName: 'Replay Host' }) } });
+  const stage = result.attemptEvidence![0].contribution!.stage_executions[0];
+  assert.equal(stage.executed_model, 'gpt-4o');
+  assert.equal(stage.model_evidence, 'provider_response');
+  assert.equal(stage.provider_executions![0].responseModel, 'gpt-4o');
 });
 
 it('retains the canonical echoed provider identity when Pi omits responseModel', async () => {

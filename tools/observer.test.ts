@@ -6,7 +6,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  applyAutoFixes,
   behindBaseSeverity,
   buildFindings,
   compactSnapshotForRender,
@@ -41,7 +40,6 @@ function defaultObserverOptions() {
     fileLinear: false,
     fileIncidents: false,
     dryRun: false,
-    autoFixDryRun: false,
     incidentsDryRun: false,
     maxLogLines: 240,
     printPrompt: false,
@@ -508,7 +506,6 @@ test('repeated ready watchdog auto-recoveries escalate to actionable stuck findi
       fileLinear: false,
       fileIncidents: false,
       dryRun: false,
-      autoFixDryRun: false,
       incidentsDryRun: false,
       maxLogLines: 240,
       printPrompt: false,
@@ -1303,6 +1300,8 @@ test('service heartbeat is parseable and stores redacted finding counts only', a
     assert.equal(parsed.services.observer.heartbeatAt, '2026-08-03T12:00:00.000Z');
     assert.equal(parsed.services.observer.findingCounts.high, 1);
     assert.equal(parsed.services.observer.instanceCount, 1);
+    // HOK-3406: Observer is evidence-only; remediation is never reported.
+    assert.equal(parsed.services.observer.escalation.detectionMode, 'detection-only');
     assert.doesNotMatch(raw, /sk-secret|hidden task/);
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
@@ -1366,7 +1365,6 @@ test('incident sync snapshot is omitted when incident filing is disabled', async
     fileLinear: false,
     fileIncidents: false,
     dryRun: false,
-    autoFixDryRun: false,
     incidentsDryRun: false,
     maxLogLines: 240,
     printPrompt: false,
@@ -1627,51 +1625,8 @@ test('incident sync suppress.classes:[] disables suppression (HOK-3243)', async 
   }
 });
 
-test('--autofix-dry-run is the only dry-run flag (HOK-3243)', () => {
-  const autoFix = parseArgs(['--autofix-dry-run']);
-  assert.equal(autoFix.autoFixDryRun, true);
-});
-
-test('applyAutoFixes forwards --autofix-dry-run (not --dry-run) to runObserverAutoFixes (HOK-3243)', async () => {
-  const repoDir = mkdtempSync(join(tmpdir(), 'observer-autofix-dryrun-'));
-  const previousPushUrl = process.env.WAVEMILL_OBSERVER_PUSH_URL;
-  delete process.env.WAVEMILL_OBSERVER_PUSH_URL;
-  try {
-    writePermissiveSchema(repoDir);
-    writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify({
-      configVersion: '1.5.0',
-      mill: { baseBranch: 'auto/integration', requireConfirm: true },
-      observer: { autoFix: { enabled: false } },
-    }, null, 2));
-    const snapshot = {
-      timestamp: new Date().toISOString(),
-      sessions: ['wavemill'],
-      panes: [],
-      processes: [],
-      repos: [{
-        session: 'wavemill',
-        repoDir,
-        workflowStatePath: join(repoDir, '.wavemill', 'workflow-state.json'),
-        tasks: [{ issue: 'HOK-1', phase: 'ready', slug: 'noop', worktree: repoDir, branch: 'task/noop', baseBranch: 'main' }],
-      }],
-      findings: [],
-    };
-    // dry-run and autofix-dry-run can both be false without the autofix path running
-    // (master switch is off); this confirms the plumbing compiles and does nothing.
-    const legacyDryRun = await applyAutoFixes(snapshot as any, {
-      ...defaultObserverOptions(),
-      dryRun: true,
-    } as any);
-    assert.equal(legacyDryRun.findings.length, 0);
-    const autofixDryRun = await applyAutoFixes(snapshot as any, {
-      ...defaultObserverOptions(),
-      autoFixDryRun: true,
-    } as any);
-    assert.equal(autofixDryRun.findings.length, 0);
-  } finally {
-    if (previousPushUrl !== undefined) process.env.WAVEMILL_OBSERVER_PUSH_URL = previousPushUrl;
-    rmSync(repoDir, { recursive: true, force: true });
-  }
+test('--autofix-dry-run is removed with the Observer repair engine (HOK-3406)', () => {
+  assert.throws(() => parseArgs(['--autofix-dry-run']), /Unknown observer option/);
 });
 
 test('writeServiceHeartbeat surfaces shadow mode and counters in Backstage health', async () => {
@@ -4537,10 +4492,10 @@ test('HOK-3142: plan-approved arm parked by a coding launch refusal names the ca
 });
 
 
-// HOK-3097: wiring regression. With the default (disabled) config, applyAutoFixes
-// and sendAlerts leave the snapshot unchanged and touch no files on disk.
-test('applyAutoFixes + sendAlerts are byte-identical no-ops when disabled', async () => {
-  const repoDir = mkdtempSync(join(tmpdir(), 'observer-autofix-noop-'));
+// HOK-3406: the Observer repair engine is gone; sendAlerts alone stays a
+// byte-identical no-op when alerts are disabled and touches no files.
+test('sendAlerts is a byte-identical no-op when disabled', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-alerts-noop-'));
   // HOK-3239: an exported push URL enables alerts, so isolate from the operator's shell.
   const previousPushUrl = process.env.WAVEMILL_OBSERVER_PUSH_URL;
   delete process.env.WAVEMILL_OBSERVER_PUSH_URL;
@@ -4559,10 +4514,8 @@ test('applyAutoFixes + sendAlerts are byte-identical no-ops when disabled', asyn
       findings: [],
     };
     const beforeFindings = snapshot.findings.length;
-    const fixed = await applyAutoFixes(snapshot as any, defaultObserverOptions() as any);
-    const alerted = await sendAlerts(fixed, defaultObserverOptions() as any);
+    const alerted = await sendAlerts(snapshot as any, defaultObserverOptions() as any);
     assert.equal(alerted.findings.length, beforeFindings, 'no findings added');
-    assert.ok(!existsSync(join(repoDir, '.wavemill', 'incidents', 'actions.jsonl')), 'no action log written');
     assert.ok(!existsSync(join(repoDir, '.wavemill', 'observer', 'alert-state.json')), 'no alert journal written');
   } finally {
     if (previousPushUrl !== undefined) process.env.WAVEMILL_OBSERVER_PUSH_URL = previousPushUrl;

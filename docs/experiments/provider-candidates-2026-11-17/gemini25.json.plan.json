@@ -1,0 +1,75 @@
+{
+  "capturedAt": "2026-11-17T13:07:38.431Z",
+  "model": "gemini-2.5-pro",
+  "modelSubject": {
+    "registryKey": "gemini-2.5-pro",
+    "nativeProvider": "openrouter",
+    "providerId": "google",
+    "providerModelId": "gemini-2.5-pro",
+    "providerNativeId": "google/gemini-2.5-pro",
+    "identityRevision": 1,
+    "identityFingerprint": "c509f2f3f561948bf37c7c9e38ec8864324cf2584bee813d05a8d1addc520431",
+    "catalogHash": "b80a1ee651e8511ef485ae4bf8ad03f53a9849c56bb09fe176616f5f04bdbfbd"
+  },
+  "plan": {
+    "schemaVersion": "endpoint-comparison-plan/v2",
+    "policy": {
+      "maxSpendUsd": 7,
+      "maxCompletionRegression": 0.05,
+      "confidence": 0.95,
+      "maxP95LatencyRatio": 2
+    },
+    "referenceTag": "google-ai-studio",
+    "subjects": [
+      {
+        "tag": "google-ai-studio",
+        "providerName": "Google AI Studio",
+        "quantization": "unknown",
+        "deploymentRevision": null
+      },
+      {
+        "tag": "google-ai-studio/flex",
+        "providerName": "Google AI Studio",
+        "quantization": "unknown",
+        "deploymentRevision": null
+      }
+    ],
+    "requiredPairs": 73,
+    "profiles": [
+      "workflow",
+      "cache-heavy"
+    ],
+    "reservePerRunUsd": 1,
+    "admission": "sdk-accounted-spend-plus-next-run-reserve/v1",
+    "runs": [
+      {
+        "pair": -1,
+        "profile": "standard",
+        "endpoint": {
+          "tag": "google-ai-studio",
+          "providerName": "Google AI Studio",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": -1,
+        "profile": "standard",
+        "endpoint": {
+          "tag": "google-ai-studio/flex",
+          "providerName": "Google AI Studio",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      }
+    ],
+    "schedule": "compatibility-first; pair-ascending; profile-order; endpoint-index=(index+pair)%subject-count",
+    "stoppingRules": [
+      "Missing accounting or an unaffordable next-run reserve stops the study.",
+      "A non-passing reference compatibility run stops paired testing.",
+      "A definitive candidate failure rejects it; subsequent candidate probes are skipped. All prior outcomes remain."
+    ],
+    "plannedRunCount": 294,
+    "qualificationScope": "exact requested tag with observed host; deployment/quantization not independently attested"
+  }
+}

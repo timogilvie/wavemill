@@ -1,0 +1,91 @@
+{
+  "capturedAt": "2026-11-17T13:07:35.303Z",
+  "model": "kimi-k2.7-code",
+  "modelSubject": {
+    "registryKey": "kimi-k2.7-code",
+    "nativeProvider": "openrouter",
+    "providerId": "moonshotai",
+    "providerModelId": "kimi-k2.7-code",
+    "providerNativeId": "moonshotai/kimi-k2.7-code",
+    "identityRevision": 1,
+    "identityFingerprint": "eb14fe716bdcd00dba03e203b44c9793620602ceca34bda2eba0c8987bd07c3c",
+    "catalogHash": "fc1c9b76c27cce376e27e77a11be2608333174f4362fba386c25be4413796f94"
+  },
+  "plan": {
+    "schemaVersion": "endpoint-comparison-plan/v2",
+    "policy": {
+      "maxSpendUsd": 10,
+      "maxCompletionRegression": 0.05,
+      "confidence": 0.95,
+      "maxP95LatencyRatio": 2
+    },
+    "referenceTag": "moonshotai",
+    "subjects": [
+      {
+        "tag": "moonshotai",
+        "providerName": "Moonshot AI",
+        "quantization": "unknown",
+        "deploymentRevision": null
+      },
+      {
+        "tag": "streamlake",
+        "providerName": "StreamLake",
+        "quantization": "unknown",
+        "deploymentRevision": null
+      },
+      {
+        "tag": "inceptron/int4",
+        "providerName": "Inceptron",
+        "quantization": "int4",
+        "deploymentRevision": null
+      }
+    ],
+    "requiredPairs": 73,
+    "profiles": [
+      "workflow",
+      "cache-heavy"
+    ],
+    "reservePerRunUsd": 1,
+    "admission": "sdk-accounted-spend-plus-next-run-reserve/v1",
+    "runs": [
+      {
+        "pair": -1,
+        "profile": "standard",
+        "endpoint": {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": -1,
+        "profile": "standard",
+        "endpoint": {
+          "tag": "streamlake",
+          "providerName": "StreamLake",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": -1,
+        "profile": "standard",
+        "endpoint": {
+          "tag": "inceptron/int4",
+          "providerName": "Inceptron",
+          "quantization": "int4",
+          "deploymentRevision": null
+        }
+      }
+    ],
+    "schedule": "compatibility-first; pair-ascending; profile-order; endpoint-index=(index+pair)%subject-count",
+    "stoppingRules": [
+      "Missing accounting or an unaffordable next-run reserve stops the study.",
+      "A non-passing reference compatibility run stops paired testing.",
+      "A definitive candidate failure rejects it; subsequent candidate probes are skipped. All prior outcomes remain."
+    ],
+    "plannedRunCount": 441,
+    "qualificationScope": "exact requested tag with observed host; deployment/quantization not independently attested"
+  }
+}

@@ -769,7 +769,6 @@
       "shared/lib/native-openrouter-config-validation.test.ts": 1205,
       "shared/lib/no-comparison-report.test.ts": 451,
       "shared/lib/observer-alerts.test.ts": 324,
-      "shared/lib/observer-auto-fix.test.ts": 696,
       "shared/lib/observer-findings.test.ts": 240,
       "shared/lib/observer-shadow-audit.test.ts": 319,
       "shared/lib/observer-status-renderer.test.ts": 138,

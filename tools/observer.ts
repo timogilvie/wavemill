@@ -18,25 +18,15 @@ import {
   getIncidentConfig,
   getMillConfig,
   getObserverAlertsConfig,
-  getObserverAutoFixConfig,
   getObserverLinearConfig,
   loadWavemillConfig,
   resolveObserverLinearModeSource,
   resolveSessionCapabilities,
   type ObserverAlertsConfig,
-  type ObserverAutoFixConfig,
   type ObserverLinearConfig,
   type SessionCapabilities,
 } from '../shared/lib/config.ts';
-import { measureBranchBaseDistance, updateBranchWithBase } from '../shared/lib/promotion-controller.ts';
-import {
-  appendAutoFixActionRecords,
-  runObserverAutoFixes,
-  type AutoFixCandidateFinding,
-  type AutoFixDeps,
-  type AutoFixRepoContext,
-  type AutoFixTask,
-} from '../shared/lib/observer-auto-fix.ts';
+import { measureBranchBaseDistance } from '../shared/lib/promotion-controller.ts';
 import {
   attentionItemsToAlertFindings,
   detectDesktopPlatform,
@@ -47,7 +37,6 @@ import {
   type AlertFinding,
   type AlertJournal,
 } from '../shared/lib/observer-alerts.ts';
-import { abortTaskInState } from '../shared/lib/task-abort.ts';
 import { getResultFilePath, type ReadyArtifacts, type StageResult } from '../shared/lib/stage-result.ts';
 import { mergeLanePosition } from '../shared/lib/merge-queue.ts';
 import { detectIncidentsForRepo, detectIncidentsForTask } from '../shared/lib/wavemill-incident-detector.ts';
@@ -182,7 +171,6 @@ interface ObserverOptions {
   staleMinutes: number;
   hungMinutes: number;
   fileIncidents: boolean;
-  autoFixDryRun: boolean;
   incidentsDryRun: boolean;
   incidentsShadow?: boolean;
   incidentsMode?: 'off' | 'offline' | 'shadow' | 'live';
@@ -421,7 +409,6 @@ Options:
   --linear-team <key>    Linear team key/name/id for filed issues
   --linear-project <id>  Optional Linear project id/name for filed issues
   --linear-label <name>  Optional Linear label name to attach
-  --autofix-dry-run      Preview auto-fix actions without applying them.
   --stale-minutes <n>    State/log/marker stale threshold (default: ${DEFAULT_STALE_MINUTES})
   --hung-minutes <n>     Child process hung threshold (default: ${DEFAULT_HUNG_MINUTES})
   --max-log-lines <n>    Recent mill log lines to inspect (default: 240)
@@ -445,7 +432,6 @@ export function parseArgs(argv: string[]): ObserverOptions {
     staleMinutes: DEFAULT_STALE_MINUTES,
     hungMinutes: DEFAULT_HUNG_MINUTES,
     fileIncidents: false,
-    autoFixDryRun: false,
     incidentsDryRun: false,
     maxLogLines: 240,
     printPrompt: false,
@@ -503,8 +489,6 @@ export function parseArgs(argv: string[]): ObserverOptions {
     } else if (arg.startsWith('--incidents-policy=')) {
       options.incidentsPolicy = arg.slice('--incidents-policy='.length);
       options.fileIncidents = true;
-    } else if (arg === '--autofix-dry-run') {
-      options.autoFixDryRun = true;
     } else if (arg === '--print-prompt') {
       options.printPrompt = true;
     } else if (arg === '--no-incident-detector') {
@@ -3385,7 +3369,7 @@ export function detectBranchBehindBase(
         `wmReadyLabel=${hasReadyLabel === undefined ? 'unknown' : hasReadyLabel}`,
         taskPrEvidence(repo.repoDir, task),
       ],
-      recommendation: `Update ${branch} from ${baseBranch} (\`npx tsx tools/update-branch-with-base.ts --worktree ${task.worktree ?? '<worktree>'} --branch ${branch} --base ${baseBranch}\`) before it drifts further; merge conflicts only get worse with distance. observer.autoFix.updateBranchFromBase (HOK-3097) can apply this fix automatically.`,
+      recommendation: `Update ${branch} from ${baseBranch} (\`npx tsx tools/update-branch-with-base.ts --worktree ${task.worktree ?? '<worktree>'} --branch ${branch} --base ${baseBranch}\`) before it drifts further; merge conflicts only get worse with distance. The monitor's recovery controller applies this repair through the shared update-from-base action when Ready fails on the drift.`,
     });
   }
   return findings;
@@ -4346,121 +4330,6 @@ function maxObserverLinearMode(a: IncidentSyncSnapshot['mode'], b: IncidentSyncS
 }
 
 /**
- * HOK-3097: apply opt-in observer self-repair actions. Returns the snapshot
- * unchanged when the master switch is off (byte-identical no-op). Appends
- * action records to `<incidentStoreDir>/actions.jsonl` and `low`/`medium`
- * findings to the snapshot for the dashboard.
- */
-export async function applyAutoFixes(
-  snapshot: ObserverSnapshot,
-  options: ObserverOptions,
-): Promise<ObserverSnapshot> {
-  const now = new Date(snapshot.timestamp);
-  for (const repo of snapshot.repos) {
-    let config: ObserverAutoFixConfig;
-    try {
-      config = getObserverAutoFixConfig(repo.repoDir);
-    } catch (error) {
-      addConfigDegradedFindingIfMissing(snapshot.findings, repo, error, 'observer auto-fix');
-      continue;
-    }
-    if (!config.enabled) continue;
-
-    let incidentStoreDir: string;
-    try {
-      const incidentConfig = getIncidentConfig(repo.repoDir);
-      const storeDir = incidentConfig.store?.directory ?? '.wavemill/incidents';
-      incidentStoreDir = isAbsolute(storeDir) ? storeDir : join(repo.repoDir, storeDir);
-    } catch {
-      incidentStoreDir = join(repo.repoDir, '.wavemill', 'incidents');
-    }
-
-    const progressByIssue = new Map<string, TaskProgress>();
-    const progressLookup = makeProgressLookup(repo, now.getTime());
-    for (const task of repo.tasks) {
-      const progress = progressLookup(task);
-      if (progress) progressByIssue.set(task.issue, progress);
-    }
-
-    const context: AutoFixRepoContext = {
-      repoDir: repo.repoDir,
-      session: repo.session,
-      workflowStatePath: repo.workflowStatePath,
-      effectiveBaseBranch: (task) => observerBaseBranchForIssue(repo, task.issue),
-      resolveTaskStateDir: (task) => resolveTaskStateDir(repo.repoDir, task as ObservedTask),
-      incidentStoreDir,
-    };
-
-    const deps: AutoFixDeps = {
-      git: (args, cwd) => {
-        const result = execFileSync('git', args, { cwd, encoding: 'utf-8', timeout: 15_000, stdio: ['ignore', 'pipe', 'pipe'] });
-        return typeof result === 'string' ? result : String(result);
-      },
-      gh: (args, cwd) => {
-        const result = run('gh', args, 20_000, cwd);
-        return result;
-      },
-      updateBranchWithBase: (branch, baseBranch, worktree, headMoveContext) =>
-        updateBranchWithBase(branch, baseBranch, worktree, undefined, headMoveContext
-          ? { ...headMoveContext, stage: 'ready', kind: 'base-merge' }
-          : undefined),
-      readWorktreeDirtyStatus: (worktree) => readWorktreeDirtyStatus({ worktree }),
-      getProgress: (task) => progressByIssue.get(task.issue),
-      abortTaskInState: (stateFile, issue, reason) => abortTaskInState(stateFile, issue, reason).then(() => undefined),
-    };
-
-    const candidateFindings: AutoFixCandidateFinding[] = snapshot.findings
-      .filter((f) => f.repoDir === repo.repoDir)
-      .map((f) => ({ id: f.id, issue: f.issue, severity: f.severity }));
-
-    const tasks = repo.tasks.map((task): AutoFixTask => ({
-      issue: task.issue,
-      slug: task.slug,
-      phase: task.phase,
-      status: task.status,
-      pr: task.pr,
-      worktree: task.worktree,
-      branch: task.branch,
-      challengeRole: task.challengeRole,
-      challengePairId: task.challengePairId,
-      challengeAborted: task.challengeAborted,
-      evalCompleted: task.evalCompleted,
-    }));
-
-    try {
-      const { records, findings } = await runObserverAutoFixes({
-        repo: context,
-        tasks,
-        findings: candidateFindings,
-        config,
-        deps,
-        now,
-        dryRun: options.autoFixDryRun,
-      });
-      // Record planned records in dry-run mode too so operators can preview;
-      // either way the write happens via the same append path.
-      if (records.length > 0) {
-        appendAutoFixActionRecords(incidentStoreDir, records);
-      }
-      snapshot.findings.push(...findings);
-    } catch (error) {
-      snapshot.findings.push({
-        id: `observer-auto-fix-error-${repo.session}-${hashText(repo.repoDir)}`,
-        severity: 'medium',
-        category: 'operational',
-        confidence: 'high',
-        session: repo.session,
-        repoDir: repo.repoDir,
-        title: 'Observer auto-fix pass failed',
-        evidence: [`error=${error instanceof Error ? error.message : String(error)}`],
-        recommendation: 'Inspect the observer log; auto-fix is off until the error clears.',
-      });
-    }
-  }
-  return snapshot;
-}
-
-/**
  * HOK-3097: send desktop/push notifications for urgent/high findings that
  * persist past the configured threshold. Journal persisted at
  * `.wavemill/observer/alert-state.json`.
@@ -4681,19 +4550,18 @@ export async function writeServiceHeartbeat(snapshot: ObserverSnapshot, options:
         configSource = undefined;
       }
       const credentialReady = Boolean(process.env.LINEAR_API_KEY);
-      let autoFixConfig: ReturnType<typeof getObserverAutoFixConfig> | undefined;
       let linearConfig: ReturnType<typeof getObserverLinearConfig> | undefined;
       try {
-        autoFixConfig = getObserverAutoFixConfig(options.repoDir);
         linearConfig = getObserverLinearConfig(options.repoDir);
       } catch {
         // Config errors already surface as findings; heartbeat degrades gracefully.
       }
+      // HOK-3406: Observer is evidence-only. The enum keeps its historical
+      // `remediation` member for existing Backstage health consumers, but this
+      // service no longer executes repairs, so it is never emitted.
       const detectionMode: 'off' | 'detection-only' | 'remediation' = !options.incidentDetector
         ? 'off'
-        : (autoFixConfig?.enabled && !options.autoFixDryRun)
-          ? 'remediation'
-          : 'detection-only';
+        : 'detection-only';
       const escalationMode = linearConfig ? observerEscalationMode(linearConfig, options) : 'off';
       const investigationSummary = latestInvestigationSummary(options.repoDir);
       const lastError = snapshot.incidentSync?.errors?.[snapshot.incidentSync.errors.length - 1];
@@ -4871,12 +4739,12 @@ function observerPrompt(): string {
 Run \`wavemill observer --json --once\` every few minutes and use its findings as the authoritative structured snapshot.
 
 Act conservatively:
-- Detect Wavemill conditions and verify auto-fix outcomes.
+- Detect Wavemill conditions and report findings as evidence.
 - For confirmed defects that are not repairable within existing authority, invoke the escalation workflow; the root-cause skill decides whether evidence appends to an existing issue or becomes one consolidated report.
-- Do not create ad-hoc Linear issues and do not make ad-hoc code edits outside the bounded auto-fix actions.
+- Do not create ad-hoc Linear issues and do not make ad-hoc code edits or repairs; task recovery belongs to the Monitor's recovery controller.
 - Never kill a whole tmux session, reset worktrees, or modify active task work unless explicitly instructed.
 
-Detection-only unless observer.autoFix is enabled; the observer's own fixes are logged in .wavemill/incidents/actions.jsonl.
+Detection-only: findings and evidence only, never execution authority.
 
 Report after each loop: sessions inspected, active tasks, findings by severity, action taken, and next check time.
 `;
@@ -4911,9 +4779,8 @@ async function main(): Promise<void> {
   try {
     do {
       const reconciled = await reconcileIncidents(observe(options), options);
-      const fixed = await applyAutoFixes(reconciled, options);
-      await queueRootCauseInvestigations(fixed, options);
-      const alerted = await sendAlerts(fixed, options);
+      await queueRootCauseInvestigations(reconciled, options);
+      const alerted = await sendAlerts(reconciled, options);
       const observed = await syncIncidentsToLinear(alerted, options);
       const snapshot = options.serviceMode ? redactSnapshot(observed) : observed;
       await writeServiceHeartbeat(snapshot, options);

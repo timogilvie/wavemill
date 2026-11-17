@@ -9,7 +9,6 @@ shared/lib/incident-replay-harness.ts 1  # replay harness writes a synthetic sta
 shared/lib/linear.ts 1  # setIssueState definition (the API client), not a call site
 shared/lib/monitor-async-jobs.sh 5  # pre-HOK-3373 site (task-path-probe×5); migrate to the resolver
 shared/lib/native-agent/tools/intended-files.ts 1  # pre-HOK-3373 site (task-path-probe×1); migrate to the resolver
-shared/lib/observer-auto-fix.ts 5  # pre-HOK-3373 site (task-path-probe×5); migrate to the resolver
 shared/lib/ready-watchdog.ts 3  # pre-HOK-3373 site (task-path-probe×3); migrate to the resolver
 shared/lib/review-metrics.ts 1  # pre-HOK-3373 direct write; migrate to mutateWorkflowState
 shared/lib/session-ownership.sh 1  # pre-HOK-3373 site (task-path-probe×1); migrate to the resolver

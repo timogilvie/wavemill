@@ -72,7 +72,6 @@ that date to be retired.
 | `WAVEMILL_SKIP_CERTIFICATION_COVERAGE_GUARD` | 0 | Targeted operator override for the certification coverage guard. | Emergency-only escape hatch (per `docs/native-certification-contract.md`). |
 | `WAVEMILL_CLEANUP_EPISODES_ENABLED` | 1 | Operator override for the episodic cleanup path (`cleanup.episodes.enabled`); `0` disables it. | Operator disable over a mutating cleanup path; mirrors `cleanup.branchDeletion.enabled` (HOK-3068). |
 | `WAVEMILL_UNATTENDED_CLEANUP_ENABLED` | 1 | Operator override for the unattended terminal-cleanup tick (`cleanup.terminalInbox.unattended.enabled`); `0` disables it. | Operator disable over an on-by-default cleanup path (HOK-3201). |
-| `WAVEMILL_OBSERVER_AUTOFIX` | 0 | Master kill over `observer.autoFix.*` mutating actions. | Safety switch over observer actions that push branches, edit labels, and forfeit arms. |
 | `WAVEMILL_STATE_INVARIANTS_DISABLED` | 0 | Kill switch for the HOK-3229 live-state invariant checker (detection only; disables the monitor tick). | Operator kill over a detector that writes JSONL + fires desktop notifications. |
 | `WAVEMILL_SKIP_RELIABILITY_METRIC` | 0 | Suppress the dashboard reliability-metric line. | UI opt-out for CI / non-tty environments; same shape as `WAVEMILL_NO_PROGRESS` (HOK-3177). |
 | `WAVEMILL_SKIP_FAST_STRIP` | 0 | Force `npx tsx` instead of `node --experimental-strip-types`. | Loader opt-out for test environments and older Nodes; eight call-sites and a mocked `npx` in tests make removal risky (HOK-3200). |

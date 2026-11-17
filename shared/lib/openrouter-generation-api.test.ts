@@ -1,10 +1,12 @@
 // wavemill-test-suite: custom
 import assert from 'node:assert/strict';
 import {
-  fetchGenerationCost,
+  fetchGenerationCost as fetchGenerationCostImpl,
   fetchGenerationCostsBatched,
   type FetchLike,
 } from './openrouter-generation-api.ts';
+
+const fetchGenerationCost = (id: string, options: Parameters<typeof fetchGenerationCostImpl>[1] = {}) => fetchGenerationCostImpl(id, { ...options, retry: { sleep: async () => {}, ...options.retry } });
 
 let passed = 0;
 let failed = 0;
@@ -147,12 +149,27 @@ await test('batched fetch preserves mapping and respects concurrency', async () 
     apiKey: 'secret-key',
     fetchFn,
     concurrency: 2,
+    retry: { sleep: async () => {} },
   });
   assert.equal(result.get('a')?.totalCostUsd, 1);
   assert.equal(result.get('b')?.totalCostUsd, 2);
   assert.equal(result.get('bad'), null);
   assert.ok(maxInFlight <= 2);
   assert.equal(result.size, 3);
+});
+
+await test('eventual generation metadata uses bounded shared retry, never hides permanent auth refusal', async () => {
+  let requests = 0;
+  const result = await fetchGenerationCost('gen-delayed', { apiKey: 'test', retry: { random: () => .5 },
+    fetchFn: async () => ++requests < 3 ? { ok: false, status: 404 } as Response : response({ data: { total_cost: .02, provider_name: 'Observed Host' } }) });
+  assert.equal(requests, 3);
+  assert.equal(result?.providerName, 'Observed Host');
+  requests = 0;
+  assert.equal(await fetchGenerationCost('gen-forbidden', { apiKey: 'test', fetchFn: async () => { requests++; return { ok: false, status: 401 } as Response; } }), null);
+  assert.equal(requests, 1);
+  requests = 0;
+  assert.equal(await fetchGenerationCost('gen-missing', { apiKey: 'test', fetchFn: async () => { requests++; return { ok: false, status: 404 } as Response; } }), null);
+  assert.equal(requests, 4, 'shared retry default bounds metadata lookups');
 });
 
 console.log(`\n--- Results: ${passed} passed, ${failed} failed ---\n`);

@@ -1,0 +1,154 @@
+{
+  "capturedAt": "2026-11-17T14:11:20.837Z",
+  "model": "kimi-k2.7-code",
+  "modelSubject": {
+    "registryKey": "kimi-k2.7-code",
+    "nativeProvider": "openrouter",
+    "providerId": "moonshotai",
+    "providerModelId": "kimi-k2.7-code",
+    "providerNativeId": "moonshotai/kimi-k2.7-code",
+    "identityRevision": 1,
+    "identityFingerprint": "eb14fe716bdcd00dba03e203b44c9793620602ceca34bda2eba0c8987bd07c3c",
+    "catalogHash": "fc1c9b76c27cce376e27e77a11be2608333174f4362fba386c25be4413796f94"
+  },
+  "plan": {
+    "schemaVersion": "endpoint-comparison-plan/v3",
+    "kind": "reference-characterization",
+    "contract": {
+      "version": "endpoint-functional/v1",
+      "oracleHash": "f1de183874bb07172da6860bcbffd5198bc8af74d25831f5f2be18e18ef7c8a9",
+      "toolContract": "native-patch-and-command-tools/v1",
+      "limits": {
+        "maxWallClockMs": 240000,
+        "maxTurns": 200,
+        "maxToolCalls": 1200,
+        "maxTotalTokens": 60000,
+        "maxCostUsd": 0.5
+      },
+      "maxAttempts": 2
+    },
+    "policy": {
+      "maxSpendUsd": 3,
+      "maxCompletionRegression": 0.05,
+      "confidence": 0.95,
+      "maxP95LatencyRatio": 2
+    },
+    "referenceTag": "moonshotai",
+    "subjects": [
+      {
+        "tag": "moonshotai",
+        "providerName": "Moonshot AI",
+        "quantization": "unknown",
+        "deploymentRevision": null
+      }
+    ],
+    "requiredPairs": 0,
+    "profiles": [
+      "workflow",
+      "cache-heavy"
+    ],
+    "reservePerRunUsd": 1,
+    "admission": "sdk-accounted-spend-plus-next-run-reserve/v1",
+    "runs": [
+      {
+        "pair": 0,
+        "profile": "standard",
+        "endpoint": {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 0,
+        "profile": "workflow",
+        "endpoint": {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 0,
+        "profile": "cache-heavy",
+        "endpoint": {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 1,
+        "profile": "standard",
+        "endpoint": {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 1,
+        "profile": "workflow",
+        "endpoint": {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 1,
+        "profile": "cache-heavy",
+        "endpoint": {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 2,
+        "profile": "standard",
+        "endpoint": {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 2,
+        "profile": "workflow",
+        "endpoint": {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      },
+      {
+        "pair": 2,
+        "profile": "cache-heavy",
+        "endpoint": {
+          "tag": "moonshotai",
+          "providerName": "Moonshot AI",
+          "quantization": "unknown",
+          "deploymentRevision": null
+        }
+      }
+    ],
+    "schedule": "compatibility-first; pair-ascending; profile-order; endpoint-index=(index+pair)%subject-count",
+    "stoppingRules": [
+      "Missing accounting or an unaffordable next-run reserve stops the study.",
+      "A non-passing reference compatibility run stops paired testing.",
+      "A functional/protocol failure hard-disqualifies an endpoint; resource/availability outcomes count against completion. All outcomes remain.",
+      "Any non-passing reference probe stops the study. Characterization requires three live passes per workload before candidate testing."
+    ],
+    "plannedRunCount": 9,
+    "qualificationScope": "exact requested tag with observed host; deployment/quantization not independently attested"
+  }
+}
