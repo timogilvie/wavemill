@@ -68,7 +68,8 @@ describe('native-agent apply_patch tool', () => {
       assert.equal(details.error, 'invalid_patch');
       assert.equal(details.retryHint, 'Fix the patch schema errors and retry with the valid NativePatch example shown in the tool result.');
       assert.ok(Array.isArray(details.diagnostics));
-      assert.match(result.content[0]!.text, /NativePatch contract/);
+      assert.match(result.content[0]!.text, /Validation errors/);
+      assert.match(result.content[0]!.text, /\$\.operations/);
     }
 
     const afterCall = await applyPatchAfterToolCall({
@@ -94,8 +95,8 @@ describe('native-agent apply_patch tool', () => {
     });
 
     const text = result.content[0]!.text;
-    assert.match(text, /\$\.version/);
-    assert.match(text, /\$\.atomic/);
+    assert.match(text, /missing required key: 'version'/);
+    assert.match(text, /missing required key: 'atomic'/);
     assertValidExampleInText(text);
   });
 
@@ -108,9 +109,34 @@ describe('native-agent apply_patch tool', () => {
     });
 
     const text = result.content[0]!.text;
-    assert.match(text, /\$\.version/);
-    assert.match(text, /\$\.atomic/);
-    assert.match(text, /\$\.operations/);
+    assert.match(text, /unknown key received: 'files'/);
+    assert.match(text, /missing required key: 'version'/);
+    assert.match(text, /missing required key: 'atomic'/);
+    assert.match(text, /missing required key: 'operations'/);
+    assertValidExampleInText(text);
+  });
+
+  it('names HOK-3493 attempt-2 corrupted keys in the rejection text', async () => {
+    const repo = createRepo('apply-patch-hok3493-');
+    const tool = createApplyPatchTool(repo);
+
+    const payload: Record<string, unknown> = {
+      version: 1,
+      atomicity: true,
+    };
+    payload['operations '] = [{
+      op: 'edit',
+      path: 'src/app.ts',
+      oldText: 'a',
+      newText: 'b',
+    }];
+    const result = await tool.execute('call-hok3493', { patch: payload as any });
+
+    const text = result.content[0]!.text;
+    assert.match(text, /unknown key received: 'atomicity'/);
+    assert.match(text, /unknown key received: 'operations '/);
+    assert.match(text, /missing required key: 'atomic'/);
+    assert.match(text, /missing required key: 'operations'/);
     assertValidExampleInText(text);
   });
 
