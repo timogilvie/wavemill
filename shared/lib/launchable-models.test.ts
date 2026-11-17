@@ -15,9 +15,9 @@ import { GLOBAL_CERTIFICATION_ROOT_ENV } from './native-agent/certification/stor
 import { loadLaunchPriorityList } from './openrouter-catalog.ts';
 
 const WATCHLIST_STAGE_MAP = {
-  'qwen-3-235b': ['planner', 'coder', 'reviewer'],
-  'kimi-k2-thinking': ['planner', 'coder', 'reviewer'],
-  'mistral-medium-3': ['coder'],
+  'qwen-3-coder': ['planner', 'coder', 'reviewer'],
+  'kimi-k3': ['planner', 'coder', 'reviewer'],
+  'gemini-3.8-flash': ['coder', 'reviewer'],
   'devstral-medium': ['coder'],
   'grok-code-fast': ['coder'],
 } satisfies Record<string, LaunchabilityStage[]>;
@@ -280,10 +280,10 @@ describe('launch-priority watchlist launchability', () => {
     const explicitEmptyRoot = mkdtempSync(join(tmpdir(), 'wavemill-launchability-empty-'));
     const previousRoot = process.env[GLOBAL_CERTIFICATION_ROOT_ENV];
     writeMinimalConfig(repoDir);
-    writeCertification('qwen-3-235b', populatedAmbientRoot);
+    writeCertification('qwen-3-coder', populatedAmbientRoot);
 
     const catalog = loadLaunchPriorityList()
-      .filter((entry) => entry.wavemillAlias === 'qwen-3-235b');
+      .filter((entry) => entry.wavemillAlias === 'qwen-3-coder');
 
     try {
       process.env[GLOBAL_CERTIFICATION_ROOT_ENV] = populatedAmbientRoot;
@@ -304,7 +304,7 @@ describe('launch-priority watchlist launchability', () => {
 
       assert.deepEqual(matrixWithPopulatedAmbient, matrixWithEmptyAmbient);
       const plannerCell = matrixWithPopulatedAmbient.cells.find((cell) =>
-        cell.modelId === 'qwen-3-235b' && cell.stage === 'planner');
+        cell.modelId === 'qwen-3-coder' && cell.stage === 'planner');
       assert.ok(plannerCell);
       assert.equal(plannerCell.launchable, false);
       assert.equal(plannerCell.blocker, 'certification');

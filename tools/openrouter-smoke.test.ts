@@ -68,11 +68,11 @@ describe('openrouter-smoke tool', () => {
   });
 
   it('filters dry-run smoke to requested models', async () => {
-    const result = await runSmoke(['--models', 'glm-5.2', '--json']);
+    const result = await runSmoke(['--models', 'glm-5.3', '--json']);
 
     assert.equal(result.status, 0);
     const parsed = JSON.parse(result.stdout);
-    assert.deepEqual(parsed.reports.map((report: { modelId: string }) => report.modelId), ['glm-5.2']);
+    assert.deepEqual(parsed.reports.map((report: { modelId: string }) => report.modelId), ['glm-5.3']);
   });
 
   it('targets the HOK-2582 watchlist with an explicit dry-run flag', async () => {
@@ -86,14 +86,23 @@ describe('openrouter-smoke tool', () => {
     );
   });
 
+  it('sweeps current watchlist models and excludes retired aliases', () => {
+    for (const model of ['minimax-m3.1-flash', 'glm-5.3-flashx', 'mistral-large-4']) {
+      assert.ok(WATCHLIST_SMOKE_MODELS.includes(model), model);
+    }
+    for (const model of ['qwen-3-235b', 'kimi-k2-thinking', 'mistral-medium-3']) {
+      assert.equal(WATCHLIST_SMOKE_MODELS.includes(model), false, model);
+    }
+  });
+
   it('filters entries by family and model id helpers', () => {
     const entries = createDryRunEntries();
     const qwen = selectSmokeEntries(entries, { families: ['qwen'] });
     assert.ok(qwen.length > 0);
     assert.ok(qwen.every((entry) => entry.family === 'qwen'));
 
-    const glm = selectSmokeEntries(entries, { models: ['z-ai/glm-5.2'] });
-    assert.deepEqual(glm.map((entry) => entry.wavemillAlias), ['glm-5.2']);
+    const glm = selectSmokeEntries(entries, { models: ['z-ai/glm-5.3'] });
+    assert.deepEqual(glm.map((entry) => entry.wavemillAlias), ['glm-5.3']);
   });
 
   it('does not include OpenAI-hosted models in an OpenRouter smoke sweep', () => {

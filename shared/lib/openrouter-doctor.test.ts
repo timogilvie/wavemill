@@ -141,7 +141,7 @@ describe('openrouter-doctor', () => {
     try {
       writeConfig(repoDir);
       const report = withEnv({ TEST_OPENROUTER_KEY: undefined }, () => diagnoseOpenRouter({ repoDir }));
-      const glm = report.models.find((model) => model.id === 'glm-5.2');
+      const glm = report.models.find((model) => model.id === 'glm-5.3');
       assert.ok(glm);
       for (const cell of glm.cells) {
         assert.equal(cell.primaryReason?.reason, 'MISSING_API_KEY');
@@ -161,12 +161,12 @@ describe('openrouter-doctor', () => {
     const repoDir = makeRepoDir();
     try {
       writeConfig(repoDir);
-      writeOpenRouterCert(repoDir, 'z-ai/glm-5.2');
+      writeOpenRouterCert(repoDir, 'z-ai/glm-5.3');
       const report = withEnv({
         TEST_OPENROUTER_KEY: 'sk-test',
         OPENROUTER_DIRECT_AGENTS_ENABLED: undefined,
       }, () => diagnoseOpenRouter({ repoDir }));
-      const glm = report.models.find((model) => model.id === 'glm-5.2');
+      const glm = report.models.find((model) => model.id === 'glm-5.3');
       assert.ok(glm);
       assert.equal(glm.cells.every((cell) => cell.eligible), true);
       assert.equal(
@@ -182,9 +182,9 @@ describe('openrouter-doctor', () => {
     const repoDir = makeRepoDir();
     try {
       writeConfig(repoDir);
-      writeOpenRouterCert(repoDir, 'z-ai/glm-5.2');
+      writeOpenRouterCert(repoDir, 'z-ai/glm-5.3');
       const report = withEnv({ TEST_OPENROUTER_KEY: 'sk-test' }, () => diagnoseOpenRouter({ repoDir }));
-      const glm = report.models.find((model) => model.id === 'glm-5.2');
+      const glm = report.models.find((model) => model.id === 'glm-5.3');
       assert.ok(glm);
       assert.equal(glm.cells.every((cell) => cell.eligible), true);
     } finally {
@@ -197,10 +197,10 @@ describe('openrouter-doctor', () => {
     try {
       writeConfig(repoDir);
       const report = withEnv({ TEST_OPENROUTER_KEY: 'sk-test' }, () => diagnoseOpenRouter({ repoDir }));
-      const glm = report.models.find((model) => model.nativeProviderId === 'z-ai/glm-5.2');
+      const glm = report.models.find((model) => model.nativeProviderId === 'z-ai/glm-5.3');
       assert.ok(glm);
-      assert.equal(glm.alias, 'glm-5.2');
-      assert.equal(glm.registryModelId, 'glm-5.2');
+      assert.equal(glm.alias, 'glm-5.3');
+      assert.equal(glm.registryModelId, 'glm-5.3');
     } finally {
       cleanup(repoDir);
     }
@@ -211,7 +211,7 @@ describe('openrouter-doctor', () => {
     try {
       writeConfig(repoDir);
       const report = withEnv({ TEST_OPENROUTER_KEY: 'sk-test' }, () => diagnoseOpenRouter({ repoDir }));
-      const glm = report.models.find((model) => model.id === 'glm-5.2');
+      const glm = report.models.find((model) => model.id === 'glm-5.3');
       assert.ok(glm);
       assert.equal(glm.cells.every((cell) => cell.primaryReason?.reason === 'CERTIFICATION_REJECTED'), true);
       for (const cell of glm.cells) {
@@ -227,7 +227,7 @@ describe('openrouter-doctor', () => {
     const repoDir = makeRepoDir();
     try {
       writeConfig(repoDir);
-      writeOpenRouterCert(repoDir, 'z-ai/glm-5.2');
+      writeOpenRouterCert(repoDir, 'z-ai/glm-5.3');
       const report = withEnv({ TEST_OPENROUTER_KEY: 'sk-test' }, () => diagnoseOpenRouter({ repoDir }));
       assert.equal(
         report.models.some((model) =>
@@ -244,12 +244,12 @@ describe('openrouter-doctor', () => {
     const repoDir = makeRepoDir();
     try {
       writeConfig(repoDir);
-      const storagePath = writeOpenRouterCert(repoDir, 'z-ai/glm-5.2');
+      const storagePath = writeOpenRouterCert(repoDir, 'z-ai/glm-5.3');
       const report = withEnv({ TEST_OPENROUTER_KEY: 'sk-test' }, () => diagnoseOpenRouter({ repoDir }));
-      const glm = report.models.find((model) => model.id === 'glm-5.2');
+      const glm = report.models.find((model) => model.id === 'glm-5.3');
       assert.ok(glm);
-      assert.equal(glm.alias, 'glm-5.2');
-      assert.equal(glm.nativeProviderId, 'z-ai/glm-5.2');
+      assert.equal(glm.alias, 'glm-5.3');
+      assert.equal(glm.nativeProviderId, 'z-ai/glm-5.3');
       assert.equal(glm.storagePath, storagePath);
     } finally {
       cleanup(repoDir);
@@ -279,7 +279,7 @@ describe('openrouter-doctor', () => {
     const repoDir = makeRepoDir();
     try {
       writeConfig(repoDir);
-      writeOpenRouterCert(repoDir, 'z-ai/glm-5.2');
+      writeOpenRouterCert(repoDir, 'z-ai/glm-5.3');
       const evalsDir = join(repoDir, '.wavemill', 'evals');
       mkdirSync(evalsDir, { recursive: true });
       writeFileSync(join(evalsDir, 'evals.jsonl'), `${JSON.stringify({
@@ -302,7 +302,7 @@ describe('openrouter-doctor', () => {
         },
       })}\n`);
       const report = withEnv({ TEST_OPENROUTER_KEY: 'sk-test' }, () => diagnoseOpenRouter({ repoDir, lookback: 5 }));
-      assert.ok(report.zeroTrafficCells.some((cell) => cell.modelId === 'glm-5.2' && cell.stage === 'coder'));
+      assert.ok(report.zeroTrafficCells.some((cell) => cell.modelId === 'glm-5.3' && cell.stage === 'coder'));
     } finally {
       cleanup(repoDir);
     }

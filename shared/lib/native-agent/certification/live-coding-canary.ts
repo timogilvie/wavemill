@@ -1,6 +1,6 @@
 import { budgetExhaustionFromLoop } from '../budget-exhaustion.ts';
 import { resolveNativeStageTimeSplit } from '../stage-time-split.ts';
-import { ProviderIdentityMismatchError } from '../provider-identity.ts';
+import { ProviderIdentityMismatchError, extractProviderReportedIdentity } from '../provider-identity.ts';
 import { createRunTestsTool } from '../tools/command-tools.ts';
 import { recordLaunch } from '../../session-ownership.ts';
 import { meterWorkflowCost } from '../../sdk-task-cost/meter.ts';
@@ -8,7 +8,7 @@ import { redactProviderExecutions, redactStageTaskCost, redactSessionIds } from 
 import { buildTechnicalTaskRouterRowV4 } from '../../hokusai-contribution-builder.ts';
 import { classifyArmFault, type ArmFaultClass } from '../../arm-failure-taxonomy.ts';
 import { TranscriptWriter } from '../transcript.ts';
-import { endpointRouting } from './identity.ts';
+import { endpointRouting, isRollingProviderAlias } from './identity.ts';
 import type { ExactPricingOptions } from '../../pricing/openrouter-exact-pricing.ts';
 /**
  * Live coding canary runner (HOK-2943).
@@ -274,6 +274,7 @@ async function runSingleCanaryAttempt(input: {
   process.once('exit', removeOnExit);
   let workspace: CanaryWorkspace | undefined;
   let transcript: TranscriptWriter | undefined;
+  const pricing = options.endpointPricing ?? resolveModelPricing(options);
   const sessionId = randomUUID();
   let faultClass: ArmFaultClass = 'unknown-fault';
   try {
@@ -315,7 +316,6 @@ async function runSingleCanaryAttempt(input: {
         tools: descriptors.map((descriptor) => toPiAgentTool(descriptor) as AgentTool<unknown, unknown>),
       };
 
-      const pricing = options.endpointPricing ?? resolveModelPricing(options);
       const budget = {
         maxTurns: limits.maxTurns,
         maxToolCalls: limits.maxToolCalls,
@@ -329,7 +329,7 @@ async function runSingleCanaryAttempt(input: {
       try {
         result = await runLoopFn({
           model: input.model,
-          ...(options.subject.endpoint ? { providerIdentity: { expectation: { requestedWireId: options.subject.providerNativeId,
+          ...(!isRollingProviderAlias(options.subject.providerNativeId) ? { providerIdentity: { expectation: { requestedWireId: options.subject.providerNativeId,
             expectedModel: options.subject.providerNativeId, isAlias: false, registryKey: options.registryModelId } } } : {}),
           ...(nativeModels ? { models: nativeModels } : {}),
           context,
@@ -351,7 +351,15 @@ async function runSingleCanaryAttempt(input: {
           maxTokens: 4096,
           signal: options.signal,
           providerErrorRetry: { maxAttempts: 2 },
-          onEvent(event) { transcript!.handleEvent(event); evidenceRecorder.onEvent(event); },
+          onEvent(event) {
+            // Pi omits responseModel when the provider echoes the requested id.
+            // Preserve that attestation through the canonical identity primitive.
+            const reported = event.type === 'message_end' && event.message.role === 'assistant'
+              ? extractProviderReportedIdentity(event.message, options.subject.providerNativeId) : undefined;
+            transcript!.handleEvent(reported?.reportedModel && event.type === 'message_end'
+              ? { ...event, message: { ...event.message, responseModel: reported.reportedModel } } : event);
+            evidenceRecorder.onEvent(event);
+          },
         });
       } catch (error) {
         if (error instanceof ProviderIdentityMismatchError) return { status: 'fail', reason: 'identity_mismatch', detail: sanitizeDetail(error.message, tmpRoot) };
@@ -406,7 +414,10 @@ async function runSingleCanaryAttempt(input: {
         const evidenceDir = join(workspace.tmpRoot, 'evidence');
         const metered = await meterWorkflowCost({ repoDir: options.repoDir, worktreePath: workspace.repoDir, featureDir: evidenceDir,
           branchName: '', issueId: sessionId, slug: 'live-canary', label: 'Certification canary',
-          ...(options.endpointPricing ? { pricingTable: { [options.registryModelId]: options.endpointPricing } } : {}),
+          ...(pricing ? { pricingTable: {
+            [options.registryModelId]: pricing,
+            [options.subject.providerNativeId]: pricing,
+          } } : {}),
           ownership: [ { sessionRef: sessionId, harness: 'native', kind: 'coding', stage: 'coding', model: options.registryModelId, attemptId: sessionId, launchedAt: input.now().toISOString(), cwd: workspace.repoDir } ],
           exactPricing: { ...(authEnv && options.provider === 'openrouter' ? { apiKey: authEnv.apiKey } : {}), ...options.exactPricing }, logger: { log() {}, warn() {} } });
         if (metered.outcome.status === 'success' && metered.summaries?.length) {

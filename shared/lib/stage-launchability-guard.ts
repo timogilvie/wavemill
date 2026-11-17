@@ -222,6 +222,14 @@ export const STAGE_LAUNCHABILITY_GUARD: GuardSpec = {
   ],
   structuralChecks: [
     {
+      name: 'cohort-readiness-bypasses-gate',
+      description: 'cohort coding readiness must consume the native launch gate, never canary evidence alone',
+      paths: ['shared/lib/native-agent/certification/canary-cohort.ts'],
+      find: source => topLevelFunctions(source)
+        .filter(fn => fn.name === 'evaluateMemberStatus' && !/\bevaluateNativeProviderGate\s*\(/.test(fn.body))
+        .map(fn => ({ line: fn.line, detail: fn.name })),
+    },
+    {
       name: 'router-exit-not-finalized',
       description: 'exported router function returns a route decision without reaching finalizeDecision / enforceLaunchableRoute',
       paths: [WORKFLOW_ROUTER_PATH],

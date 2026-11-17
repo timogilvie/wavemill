@@ -100,14 +100,20 @@ test('P1: following the gate→increment contract, count never exceeds maxAttemp
             backoff: { baseSeconds: 0, capSeconds: 0 },
           });
           let currentHead = headA;
+          let observedHead = headA;
           let proceedCount = 0;
           let exhaustedSeen = false;
           for (const step of steps) {
             if (step.kind === 'newHead') {
               currentHead = currentHead === headA ? 'ffffff0' : headA;
+              continue;
+            }
+            // Head changes reset persisted state only when a gate observes them.
+            // Toggling away and back without a gate must retain the prior count.
+            if (currentHead !== observedHead) {
               proceedCount = 0;
               exhaustedSeen = false;
-              continue;
+              observedHead = currentHead;
             }
             const decision = retry.gate(dir, currentHead);
             if (decision === 'proceed') {

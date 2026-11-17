@@ -235,7 +235,7 @@ describe('wavemill CLI', () => {
     it('dispatches doctor openrouter to the tool layer', () => {
       const repoDir = mkdtempSync(join(tmpdir(), 'wavemill-openrouter-doctor-cli-'));
       try {
-        mkdirSync(join(repoDir, '.wavemill', 'native-agent-certifications', 'z-ai', 'glm-5.2'), { recursive: true });
+        mkdirSync(join(repoDir, '.wavemill', 'native-agent-certifications', 'z-ai', 'glm-5.3'), { recursive: true });
         writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify({
           providers: {
             openrouter: {
@@ -255,10 +255,10 @@ describe('wavemill CLI', () => {
             defaultAgent: 'claude',
           },
         }, null, 2));
-        writeFileSync(join(repoDir, '.wavemill', 'native-agent-certifications', 'z-ai', 'glm-5.2', 'v1.json'), JSON.stringify({
+        writeFileSync(join(repoDir, '.wavemill', 'native-agent-certifications', 'z-ai', 'glm-5.3', 'v1.json'), JSON.stringify({
           schemaVersion: '1.0.0',
           provider: 'z-ai',
-          model: 'glm-5.2',
+          model: 'glm-5.3',
           phase: 'workflow',
           suiteVersion: 'v1',
           certifiedAt: '2026-07-10T00:00:00.000Z',
@@ -269,7 +269,7 @@ describe('wavemill CLI', () => {
         });
         assert.ok(result.status === 0 || result.status === 1);
         assert.match(result.stdout, /"models"/);
-        assert.match(result.stdout, /glm-5\.2/);
+        assert.match(result.stdout, /glm-5\.3/);
       } finally {
         rmSync(repoDir, { recursive: true, force: true });
       }

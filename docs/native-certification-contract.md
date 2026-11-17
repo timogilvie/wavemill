@@ -225,7 +225,7 @@ The equivalent environment override is `WAVEMILL_SKIP_CERTIFICATION_AUTO_REMEDIA
 
 ## Live Canary Cohort (HOK-3062)
 
-Deterministic remediation never grants coding eligibility — that requires a live, credentialed mutation canary pass (HOK-2943). The canary cohort turns that gate into an operational supply of coding-ready models: a bounded, reviewed set of 2–4 canonical identities whose live canaries are kept fresh on the machine and certification store the mill actually uses.
+Deterministic remediation never grants coding eligibility — that requires a live, credentialed mutation canary pass (HOK-2943). The canary cohort turns that gate into an operational supply of coding-ready models: a bounded, reviewed set of canonical identities whose live canaries are kept fresh on the machine and certification store the mill actually uses.
 
 ### Configuration
 
@@ -238,7 +238,10 @@ Deterministic remediation never grants coding eligibility — that requires a li
         { "provider": "openrouter", "model": "kimi-k3" },
         { "provider": "openrouter", "model": "kimi-k3.1-pro" },
         { "provider": "openrouter", "model": "glm-5.3" },
-        { "provider": "openrouter", "model": "glm-5.3-flash" }
+        { "provider": "openrouter", "model": "glm-5.3-flash" },
+        { "provider": "openrouter", "model": "minimax-m3.1-flash" },
+        { "provider": "openrouter", "model": "glm-5.3-flashx" },
+        { "provider": "openrouter", "model": "mistral-large-4" }
       ],
       "minCodingReady": 2,
       "canaryRenewalWindowDays": 3,
@@ -249,7 +252,7 @@ Deterministic remediation never grants coding eligibility — that requires a li
 }
 ```
 
-Cohort entries are validated fail-closed against the effective registry: only verified, native-capable, non-disabled, non-coding-excluded canonical identities qualify. Invalid or duplicate entries are reported and skipped, never silently certified. The cohort is capped at 8 entries by schema; keep it at the reviewed 2–4.
+Cohort entries are validated fail-closed against the effective registry: only verified, native-capable, non-disabled, non-coding-excluded canonical identities qualify. Invalid or duplicate entries are reported and skipped, never silently certified. The cohort is capped at 8 entries by schema. The operator-approved 2026-11-16 roster uses all eight slots; changes are explicit roster decisions, not automatic catalog enrollment.
 
 ### Automatic refresh
 
@@ -434,3 +437,15 @@ This contract covers **only** the certification schema, storage path, phase sema
 - Specify which suite scenarios are required for each phase level.
 
 These concerns are addressed in downstream implementation issues that consume this contract.
+
+## 2026-11-16 roster qualification (HOK-3501)
+
+The [retained qualification report](reports/hok3501-model-qualification.json) separates model-level canary passes, independent endpoint probes, and the direct DeepSeek tool-use probe. The five operator-retired aliases remain registered for attribution but are excluded from automatic stage pools. Gemini 3.8 Flash was refreshed on demand and remains outside the eight-member automatic cohort.
+
+Cohort coding readiness now uses the same native provider gate as launch. A fresh canary cannot bypass missing registry suite metadata, certificate expiry, phase coverage or identity. Kimi K3.1 Pro's registry certification metadata was restored from its actual durable v3 workflow artifact.
+
+MiniMax M3.1 Flash, GLM 5.3 FlashX and Mistral Large 4 passed model-level workflow/live coding certification with explicit endpoint restrictions and fallback disabled. Their independent endpoint probes were inconclusive because host metadata was missing for some generation responses. This grants no independent endpoint qualification or provider-switching permission; HOK-3497 owns that promotion.
+
+The direct DeepSeek API identifies V4.1 Flash as `deepseek-flash`; it stays on the configured Claude executor. Its bounded isolated edit/test/completion probe passed. Registry budgeting uses the documented peak rates ($0.30 input, $1.20 output, $0.006 cache read per million tokens); off-peak billing is half those rates. The Claude-reported probe cost has unknown cost basis and is not a verified bill. Sources: [model pricing and current ID](https://api-docs.deepseek.com/quick_start/pricing/), authenticated model listing on the configured endpoint.
+
+Before further runs, verify the installed SDK content matches the committed vendor bundle. The initial probes found an older installed `@hokusai/core` builder that omitted provider/fault fields. Those compatibility results are retained but excluded from training exports. The host dependencies were reinstalled from the lockfile; corrected-SDK probe outcomes use the existing consent-aware contribution queue. Representative tasks and retraining remain HOK-3410, separately from certification evidence.

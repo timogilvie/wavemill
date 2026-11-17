@@ -9,8 +9,9 @@ journey_post_assertions() {
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 const [install, root] = process.argv.slice(2);
-const { replayEndpointQualification } = await import(pathToFileURL(join(install, 'tests/fixtures/endpoint-qualification/replay.ts')));
+const { replayEndpointQualification, replayCohortReadiness } = await import(pathToFileURL(join(install, 'tests/fixtures/endpoint-qualification/replay.ts')));
 replayEndpointQualification(root);
+await replayCohortReadiness(root);
 JS
 }
 source "$(dirname "$0")/challenge-pair-eval.journey.sh"

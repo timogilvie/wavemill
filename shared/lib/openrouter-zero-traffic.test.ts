@@ -50,7 +50,7 @@ function writeConfig(repoDir: string): void {
 function writeOpenRouterCert(repoDir: string): void {
   const identity = resolveCertificationSubject({
     provider: 'openrouter',
-    model: 'z-ai/glm-5.2',
+    model: 'z-ai/glm-5.3',
     registry: DEFAULT_MODEL_REGISTRY,
   });
   const path = buildGlobalCertificationPath(
@@ -141,7 +141,7 @@ describe('openrouter-zero-traffic', () => {
       writeConfig(repoDir);
       writeOpenRouterCert(repoDir);
       writeEvalRecords(repoDir, [
-        makeEval('glm-5.2', '2026-07-11T00:00:00.000Z'),
+        makeEval('glm-5.3', '2026-07-11T00:00:00.000Z'),
         makeEval('claude-sonnet-5', '2026-07-10T00:00:00.000Z'),
       ]);
       const report = withEnv(() => diagnoseOpenRouter({ repoDir, lookback: 5 }));

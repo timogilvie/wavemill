@@ -265,6 +265,7 @@ describe('model-registry', () => {
       'claude-sonnet-4-5-20250929',
       'claude-haiku-4-5-20251001',
       'deepseek-chat',
+      'deepseek-flash',
       'deepseek-r1',
       'deepseek-reasoner',
       'deepseek-v3',
@@ -303,6 +304,9 @@ describe('model-registry', () => {
       'qwen-3-235b',
       'qwen-3-coder',
       'grok-code-fast',
+      'minimax-m3.1-flash',
+      'glm-5.3-flashx',
+      'mistral-large-4',
     ];
 
     assert.deepEqual(Object.keys(DEFAULT_MODEL_REGISTRY.models).sort(), expectedModels.sort());
@@ -584,12 +588,12 @@ describe('model-registry', () => {
       );
     });
 
-    it('drops retired qwen-2.5-72b and keeps qwen-3-235b eligible', () => {
+    it('retains qwen-3-235b history after its operator-approved retirement', () => {
       assert.equal(DEFAULT_MODEL_REGISTRY.models['qwen-2.5-72b'], undefined);
       assert.equal(explainModelSupportExclusion('qwen-2.5-72b', 'coding'), 'unknown-model');
-      assert.equal(listSupportedModelsForStage('planning').includes('qwen-3-235b'), true);
-      assert.equal(listSupportedModelsForStage('coding').includes('qwen-3-235b'), true);
-      assert.equal(listSupportedModelsForStage('review').includes('qwen-3-235b'), true);
+      assert.equal(listSupportedModelsForStage('planning').includes('qwen-3-235b'), false);
+      assert.equal(listSupportedModelsForStage('coding').includes('qwen-3-235b'), false);
+      assert.equal(listSupportedModelsForStage('review').includes('qwen-3-235b'), false);
     });
   });
 
@@ -1016,6 +1020,7 @@ describe('model-registry', () => {
   it('recognizes configured DeepSeek IDs and validates bracket syntax', () => {
     assert.deepEqual(configuredDeepSeekModelIds(DEFAULT_MODEL_REGISTRY), [
       'deepseek-chat',
+      'deepseek-flash',
       'deepseek-r1',
       'deepseek-reasoner',
       'deepseek-v3',
@@ -2970,4 +2975,15 @@ describe('canonical supported-model helpers', () => {
       rmSync(tmpRepo, { recursive: true, force: true });
     }
   });
+});
+
+// HOK-3501: roster retirement retains history while every automatic stage pool excludes it.
+it('operator-retired sparse historical models remain registered but out of stage pools', () => {
+  const registry = getEffectiveRegistry();
+  for (const id of ['gemini-2.5-flash', 'glm-5.2', 'kimi-k2-thinking', 'mistral-medium-3', 'qwen-3-235b']) {
+    assert.ok(registry.models[id]);
+    for (const stage of ['planning', 'coding', 'review'] as const) {
+      assert.ok(explainModelSupportExclusion(id, stage, registry));
+    }
+  }
 });

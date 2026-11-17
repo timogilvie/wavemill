@@ -243,7 +243,10 @@
         { "provider": "openrouter", "model": "kimi-k3" },
         { "provider": "openrouter", "model": "kimi-k3.1-pro" },
         { "provider": "openrouter", "model": "glm-5.3" },
-        { "provider": "openrouter", "model": "glm-5.3-flash" }
+        { "provider": "openrouter", "model": "glm-5.3-flash" },
+        { "provider": "openrouter", "model": "minimax-m3.1-flash" },
+        { "provider": "openrouter", "model": "glm-5.3-flashx" },
+        { "provider": "openrouter", "model": "mistral-large-4" }
       ],
       "minCodingReady": 2,
       "canaryAutoRefreshIntervalMinutes": 360
