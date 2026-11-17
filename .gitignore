@@ -77,6 +77,10 @@ weekly-competitive-review-prompt.md
 .wavemill/linear-retry-drain.last-run
 .wavemill/workflow-state.json.bak-*
 prompt-registry.jsonl
+# Hotfix: expansion telemetry written into task worktrees made terminal cleanup
+# classify merged worktrees as dirty and retain them forever. Removed by the
+# one-mill-output-list consolidation, which moves this path onto a declared list.
+.wavemill/task-size-estimates.jsonl
 
 worktrees/
 test-reg-*/
