@@ -43,7 +43,7 @@ interface AfterToolCallContext {
 const applyPatchParameters = {
   type: 'object',
   properties: {
-    patch: NATIVE_PATCH_PARAMETERS_SCHEMA,
+    patch: { description: 'NativePatch payload. The tool validates and renders detailed errors.' },
   },
   required: ['patch'],
   additionalProperties: false,
