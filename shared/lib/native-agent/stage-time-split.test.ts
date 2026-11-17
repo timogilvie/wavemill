@@ -412,3 +412,23 @@ describe('openHarnessToolCall', () => {
     assert.equal(openHarnessToolCall(events)?.toolCallId, 'call-b');
   });
 });
+
+// protects: failed requests must not charge final verification, accounting or inter-attempt gaps to provider wait.
+it('closes provider wait at session end inside an end-to-end retry window', () => {
+  const events = [
+    { type: 'turn_started', timestamp: 0 },
+    { type: 'assistant_message', timestamp: 10, errorMessage: 'upstream failed' },
+    { type: 'session_ended', timestamp: 20 },
+    { type: 'tool_started', timestamp: 30, toolCallId: 'verify', toolName: 'run_tests' },
+    { type: 'tool_result', timestamp: 40, toolCallId: 'verify', toolName: 'run_tests' },
+    { type: 'turn_started', timestamp: 50 },
+    { type: 'assistant_message', timestamp: 70 },
+    { type: 'session_ended', timestamp: 80 },
+  ];
+  const split = nativeStageTimeSplit(events as never, { fromMs: 0, toMs: 100 });
+  assert.equal(split.providerWaitMs, 20);
+  assert.equal(split.harnessToolMs, 10);
+  assert.equal(split.modelMs, 20);
+  assert.equal(split.unknownMs, 50);
+  assert.equal(split.totalMs, 100);
+});

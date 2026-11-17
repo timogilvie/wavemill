@@ -7,7 +7,7 @@ import { measureProviderExecutionEvidence } from '../../sdk-task-cost/measure.ts
 import { buildHostPriceOverrides } from '../../sdk-task-cost/price-overrides.ts';
 import { resolveModelRegistryKey } from '../../model-registry.ts';
 import { writeGlobalCertification } from './store.ts';
-import { isLiveCodingCanaryFresh, CERTIFICATION_SCHEMA_VERSION } from './schema.ts';
+import { endpointObservationsMatch, liveCodingCanaryMatchesSubject, isLiveCodingCanaryFresh, CERTIFICATION_SCHEMA_VERSION } from './schema.ts';
 import { toArtifactScenario } from './scenario-runner.ts';
 /** Fixed-model paired endpoint qualification; never selects a production provider. */
 import type { ModelRegistry } from '../../model-registry.ts';
@@ -18,7 +18,7 @@ import { resolveCertificationSubject, endpointIdentity } from './identity.ts';
 import { runLiveCodingCanary } from './live-coding-canary.ts';
 import { getDefaultScenarios, DEFAULT_CERTIFICATION_SUITE_VERSION } from './scenarios.ts';
 import { runScenarios } from './scenario-runner.ts';
-import type { CertificationEndpoint, LiveCodingCanaryResult } from './schema.ts';
+import type { CertificationSubject, CertificationEndpoint, LiveCodingCanaryResult } from './schema.ts';
 
 export interface EndpointComparisonPolicy {
   maxSpendUsd: number;
@@ -118,7 +118,7 @@ export async function runEndpointComparison(options: {
   if (plan.schemaVersion === 'endpoint-comparison-plan/v3' && plan.kind !== 'reference-characterization') {
     const reference = resolveCertificationSubject({ provider: 'openrouter', model: options.model, registry: options.registry,
       endpoint: plan.subjects.find(endpoint => endpoint.tag === plan.referenceTag), qualificationContract: plan.contract }).subject;
-    if (!referenceCharacterizationHealthy(plan.referenceCharacterization, plan, reference.catalogHash)) throw new Error('A healthy live reference characterization under this exact contract/runtime is required');
+    if (!referenceCharacterizationHealthy(plan.referenceCharacterization, plan, reference.catalogHash, reference)) throw new Error('A healthy live reference characterization under this exact contract/runtime is required');
   }
   const results: EndpointComparisonRun[] = [];
   for (const scheduled of comparisonSchedule(plan)) {
@@ -224,14 +224,16 @@ export async function reconcileEndpointComparisonEconomics(runs: readonly Endpoi
 }
 
 /** Characterization is independent of candidates and cannot be supplied by old/mocked probes. */
-export function referenceCharacterizationHealthy(characterization: ReferenceCharacterization | undefined, plan: ReturnType<typeof comparisonPlan>, catalogHash?: string): boolean {
+export function referenceCharacterizationHealthy(characterization: ReferenceCharacterization | undefined, plan: ReturnType<typeof comparisonPlan>, catalogHash?: string, expectedSubject?: CertificationSubject): boolean {
   if (!characterization || !catalogHash || characterization.plan.kind !== 'reference-characterization'
     || characterization.plan.referenceTag !== plan.referenceTag || !sameQualificationContract(characterization.plan.contract, plan.contract)) return false;
   const runs = characterization.runs;
   const cost = economics(runs);
   return runs.length === 9 && ['standard', 'workflow', 'cache-heavy'].every(profile => [0, 1, 2].every(pair => runs.some(run => run.profile === profile && run.pair === pair)))
     && runs.every(run => run.endpoint.tag === plan.referenceTag && run.result.catalogHash === catalogHash && run.result.isLive && isLiveCodingCanaryFresh(run.result, new Date()) && qualificationOutcome(run.result).completed
-      && sameQualificationContract(run.result.qualificationContract, plan.contract) && run.result.evidence?.finalTest?.status === 'completed' && run.result.evidence.finalTest.exitCode === 0)
+      && (!expectedSubject || liveCodingCanaryMatchesSubject(run.result, expectedSubject, DEFAULT_CERTIFICATION_SUITE_VERSION))
+      && endpointObservationsMatch(plan.subjects.find(endpoint => endpoint.tag === plan.referenceTag)!, run.result.attemptEvidence?.at(-1)?.contribution?.stage_executions.flatMap(stage => stage.provider_executions ?? []) ?? [])
+      && sameQualificationContract(run.result.qualificationContract, plan.contract) && sameQualificationContract({ ...plan.contract, limits: run.result.limits }, plan.contract) && run.result.evidence?.finalTest?.status === 'completed' && run.result.evidence.finalTest.exitCode === 0)
     && cost.accountedAttempts === cost.attempts && cost.attempts >= 9 && cost.report.totalUsd !== null && cost.report.totalUsd <= characterization.plan.policy.maxSpendUsd;
 }
 /** End-to-end window spans retries, verification and accounting; legacy measurements stay readable. */

@@ -438,8 +438,8 @@ async function runSingleCanaryAttempt(input: {
       delete attempt.contribution;
     }
     const timingEvents = transcript && evidenceDir ? readNativeTranscriptEvents(join(evidenceDir, 'native-sessions', `${sessionId}.jsonl`))
-      .filter(event => ['turn_started', 'assistant_message', 'tool_started', 'tool_result'].includes(event.type))
-      .map(event => ({ type: event.type as 'turn_started' | 'assistant_message' | 'tool_started' | 'tool_result', timestamp: event.timestamp,
+      .filter(event => ['turn_started', 'assistant_message', 'tool_started', 'tool_result', 'session_ended'].includes(event.type))
+      .map(event => ({ type: event.type as 'turn_started' | 'assistant_message' | 'tool_started' | 'tool_result' | 'session_ended', timestamp: event.timestamp,
         ...('toolCallId' in event ? { toolCallId: `${sessionId}:${event.toolCallId}`, toolName: event.toolName } : {}),
         ...('errorMessage' in event && event.errorMessage ? { errorMessage: 'provider request failed' } : {}) })) : [];
     return { ...outcome, timingEvents, attemptEvidence: [attempt] };

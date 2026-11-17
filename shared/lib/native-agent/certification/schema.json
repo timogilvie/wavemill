@@ -474,7 +474,8 @@
                   "turn_started",
                   "assistant_message",
                   "tool_started",
-                  "tool_result"
+                  "tool_result",
+                  "session_ended"
                 ]
               },
               "timestamp": {

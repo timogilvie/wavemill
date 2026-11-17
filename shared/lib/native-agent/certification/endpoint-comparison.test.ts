@@ -64,7 +64,13 @@ test('SDK-accounted admission can complete a full low-cost study and stops befor
 function characterization(fixture: any, registry: any) {
   const plan = comparisonPlan([entries[0]], 'reference', policy, { characterizationOnly: true });
   const subject = resolveCertificationSubject({ provider: 'openrouter', model: 'kimi-k3', registry, endpoint: plan.subjects[0], qualificationContract: plan.contract }).subject;
-  return { plan, runs: plan.runs.map(run => ({ ...run, result: { ...structuredClone(fixture), isLive: true, status: 'pass', ranAt: new Date().toISOString(), catalogHash: subject.catalogHash, qualificationContract: plan.contract, evidence: { ...fixture.evidence, finalTest: { status: 'completed', exitCode: 0 } } } })) };
+  const result = { ...structuredClone(fixture), endpoint: subject.endpoint, provider: subject.providerId, model: subject.providerModelId,
+    providerNativeId: subject.providerNativeId, identityFingerprint: subject.identityFingerprint,
+    isLive: true, status: 'pass', ranAt: new Date().toISOString(), catalogHash: subject.catalogHash, qualificationContract: plan.contract,
+    limits: plan.contract.limits, evidence: { ...fixture.evidence, finalTest: { status: 'completed', exitCode: 0 } } };
+  for (const attempt of result.attemptEvidence) for (const stage of attempt.contribution.stage_executions)
+    for (const row of stage.provider_executions ?? []) if (row.generation) row.generation.providerName = 'reference';
+  return { plan, runs: plan.runs.map(run => ({ ...run, result: structuredClone(result) })) };
 }
 test('candidate calls require independently characterized live reference evidence under the same workload, runtime and budget', async () => {
   const { runEndpointComparison, referenceCharacterizationHealthy } = await import('./endpoint-comparison.ts');

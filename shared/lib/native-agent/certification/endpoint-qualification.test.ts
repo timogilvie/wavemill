@@ -38,3 +38,33 @@ test('reconstructed malformed nested tool arguments are rejected while escaped m
   const scenario = getEndpointQualificationScenarios()[0];
   assert.deepEqual(await scenario.assertion!({ provider: 'openrouter', model: 'kimi-k3', transport: 'openai-completions' }), { kind: 'pass' });
 });
+
+test('explicit workload budgets propagate through configuration, cohort health and the canonical launch gate', async () => {
+  const { writeFileSync } = await import('node:fs');
+  const { qualificationContract } = await import('./qualification-contract.ts');
+  const { buildLiveCodingCanaryFixture } = await import('./canary-fixtures.ts');
+  const { evaluateNativeProviderGate } = await import('./eligibility-gate.ts');
+  const { resolveCanaryCohort, evaluateCanaryCohortHealth } = await import('./canary-cohort.ts');
+  const { getNativeAgentConfig } = await import('../../config.ts');
+  const root = mkdtempSync(join(tmpdir(), 'explicit-qualification-contract-'));
+  try {
+    const { artifact, endpoint, registry } = replayEndpointQualification(root);
+    const contract = qualificationContract({ ...artifact.liveCanary!.limits, maxTurns: 200 });
+    const subject = resolveCertificationSubject({ provider: 'openrouter', model: 'kimi-k3', registry, endpoint, qualificationContract: contract }).subject;
+    const liveCanary = buildLiveCodingCanaryFixture(subject, 'v3', { endpoint, attemptEvidence: artifact.liveCanary!.attemptEvidence });
+    writeGlobalCertification({ ...artifact, subject, liveCanary }, { root });
+    writeFileSync(join(root, '.wavemill-config.json'), JSON.stringify({ nativeAgent: { certification: {
+      canaryCohort: [{ provider: 'openrouter', model: 'kimi-k3', endpoint, qualificationContract: contract }], minCodingReady: 1,
+    } } }));
+    const cohort = resolveCanaryCohort({ repoDir: root, registry, config: getNativeAgentConfig(root).certification });
+    assert.equal(cohort.members.length, 1);
+    const gate = () => evaluateNativeProviderGate({ modelId: 'kimi-k3', mode: 'task', requiredPhase: 'patch', launchPhase: 'coding', registry,
+      apiKeyPresent: true, apiKeyEnv: 'TEST_KEY', certificationRoot: root, endpoint, qualificationContract: contract });
+    const health = () => evaluateCanaryCohortHealth({ repoDir: root, registry, cohort, certificationRoot: root });
+    assert.equal(gate().ok, true);
+    assert.equal((await health()).codingReadyCount, 1);
+    delete registry.models['kimi-k3'].nativeCapability!.certification;
+    assert.equal(gate().ok, false);
+    assert.equal((await health()).codingReadyCount, 0, 'stored evidence cannot bypass missing registry suite metadata');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

@@ -53,11 +53,11 @@ import {
 } from '../providers.ts';
 import { resolveCertificationSubject } from './identity.ts';
 import { loadGlobalCertification } from './loader.ts';
+import { evaluateNativeProviderGate, type NativeGateRejectReason } from './eligibility-gate.ts';
 import { resolveCertificationStorage } from './storage.ts';
 import { writeGlobalCertification } from './store.ts';
 import { DEFAULT_CERTIFICATION_SUITE_VERSION } from './scenarios.ts';
 import {
-  evaluateLiveCodingCanaryEligibility,
   isRevisionAwareArtifact,
   LIVE_CODING_CANARY_TTL_DAYS,
   type LiveCodingCanaryLimits,
@@ -126,7 +126,9 @@ export function resolveCanaryCohort(options: ResolveCanaryCohortOptions): Resolv
   const seen = new Set<string>();
 
   for (const entry of configured) {
-    if (entry.qualificationContract && (!entry.endpoint || !sameQualificationContract(entry.qualificationContract, qualificationContract(entry.qualificationContract.limits, entry.qualificationContract.maxAttempts)))) { invalid.push({ ...entry, reason: 'invalid qualification contract' }); continue; }
+    try {
+      if (entry.qualificationContract && (!entry.endpoint || !sameQualificationContract(entry.qualificationContract, qualificationContract(entry.qualificationContract.limits, entry.qualificationContract.maxAttempts)))) throw new Error('Invalid contract');
+    } catch { invalid.push({ ...entry, reason: 'invalid qualification contract' }); continue; }
     if (entry.endpoint) {
       try { validateCertificationEndpoint(entry.endpoint); } catch { invalid.push({ ...entry, reason: 'invalid endpoint subject' }); continue; }
       if (entry.provider !== 'openrouter') { invalid.push({ ...entry, reason: 'endpoint subjects require OpenRouter' }); continue; }
@@ -270,7 +272,6 @@ export async function evaluateCanaryCohortHealth(
 ): Promise<CanaryCohortHealth> {
   const registry = options.registry ?? getEffectiveRegistry(options.repoDir);
   const now = options.now ?? new Date();
-  const suiteVersion = options.suiteVersion ?? DEFAULT_CERTIFICATION_SUITE_VERSION;
   const attempts = await readAttemptCache(resolveAttemptCachePath(options));
 
   const members: CohortMemberStatus[] = [];
@@ -278,7 +279,6 @@ export async function evaluateCanaryCohortHealth(
     const status = evaluateMemberStatus({
       member,
       registry,
-      suiteVersion,
       now,
       renewalWindowDays: options.cohort.renewalWindowDays,
       certificationRoot: options.certificationRoot,
@@ -307,85 +307,38 @@ export async function evaluateCanaryCohortHealth(
   };
 }
 
-function evaluateMemberStatus(input: {
+interface MemberStatusInput {
   member: CanaryCohortMember;
   registry: ModelRegistry;
-  suiteVersion: string;
   now: Date;
   renewalWindowDays: number;
   certificationRoot?: string;
-}): CohortMemberStatus {
-  const { member, registry, suiteVersion, now } = input;
+}
+
+function evaluateMemberStatus(input: MemberStatusInput): CohortMemberStatus {
+  const { member, registry, now } = input;
   const base = { provider: member.provider, model: member.model, qualificationContract: member.qualificationContract, ...(member.endpoint ? { endpoint: member.endpoint } : {}) };
 
-  let subject: ReturnType<typeof resolveCertificationSubject>;
-  try {
-    subject = resolveCertificationSubject({
-      provider: member.provider,
-      model: member.model,
-      endpoint: member.endpoint,
-      qualificationContract: member.qualificationContract,
-      registry,
-    });
-  } catch (error) {
-    return {
-      ...base,
-      state: 'missing',
-      codingEligible: false,
-      failureReason: truncate(`subject resolution failed: ${(error as Error).message}`),
+  const gate = evaluateNativeProviderGate({
+    modelId: member.model, mode: 'task', requiredPhase: 'patch', launchPhase: 'coding',
+    registry, now, certificationRoot: input.certificationRoot, endpoint: member.endpoint, qualificationContract: member.qualificationContract,
+    apiKeyPresent: true, apiKeyEnv: 'STORED_CERTIFICATION_HEALTH',
+  });
+  if (!gate.ok) {
+    const states: Partial<Record<NativeGateRejectReason, CohortMemberCanaryState>> = {
+      stale_live_canary: 'stale', stale_artifact: 'stale',
+      failed_live_canary: 'failed', inconclusive_live_canary: 'inconclusive',
+      non_live_canary: 'not-live', live_canary_identity_mismatch: 'identity-invalidated',
+      identity_mismatch: 'identity-invalidated', identity_reidentified: 'identity-invalidated',
+    };
+    return { ...base, state: states[gate.reason] ?? 'missing', codingEligible: false,
+      failureReason: gate.liveCanaryFailureReason ?? gate.reason,
+      ...(gate.liveCanaryStatus ? { canaryStatus: gate.liveCanaryStatus } : {}),
+      ...(gate.liveCanaryRanAt ? { canaryRanAt: gate.liveCanaryRanAt } : {}),
     };
   }
-
-  const loaded = loadGlobalCertification(
-    subject.storageIdentity.provider,
-    subject.storageIdentity.model,
-    suiteVersion,
-    { root: input.certificationRoot, endpoint: member.endpoint },
-  );
-  if (!loaded.ok || !isRevisionAwareArtifact(loaded.artifact)) {
-    return { ...base, state: 'missing', codingEligible: false };
-  }
-
-  // HOK-3143: a durable identity invalidation on the artifact short-circuits
-  // the canary check — this member needs re-certification before any live run.
-  if (loaded.artifact.identityInvalidation) {
-    return {
-      ...base,
-      state: 'identity-invalidated',
-      codingEligible: false,
-      failureReason: 'identity_mismatch',
-    };
-  }
-
-  const eligibility = evaluateLiveCodingCanaryEligibility(
-    loaded.artifact,
-    suiteVersion,
-    now,
-    subject.subject,
-  );
-  const canary = eligibility.canary;
-  const canaryFields = canary
-    ? {
-      canaryStatus: canary.status,
-      canaryRanAt: canary.ranAt,
-      ...(canary.reason ? { failureReason: canary.reason } : {}),
-    }
-    : {};
-
-  if (!eligibility.eligible) {
-    const state: CohortMemberCanaryState = eligibility.reason === 'identity-mismatch'
-      ? 'identity-invalidated'
-      : eligibility.reason === 'stale'
-        ? 'stale'
-        : eligibility.reason === 'failed'
-          ? 'failed'
-          : eligibility.reason === 'inconclusive'
-            ? 'inconclusive'
-            : eligibility.reason === 'not-live'
-              ? 'not-live'
-              : 'missing';
-    return { ...base, state, codingEligible: false, ...canaryFields };
-  }
+  const canary = gate.artifact!.liveCanary!;
+  const canaryFields = { canaryStatus: canary.status, canaryRanAt: canary.ranAt };
 
   const expiresAtMs = canary!.expiresAt
     ? Date.parse(canary!.expiresAt)
@@ -692,7 +645,7 @@ export async function refreshCanaryCohort(
         repoDir: options.repoDir,
         liveCodingCanary: true,
         endpoint: member.endpoint,
-      qualificationContract: member.qualificationContract,
+        qualificationContract: member.qualificationContract,
         certificationRoot: options.certificationRoot,
         registry,
         ...(options.canaryLimits ? { canaryLimits: options.canaryLimits } : {}),

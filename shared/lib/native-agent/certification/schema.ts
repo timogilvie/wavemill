@@ -162,7 +162,7 @@ export interface CanaryAttemptEvidence {
 
 export interface LiveCodingCanaryResult {
   qualificationContract?: QualificationContract;
-  timingEvents?: Array<{ type: 'turn_started' | 'assistant_message' | 'tool_started' | 'tool_result'; timestamp: number; toolCallId?: string; toolName?: string; errorMessage?: string }>;
+  timingEvents?: Array<{ type: 'turn_started' | 'assistant_message' | 'tool_started' | 'tool_result' | 'session_ended'; timestamp: number; toolCallId?: string; toolName?: string; errorMessage?: string }>;
   timing?: { fromMs: number; toMs: number };
   endpoint?: CertificationEndpoint;
   attemptEvidence?: CanaryAttemptEvidence[];
