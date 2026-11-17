@@ -1,0 +1,437 @@
+{
+  "studies": [
+    "k2",
+    "gemini25",
+    "gemini31"
+  ],
+  "accountedAttempts": 17,
+  "sdkReport": {
+    "taskId": "provider-candidates-round2",
+    "totalUsd": 0.32469277,
+    "actualUsd": 0.32469277,
+    "estimatedUsd": 0.324697,
+    "byModel": {
+      "kimi-k2.7-code": {
+        "totalUsd": 0.09465027,
+        "actualUsd": 0.09465027,
+        "estimatedUsd": 0.094652,
+        "usage": {
+          "inputTokens": 36864,
+          "outputTokens": 10483,
+          "cacheReadTokens": 158576,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": null
+        },
+        "eventCount": 8,
+        "turnCount": 8,
+        "costSource": "provider_reported",
+        "coverage": "partial"
+      },
+      "gemini-3.1-pro-preview": {
+        "totalUsd": 0.151425,
+        "actualUsd": 0.151425,
+        "estimatedUsd": 0.151425,
+        "usage": {
+          "inputTokens": 62485,
+          "outputTokens": 6938,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": null
+        },
+        "eventCount": 5,
+        "turnCount": 5,
+        "costSource": "provider_reported",
+        "coverage": "partial"
+      },
+      "gemini-2.5-pro": {
+        "totalUsd": 0.0786175,
+        "actualUsd": 0.0786175,
+        "estimatedUsd": 0.07862,
+        "usage": {
+          "inputTokens": 58563,
+          "outputTokens": 3227,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": null
+        },
+        "eventCount": 4,
+        "turnCount": 4,
+        "costSource": "provider_reported",
+        "coverage": "partial"
+      }
+    },
+    "byHarness": {
+      "native": {
+        "totalUsd": 0.32469277,
+        "actualUsd": 0.32469277,
+        "estimatedUsd": 0.324697,
+        "usage": {
+          "inputTokens": 157912,
+          "outputTokens": 20648,
+          "cacheReadTokens": 158576,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": null
+        },
+        "eventCount": 17,
+        "turnCount": 17,
+        "costSource": "provider_reported",
+        "coverage": "partial"
+      }
+    },
+    "usage": {
+      "inputTokens": 157912,
+      "outputTokens": 20648,
+      "cacheReadTokens": 158576,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": null
+    },
+    "eventCount": 17,
+    "turnCount": 17,
+    "source": {
+      "cost": "provider_reported",
+      "basis": "per_token_api",
+      "capture": [
+        "manual"
+      ],
+      "sessionFileCount": 0
+    },
+    "pricing": {
+      "source": "local_estimate",
+      "revision": null,
+      "effectiveDate": "2026-11-04",
+      "revisions": [],
+      "priceTables": [
+        "external"
+      ],
+      "builtInTableAsOf": "2026-11-04",
+      "overrideCount": 0,
+      "currency": "USD"
+    },
+    "coverage": {
+      "status": "partial",
+      "pricedEvents": 17,
+      "unpricedEvents": 0,
+      "unknownModels": []
+    },
+    "diagnostics": [
+      {
+        "code": "mixed_coverage",
+        "level": "warn",
+        "message": "coverage is partial: some events are missing cost or usage",
+        "count": 1
+      },
+      {
+        "code": "provider_reported_cost",
+        "level": "info",
+        "message": "at least one event carries a provider-reported charge",
+        "count": 1
+      }
+    ],
+    "summaries": [
+      {
+        "schema_version": "task_cost_summary/v1",
+        "task_id": "provider-candidates-round2",
+        "session_ids": [
+          "redacted-190dde0cb02bf376",
+          "redacted-19184bbd2f46a728",
+          "redacted-29e745a54f9948bf",
+          "redacted-32b1178822c2875e",
+          "redacted-379141e8d43cf8fb",
+          "redacted-3fed1336c9c877f8",
+          "redacted-777613315359c2ec",
+          "redacted-8ee7a690f01fe357",
+          "redacted-9fafb8586e7c96a3",
+          "redacted-ac630e872131b389",
+          "redacted-af4fb66b808ba1cf",
+          "redacted-bc967925952694cf",
+          "redacted-bea9a7cd2f8fd81b",
+          "redacted-c067591400e9f1da",
+          "redacted-d7937a04ad94d6ca",
+          "redacted-e1caed94da522e9c",
+          "redacted-ea366a95477453c0"
+        ],
+        "harness": "native",
+        "provider_contract_version": "native/1",
+        "models": [
+          "kimi-k2.7-code",
+          "gemini-3.1-pro-preview",
+          "gemini-2.5-pro"
+        ],
+        "model_segments": [
+          {
+            "model": "kimi-k2.7-code",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 2404,
+              "output_tokens": 320,
+              "cache_read_tokens": 3840,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.0042934,
+            "estimated_cost_usd": 0.004294,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "gemini-3.1-pro-preview",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 8688,
+              "output_tokens": 1017,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.02958,
+            "estimated_cost_usd": 0.02958,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "gemini-2.5-pro",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 10579,
+              "output_tokens": 567,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.01889375,
+            "estimated_cost_usd": 0.018895,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "kimi-k2.7-code",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 2424,
+              "output_tokens": 405,
+              "cache_read_tokens": 1792,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.00319746,
+            "estimated_cost_usd": 0.003197,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "gemini-2.5-pro",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 11015,
+              "output_tokens": 697,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.010369375,
+            "estimated_cost_usd": 0.010369,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "kimi-k2.7-code",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 2526,
+              "output_tokens": 422,
+              "cache_read_tokens": 3984,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.00398814,
+            "estimated_cost_usd": 0.003988,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "gemini-2.5-pro",
+            "turn_count": 2,
+            "usage": {
+              "input_tokens": 36969,
+              "output_tokens": 1963,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.049354375,
+            "estimated_cost_usd": 0.049356,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "kimi-k2.7-code",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 553,
+              "output_tokens": 4311,
+              "cache_read_tokens": 3808,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.01716263,
+            "estimated_cost_usd": 0.017163,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "gemini-3.1-pro-preview",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 4180,
+              "output_tokens": 1014,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.010264,
+            "estimated_cost_usd": 0.010264,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "kimi-k2.7-code",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 2578,
+              "output_tokens": 1474,
+              "cache_read_tokens": 15104,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.01121486,
+            "estimated_cost_usd": 0.011214,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "gemini-3.1-pro-preview",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 8264,
+              "output_tokens": 891,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.01361,
+            "estimated_cost_usd": 0.01361,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "kimi-k2.7-code",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 1737,
+              "output_tokens": 624,
+              "cache_read_tokens": 12800,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.004933612,
+            "estimated_cost_usd": 0.004935,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "gemini-3.1-pro-preview",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 20936,
+              "output_tokens": 1931,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.065044,
+            "estimated_cost_usd": 0.065044,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "kimi-k2.7-code",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 12166,
+              "output_tokens": 1456,
+              "cache_read_tokens": 51968,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.02725562,
+            "estimated_cost_usd": 0.027256,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "gemini-3.1-pro-preview",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 20417,
+              "output_tokens": 2085,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.032927,
+            "estimated_cost_usd": 0.032927,
+            "cost_source": "provider_reported"
+          },
+          {
+            "model": "kimi-k2.7-code",
+            "turn_count": 1,
+            "usage": {
+              "input_tokens": 12476,
+              "output_tokens": 1471,
+              "cache_read_tokens": 65280,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": null
+            },
+            "actual_cost_usd": 0.022604548,
+            "estimated_cost_usd": 0.022605,
+            "cost_source": "provider_reported"
+          }
+        ],
+        "turn_count": 17,
+        "turns_truncated": false,
+        "usage": {
+          "input_tokens": 157912,
+          "output_tokens": 20648,
+          "cache_read_tokens": 158576,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": null
+        },
+        "actual_cost_usd": 0.32469277,
+        "estimated_cost_usd": 0.324697,
+        "total_cost_usd": 0.32469277,
+        "cost_source": "provider_reported",
+        "cost_basis": "per_token_api",
+        "coverage": "partial",
+        "field_availability": {
+          "usage": "partial",
+          "actual_cost": "available",
+          "estimated_cost": "available",
+          "pricing": "available"
+        },
+        "pricing_source": "local_estimate",
+        "join_confidence": "unattributed",
+        "collected_at": "2026-11-17T13:14:18.250Z",
+        "event_count": 17,
+        "event_ids": [
+          "native.0.0",
+          "native.12.0",
+          "native.8.0",
+          "native.1.0",
+          "native.9.0",
+          "native.2.0",
+          "native.10.0",
+          "native.11.0",
+          "native.3.0",
+          "native.13.0",
+          "native.4.0",
+          "native.14.0",
+          "native.5.0",
+          "native.15.0",
+          "native.6.0",
+          "native.16.0",
+          "native.7.0"
+        ],
+        "diagnostics": [
+          "mixed_coverage",
+          "provider_reported_cost"
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "provenance": "Captured tool arguments for the synthetic cache-heavy fixture; no HTTP wire or model reasoning included.",
+  "expectedSentinel": "export const CANARY_STATE = 'mutated';\n",
+  "calls": [
+    {
+      "tool": "apply_patch",
+      "arguments": {
+        "patch": {
+          "version": 1,
+          "atomic": true,
+          "operations": [
+            {
+              "op": "edit",
+              "path": "src/canary.ts",
+              "oldText": "export const CANARY_STATE = 'pending';",
+              "newText": "export const CANARY_STATE = 'mutated';\n"
+            },
+            {
+              "op": "edit",
+              "path": "src/payload.ts",
+              "oldText": "export const payload = \"pending\";",
+              "newText": "export const payload = \"quote \\\" slash \\\\ newline\\nUnicode \u03a9\";\n"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "recordedEvidence": {
+    "failedMutationToolCalls": 0,
+    "structuredMutationToolCalls": 2,
+    "mutationToolNames": [
+      "apply_patch",
+      "create_marker"
+    ],
+    "expectedSentinelHash": "1770e9648d1d92bd2c9e3baca1cf29eee4596674794c37de6de2c54bf737f414",
+    "actualSentinelHash": "ce2bb144c4631112ad66f26eba29b052030b1d217ba7009e7be56fcb6fbba075",
+    "changedPaths": [
+      "features/live-canary/.coding-complete",
+      "src/canary.ts",
+      "src/payload.ts"
+    ],
+    "completionArtifactPresent": true,
+    "completionArtifactHash": "34706b4aa8118ebf1298c5b69b36a4f4927c795768c5ef27383ff3003ca1d55e"
+  },
+  "additionalNewlineExplainsRecordedHash": true,
+  "interpretation": "The edit omits the original trailing newline from oldText and includes one in newText. One extra trailing blank line exactly explains the recorded hash. This fails the exact-byte fixture, not a demonstrated semantic-code corruption."
+}
