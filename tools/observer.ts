@@ -46,6 +46,7 @@ import {
   OBSERVER_SNAPSHOT_SCHEMA_VERSION,
   incidentChainEvidenceLines,
   projectRemediationProposals,
+  suppressFleetFindings,
   supersedeGenericFindings,
   type RemediationProposalProjection,
 } from '../shared/lib/wavemill-incident-projection.ts';
@@ -3690,6 +3691,15 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
 
     const repoIncidents: IncidentRecord[] = [];
     incidentsByRepo.set(repo.repoDir, repoIncidents);
+    // HOK-3509: hand the cycle the non-terminal task artifact dirs it was
+    // just about to iterate for detection. The correlator reads per-stage
+    // failure facts from them and groups by `(endpoint, faultClass)`.
+    const failureSources: Array<{ taskId: string; featureDir: string }> = [];
+    for (const task of repo.tasks) {
+      if (!task.issue || taskWorkflowIsTerminal(task)) continue;
+      const taskPath = resolveTaskArtifactDir(repo.repoDir, task);
+      if (taskPath) failureSources.push({ taskId: task.issue, featureDir: taskPath });
+    }
     const cycleResult = await reconcileIncidentCycle({
       store,
       candidates: dedupeIncidentCandidates(candidates, store),
@@ -3697,6 +3707,13 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
       repoDir: repo.repoDir,
       jobs: jobTruth,
       canResolveByAbsence: (record) => canResolveInteractivePromptByAbsence(record, repo),
+      failureSources,
+      correlation: {
+        windowMs: (incidentConfig.detection?.cooldownMinutes ?? 5) * 60_000,
+        threshold: options.dependencyThreshold ?? incidentConfig.detection?.dependencyThreshold ?? 3,
+        session: repo.session ?? null,
+        now: new Date(snapshot.timestamp),
+      },
     });
     for (const stored of cycleResult.incidents) {
       incidents.push(stored);
@@ -3758,9 +3775,13 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
   let findings = snapshot.findings;
   for (const [repoDir, repoIncidents] of incidentsByRepo) {
     const repoFindings = findings.filter((finding) => finding.repoDir === repoDir);
-    const rewritten = supersedeGenericFindings(repoFindings, repoIncidents);
-    const replacement = new Map(repoFindings.map((finding, index) => [finding, rewritten[index]] as const));
-    findings = findings.map((finding) => replacement.get(finding) ?? finding);
+    const kept = suppressFleetFindings(repoFindings, repoIncidents);
+    const keptSet = new Set(kept);
+    const rewritten = supersedeGenericFindings(kept, repoIncidents);
+    const replacement = new Map(kept.map((finding, index) => [finding, rewritten[index]] as const));
+    findings = findings
+      .filter((finding) => finding.repoDir !== repoDir || keptSet.has(finding))
+      .map((finding) => replacement.get(finding) ?? finding);
   }
   const projection = projectRemediationProposals(uniqueIncidents);
   return {

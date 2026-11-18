@@ -445,8 +445,18 @@ export interface ReadyArtifacts {
   lastCiHeadSha?: string;
   lastCiObservedAt?: string;
   lastCiSummary?: string;
-  ciInvalidatedAt?: string;
-  ciInvalidationReason?: string;
+  /**
+   * A passed verdict withdrawn by live PR state (HOK-3513): when, why, and the
+   * cause (`ci-failing`, `conflict` or `tend-rebase-conflict`). Written only by
+   * the monitor's `invalidate_ready_verdict`; `mergeConflict` deliberately
+   * keeps the pass's own value so a conflict is not read as base drift.
+   */
+  verdictInvalidatedAt?: string;
+  verdictInvalidationReason?: string;
+  verdictInvalidationCause?: string;
+  /** The live mergeability read that caused (or accompanied) the invalidation. */
+  liveMergeable?: string;
+  liveMergeStateStatus?: string;
   ciFailingChecks?: string[];
   changedFiles?: string[];
   unblocksCount?: number;

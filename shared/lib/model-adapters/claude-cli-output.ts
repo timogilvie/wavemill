@@ -10,6 +10,8 @@
  * No other module is allowed to parse Claude CLI stdout or a tool report.
  */
 
+import { fromAnthropicUsage } from '@hokusai/costs';
+import { taskCostUsageToAdapterUsage } from './transport-adapter.ts';
 import type { ReportedReviewFinding, ReviewToolReport } from './transport-adapter.ts';
 
 /** Canonical source value for a ReportFindings report (HOK-3448). */
@@ -19,7 +21,18 @@ export const REPORT_FINDINGS_SOURCE: ReportFindingsSource = 'claude-cli:ReportFi
 export interface ClaudeCliOutput {
   /** Result element's `result` (trimmed); raw stdout if not JSON. */
   text: string;
-  usage?: { inputTokens: number; outputTokens: number; totalTokens: number };
+  /**
+   * Token usage from the envelope, normalized by `fromAnthropicUsage`
+   * (HOK-3409): `inputTokens` excludes the cache buckets, which ride along as
+   * optional fields when the envelope reported them.
+   */
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  };
   costUsd?: number;
   /** Model id reported by the CLI in the result element's `modelUsage`. */
   reportedModel?: string;
@@ -33,17 +46,11 @@ export interface ClaudeCliOutput {
   toolReportError?: string;
 }
 
-interface EnvelopeUsage {
-  input_tokens?: number;
-  output_tokens?: number;
-  cache_creation_input_tokens?: number;
-  cache_read_input_tokens?: number;
-}
-
 interface ResultEnvelope {
   type?: string;
   result?: string;
-  usage?: EnvelopeUsage;
+  /** Raw Anthropic usage block; `fromAnthropicUsage` normalizes it. */
+  usage?: unknown;
   total_cost_usd?: number;
   modelUsage?: Record<string, { outputTokens?: number; canonicalModel?: string } | undefined>;
   session_id?: string;
@@ -70,20 +77,6 @@ export function reportedModelFromEnvelope(modelUsage: unknown): string | undefin
     }
   }
   return best?.model;
-}
-
-function usageFromEnvelope(u: EnvelopeUsage | undefined) {
-  if (!u) return undefined;
-  const inputTokens =
-    (u.input_tokens || 0) +
-    (u.cache_creation_input_tokens || 0) +
-    (u.cache_read_input_tokens || 0);
-  const outputTokens = u.output_tokens || 0;
-  return {
-    inputTokens,
-    outputTokens,
-    totalTokens: inputTokens + outputTokens,
-  };
 }
 
 function resultEnvelopeFromArray(arr: unknown[]): ResultEnvelope | undefined {
@@ -410,7 +403,12 @@ export function parseClaudeCliOutput(
     };
   }
   const out: ClaudeCliOutput = { text };
-  const usage = usageFromEnvelope(envelope.usage);
+  // The SDK owns the raw Anthropic usage shape (HOK-3409): `input_tokens`
+  // already excludes cache reads/writes, so the buckets map one-to-one. A
+  // `null` usage block means "not reported", exactly like an absent one.
+  const usage = envelope.usage != null
+    ? taskCostUsageToAdapterUsage(fromAnthropicUsage(envelope.usage))
+    : undefined;
   if (usage) out.usage = usage;
   if (envelope.total_cost_usd !== undefined) out.costUsd = envelope.total_cost_usd;
   const reportedModel = reportedModelFromEnvelope(envelope.modelUsage);

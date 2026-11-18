@@ -15,6 +15,7 @@ import {
 import { parseBudgetExhaustedFact, type BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
 import { resolveNativeStageTimeSplit, type NativeStageTimeSplit } from './native-agent/stage-time-split.ts';
 import { readStageResultSync } from './stage-result.ts';
+import { fleetCauseForAttempt, readFleetIncidents } from './fleet-incident-correlation.ts';
 
 const DEFAULT_EVALS_DIR = '.wavemill/evals';
 const RELIABILITY_RECORDS_FILENAME = 'reliability-records.jsonl';
@@ -45,6 +46,16 @@ export interface ArmReliabilityRecord {
   /** HOK-3380: the transcript time split resolved from `budgetExhausted.sessionStream`, when found. */
   timeSplit?: NativeStageTimeSplit;
   /**
+   * HOK-3509: when this failure joined a fleet incident, the fleet's
+   * identity is recorded here so Hokusai sees the shared cause rather than
+   * N task faults. Absent when the attempt was not correlated.
+   */
+  fleetIncident?: {
+    fingerprint: string;
+    causeKey: string;
+    fleetFaultClass: 'harness-fault' | 'provider-fault';
+  };
+  /**
    * HOK-3358: the recorder that produced this row. `challenge_abort_pair`
    * remains the default (and the historical value for backfilled rows).
    * `operator-abort` and `pair-resolver` are added so the operator and
@@ -74,6 +85,12 @@ export interface BuildArmReliabilityRecordInput {
   id?: string;
   /** HOK-3358: which recorder is writing this row. Defaults to `challenge_abort_pair`. */
   source?: ArmReliabilityRecord['source'];
+  /**
+   * HOK-3509: pass the fleet cause the correlator attached to this attempt,
+   * when one exists. `classifyArmFault` reads it to override attribution,
+   * and it is recorded under {@link ArmReliabilityRecord.fleetIncident}.
+   */
+  fleetCause?: { fingerprint: string; causeKey: string; fleetFaultClass: 'harness-fault' | 'provider-fault' } | null;
 }
 
 /**
@@ -107,7 +124,15 @@ export function buildArmReliabilityRecord(input: BuildArmReliabilityRecordInput)
   const budgetExhausted = parseBudgetExhaustedFact(input.budgetExhausted ?? null);
   const timeSplit = resolveNativeStageTimeSplit(budgetExhausted, { featureDir: input.featureDir }) ?? undefined;
   const exitEvidence = codingExitEvidence(failureKind, input.featureDir);
-  const faultClass = classifyArmFault({ failureKind, detail: input.detail, budgetExhausted, timeSplit, exitEvidence });
+  const fleetCause = input.fleetCause ?? null;
+  const faultClass = classifyArmFault({
+    failureKind,
+    detail: input.detail,
+    budgetExhausted,
+    timeSplit,
+    exitEvidence,
+    ...(fleetCause ? { fleetCause: { fleetFaultClass: fleetCause.fleetFaultClass } } : {}),
+  });
   return {
     schemaVersion: '1.0.0',
     ...(input.nativeProviderExecutions?.length ? { nativeProviderExecutions: structuredClone(input.nativeProviderExecutions) } : {}),
@@ -128,6 +153,13 @@ export function buildArmReliabilityRecord(input: BuildArmReliabilityRecordInput)
     ...(input.nextAction ? { nextAction: input.nextAction } : {}),
     ...(budgetExhausted ? { budgetExhausted } : {}),
     ...(timeSplit ? { timeSplit } : {}),
+    ...(fleetCause ? {
+      fleetIncident: {
+        fingerprint: fleetCause.fingerprint,
+        causeKey: fleetCause.causeKey,
+        fleetFaultClass: fleetCause.fleetFaultClass,
+      },
+    } : {}),
     source: input.source ?? 'challenge_abort_pair',
   };
 }
@@ -136,7 +168,23 @@ export function appendArmReliabilityRecord(
   input: BuildArmReliabilityRecordInput,
   dirOrRepo?: string,
 ): ArmReliabilityRecord {
-  const record = buildArmReliabilityRecord(input);
+  const repoDir = dirOrRepo ? resolve(dirOrRepo) : resolve(process.cwd());
+  const settledAttempt = input.featureDir ? readStageResultSync(input.featureDir, input.stage) : null;
+  const settledAt = input.timestamp ? Date.parse(input.timestamp) : NaN;
+  const stageAt = typeof settledAttempt?.finishedAt === 'string'
+    ? Date.parse(settledAttempt.finishedAt)
+    : (typeof settledAttempt?.startedAt === 'string' ? Date.parse(settledAttempt.startedAt) : NaN);
+  // The incident path alone decides correlation. Row creation merely consumes
+  // that decision from the active incident store so Hokusai receives the
+  // endpoint/harness attribution rather than N task faults.
+  const fleetCause = input.fleetCause ?? fleetCauseForAttempt({
+    incidents: readFleetIncidents(join(repoDir, '.wavemill')),
+    taskId: input.issueId,
+    stage: input.stage,
+    attemptId: typeof settledAttempt?.runId === 'string' ? settledAttempt.runId : undefined,
+    at: Number.isFinite(stageAt) ? stageAt : (Number.isFinite(settledAt) ? settledAt : undefined),
+  });
+  const record = buildArmReliabilityRecord({ ...input, ...(fleetCause ? { fleetCause } : {}) });
   const filePath = resolveReliabilityRecordsFile(dirOrRepo);
   const existing = existsSync(filePath) ? readArmReliabilityRecords(dirOrRepo) : [];
   const duplicate = existing.find((candidate) =>

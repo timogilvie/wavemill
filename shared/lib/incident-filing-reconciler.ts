@@ -148,6 +148,14 @@ function decision(outcome: IncidentFilingReconciliationOutcome, evidence: Record
 }
 
 export function reconcileIncidentForFiling(incident: IncidentRecord, repoDir = process.cwd(), read = readAuthoritativeWorkflowJobs(repoDir)): IncidentFilingReconciliation {
+  // HOK-3509: a fleet record is never job-backed. It is confirmed active
+  // while in the store; the absence sweep resolves it after the configured
+  // cycles without a fresh event, exactly as for any non-job-backed record.
+  const fleetMetadata = incident.metadata?.fleet as { causeKey?: string } | undefined;
+  if (fleetMetadata && typeof fleetMetadata === 'object' && typeof fleetMetadata.causeKey === 'string') {
+    const affectedTasks = Array.isArray(incident.metadata?.knownIssueIds) ? incident.metadata.knownIssueIds : [];
+    return decision('confirmed_active', { fleet: true, causeKey: fleetMetadata.causeKey, affectedTasks });
+  }
   if (!isJobBackedIncident(incident)) {
     return decision('confirmed_active', { classAware: false, reason: 'not_job_backed' });
   }

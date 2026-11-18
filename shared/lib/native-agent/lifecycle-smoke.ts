@@ -258,6 +258,7 @@ async function main() {
     };
 
     console.log('[smoke] Running native agent loop (mock mode)...');
+    // allow-stage-exit-identity: lifecycle smoke probe, not a task stage — no task budget applies (HOK-3492)
     const result = await runWavemillLoop(loopConfig);
 
     console.log(`[smoke] Loop result: stopReason=${result.stopReason} turns=${result.turnsCompleted} toolCallsExecuted=${result.toolCallsExecuted}`);

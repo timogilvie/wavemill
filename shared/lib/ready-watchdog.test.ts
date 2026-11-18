@@ -625,7 +625,7 @@ test('classify active eval or comparison as waiting-on-eval-comparison', () => {
   assert.equal(classification.kind, 'waiting-on-eval-comparison');
 });
 
-test('classify real conflict as needs-user', () => {
+test('classify real conflict as a monitor-owned non-paging wait (HOK-3513)', () => {
   const classification = classifyReadyTask(
     makeSnapshot({ hasConflictMarker: true }),
     makeTruth({ mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' }),
@@ -638,8 +638,13 @@ test('classify real conflict as needs-user', () => {
     },
   );
 
-  assert.equal(classification.kind, 'needs-user');
-  assert.match(classification.detail, /merge conflicts/);
+  // The conflict is classified by the one failure policy (code-failure) and
+  // owned by the monitor's Ready invalidation; the watchdog only observes.
+  assert.equal(classification.kind, 'waiting-on-ci');
+  assert.equal(classification.autoRemediable, false);
+  assert.match(classification.detail, /conflicts with its base/);
+  assert.match(classification.detail, /code-failure/);
+  assert.match(classification.detail, /conflict-remediation-relaunch pages on exhaustion/);
 });
 
 test('classify disconnected resolved merge remediation as auto-resumable', () => {
@@ -1033,7 +1038,7 @@ test('tick preserves recent prior state when GitHub truth is unreadable', async 
         prNumber: 2604,
         classification: 'needs-user',
         displayLabel: 'Needs user',
-        detail: 'PR #2604 has real merge conflicts on GitHub.',
+        detail: 'PR #2604 conflicts with its base; code-failure — the monitor owns the repair.',
         action: 'needs-user',
         updatedAt: '2030-05-05T12:00:00.000Z',
         classificationSince: '2030-05-05T12:00:00.000Z',
@@ -2360,8 +2365,10 @@ test('tick reaps prior actionable finding when task evaluates fresh', async () =
       },
     });
     assert.equal(first.findings.length, 1);
-    assert.equal(first.findings[0].classification, 'needs-user');
-    assert.match(first.findings[0].detail, /real merge conflicts/);
+    // HOK-3513: a conflict is a monitor-owned wait, never a park.
+    assert.equal(first.findings[0].classification, 'waiting-on-ci');
+    assert.match(first.findings[0].detail, /conflicts with its base/);
+    assert.doesNotMatch(first.findings[0].detail, /real merge conflicts/);
 
     const workflowState = JSON.parse(readFileSync(stateFile, 'utf-8')) as {
       tasks: Record<string, { updated?: string }>;

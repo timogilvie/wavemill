@@ -80,7 +80,10 @@ export type ArmFailureKind =
   // `native-stage-timeout`, HOK-3362.)
   | 'planning-artifact-invalid'
   | 'review-no-output'
-  | 'coding-exited-without-result';
+  | 'coding-exited-without-result'
+  // HOK-3509: a GitHub call failed because the API rate limit is exhausted.
+  // An external dependency fault; never model signal.
+  | 'github-rate-limited';
 
 export type ArmFaultClass =
   | 'harness-fault'
@@ -231,9 +234,22 @@ export function classifyArmFault(input: {
    * harness hold is the harness's, not the model's.
    */
   exitEvidence?: ArmFaultExitEvidence | null;
+  /**
+   * HOK-3509: when a fleet incident covers this failure, its fleet fault
+   * class wins over any per-attempt derivation. The attempt is a shared
+   * cause (same endpoint/dependency hitting many tasks), so routing must
+   * not read it as model signal. `cancelled` and `policy-denied` stay
+   * harness-fault anyway, so there is no override for them.
+   */
+  fleetCause?: { fleetFaultClass: 'harness-fault' | 'provider-fault' } | null;
 }): ArmFaultClass {
   const failureKind = input.failureKind ?? '';
   const detail = (input.detail ?? '').toLowerCase();
+
+  // HOK-3509: a fleet cause rewrites attribution from the per-attempt rule.
+  if (input.fleetCause && failureKind !== 'cancelled' && failureKind !== 'policy-denied') {
+    return input.fleetCause.fleetFaultClass;
+  }
 
   // HOK-3362: one budget-exhaustion kind. Historical spellings
   // (`native-review-timeout`, `planning-turn-limit`) canonicalise to it, and
@@ -272,6 +288,10 @@ export function classifyArmFault(input: {
     case 'provider-quota-exhausted':
     case 'provider-transient-error':
       return 'provider-fault';
+    // HOK-3509: an external dependency (GitHub API) is rate-limiting us;
+    // never a model signal. Grouped with provider faults for attribution.
+    case 'github-rate-limited':
+      return 'provider-fault';
     case 'native-provider-error':
       if (/(finish_reason|malformed|truncated stream|stream ended without|invalid response|unusable result)/.test(detail)) {
         return 'model-fault';
@@ -290,6 +310,13 @@ export function classifyArmFault(input: {
     // and did not repair it when relaunched with a targeted instruction — the
     // same completion-protocol failure, detected by the monitor instead.
     case 'coding-dirty-handoff':
+      return 'model-fault';
+    // HOK-3492: the task's one recorded spend budget was exhausted by the
+    // model-driven work across its owned sessions. The authoritative fault
+    // class for a cost-kind budget fact still comes from
+    // `deriveBudgetExhaustionFaultClass` when the fact is present; this case
+    // keeps the terminal-cause metadata honest when only the code is known.
+    case 'task-budget-exhausted':
       return 'model-fault';
     // HOK-3128: the mill lost track of a no-PR arm (no agent evidence past the
     // stall grace). Nothing proves the model was at fault, so keep it out of

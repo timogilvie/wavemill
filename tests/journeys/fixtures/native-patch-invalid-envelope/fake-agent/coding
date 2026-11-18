@@ -1,0 +1,46 @@
+# shellcheck shell=bash
+# Fake coder for HOK-3500: first apply_patch call has corrupted envelope keys,
+# the feedback must name them, then a valid patch completes the change.
+set -euo pipefail
+
+apply_patch() {
+  local payload_file="$1"
+  local result_file="$2"
+  (cd "$FAKE_AGENT_TOOLS_DIR/.." && \
+    WAVEMILL_APPLY_PATCH_WORKTREE="$WT" \
+    WAVEMILL_APPLY_PATCH_PAYLOAD="$payload_file" \
+    WAVEMILL_APPLY_PATCH_RESULT="$result_file" \
+    node --import tsx --input-type=module --eval \
+    'import { createApplyPatchTool } from "./shared/lib/native-agent/tools/apply-patch-tool.ts"; import { readFileSync, writeFileSync } from "node:fs"; const wt = process.env.WAVEMILL_APPLY_PATCH_WORKTREE; const payloadFile = process.env.WAVEMILL_APPLY_PATCH_PAYLOAD; const resultFile = process.env.WAVEMILL_APPLY_PATCH_RESULT; const tool = createApplyPatchTool(wt); const payload = JSON.parse(readFileSync(payloadFile, "utf8")); const result = await tool.execute("call", { patch: payload }); writeFileSync(resultFile, result.content[0]?.text ?? JSON.stringify(result, null, 2));')
+}
+
+printf 'before\n' > journey-output.txt
+
+invalid_payload_file="$FEATURE_DIR/.invalid-patch.json"
+result_file="$FEATURE_DIR/.apply-patch-result.txt"
+
+printf '%s' '{"version":1,"atomicity":true,"operations ":[{"op":"edit","path":"journey-output.txt","oldText":"before\n","newText":"after\n"}]}' > "$invalid_payload_file"
+apply_patch "$invalid_payload_file" "$result_file"
+invalid_result="$(cat "$result_file")"
+
+for key in atomicity "operations " atomic operations; do
+  if [[ "$invalid_result" != *"$key"* ]]; then
+    printf 'missing named key in invalid-patch feedback: %s\n' "$key" >&2
+    exit 1
+  fi
+done
+
+touch "$FEATURE_DIR/.named-key-feedback-seen"
+
+valid_payload_file="$FEATURE_DIR/.valid-patch.json"
+printf '%s' '{"version":1,"atomic":true,"operations":[{"op":"edit","path":"journey-output.txt","oldText":"before\n","newText":"after\n"}]}' > "$valid_payload_file"
+apply_patch "$valid_payload_file" "$result_file" >/dev/null
+
+if [[ "$(cat journey-output.txt)" != "after" ]]; then
+  echo "valid patch did not apply" >&2
+  exit 1
+fi
+
+git add journey-output.txt
+git -c user.name=fake-agent -c user.email=fake-agent@example.invalid commit -q -m "$WAVEMILL_ISSUE: apply patch after named-key feedback"
+jq -n --arg commit "$(git rev-parse HEAD)" '{stage:"coding",confidence:"high",commit:$commit}' > "$FEATURE_DIR/.coding-complete"

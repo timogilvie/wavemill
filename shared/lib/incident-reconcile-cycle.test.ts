@@ -7,6 +7,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { reconcileIncidentCycle } from './incident-reconcile-cycle.ts';
+import { deriveAttentionItems } from './attention.ts';
 import { IncidentStore } from './wavemill-incident-store.ts';
 import { createIncidentDraft, type IncidentRecord } from './wavemill-incident-model.ts';
 import { reclaimLegacyStateLock } from './state-lock.ts';
@@ -154,6 +155,108 @@ test('canResolveByAbsence gate blocks absence resolution', async () => {
     }
     const stored = await store.getIncidents();
     assert.equal(stored.length, 1, 'gate must keep the record open despite absence');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3509: three tasks sharing a cause across the window upsert one fleet incident', async () => {
+  // Fault injection: three features with coding-result files recording the
+  // same failure kind and endpoint inside the window. The cycle receives
+  // them as failureSources and no per-task candidates; it must upsert one
+  // fleet incident with taskId=null and metadata.fleet.causeKey.
+  const { dir, incidentsDir } = makeSandbox();
+  try {
+    const now = Date.parse('2026-11-10T18:40:00Z');
+    const sources: Array<{ taskId: string; featureDir: string }> = [];
+    const replay = JSON.parse(readFileSync(join(import.meta.dirname, '..', '..', 'tests', 'fixtures', 'incident-replay', 'real', 'fleet_deepseek_stalls.json'), 'utf8')) as {
+      failureFacts: Array<{ taskId: string; slug: string; at: string; attemptId: string }>;
+    };
+    const stalls = replay.failureFacts;
+    assert.equal(stalls.length, 20, 'the recorded incident has five arms with four stalls each');
+    const stallsByTask = Map.groupBy(stalls, (stall) => stall.taskId);
+    assert.equal(stallsByTask.size, 5);
+    for (const [taskId, taskStalls] of stallsByTask) {
+      assert.ok(taskStalls);
+      const [current, ...history] = taskStalls.slice().sort((left, right) => right.at.localeCompare(left.at));
+      const featureDir = join(dir, 'features', current.slug);
+      mkdirSync(featureDir, { recursive: true });
+      writeFileSync(join(featureDir, '.coding-result.json'), JSON.stringify({
+        stage: 'coding',
+        status: 'failed',
+        startedAt: '2026-11-10T16:40:00Z',
+        finishedAt: current.at,
+        agent: 'claude',
+        model: 'deepseek-v4-flash',
+        intendedModel: 'deepseek-v4-flash',
+        notes: 'Interrupted: coding agent settled without a result (agent-stalled)',
+        artifacts: { exitEvidence: { reason: 'agent-stalled', harnessHold: { toolName: 'native_tool', toolCallId: `hold-${taskId}`, startedAt: current.at } } },
+        runId: current.attemptId,
+        history: history.map((stall) => ({
+          stage: 'coding', status: 'failed', startedAt: '2026-11-10T16:40:00Z', finishedAt: stall.at,
+          agent: 'claude', model: 'deepseek-v4-flash', intendedModel: 'deepseek-v4-flash',
+          notes: 'Interrupted: coding agent settled without a result (agent-stalled)', runId: stall.attemptId,
+          artifacts: { exitEvidence: { reason: 'agent-stalled', harnessHold: { toolName: 'native_tool', toolCallId: `hold-${taskId}-${stall.attemptId}`, startedAt: stall.at } } },
+        })),
+      }));
+      sources.push({ taskId, featureDir });
+    }
+    const store = new IncidentStore(incidentsDir);
+    const result = await reconcileIncidentCycle({
+      store,
+      candidates: [],
+      cycleComplete: true,
+      repoDir: dir,
+      failureSources: sources,
+      correlation: { windowMs: 10 * 60_000, threshold: 3, session: null, now: new Date(now) },
+    });
+    assert.ok(result.fleetIncidents && result.fleetIncidents.length === 1, 'exactly one correlation');
+    const stored = await store.getIncidents();
+    assert.equal(stored.length, 1);
+    assert.equal(stored[0].taskId, null);
+    assert.equal(stored[0].rootCauseClass, 'fleet_shared_endpoint_failure');
+    // The typed exit evidence proves the lockstep was a harness hold, so the
+    // cause key and the downstream reliability rows agree on harness-fault.
+    assert.equal(stored[0].metadata?.fleet?.causeKey, 'deepseek-v4-flash::harness-fault');
+    assert.equal(stored[0].metadata?.fleet?.fleetFaultClass, 'harness-fault');
+    assert.deepEqual(stored[0].metadata?.knownIssueIds, [...stallsByTask.keys()]);
+    assert.equal(stored[0].metadata?.fleet?.attempts.length, 5, 'the current lockstep is five failure rows');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3509: GitHub rate-limit replay produces one dependency incident and one attention item', async () => {
+  const { dir, incidentsDir } = makeSandbox();
+  try {
+    const now = new Date('2026-11-10T17:00:00Z');
+    const replay = JSON.parse(readFileSync(join(import.meta.dirname, '..', '..', 'tests', 'fixtures', 'incident-replay', 'real', 'fleet_github_rate_limit.json'), 'utf8')) as {
+      jobs: Array<{ id: string; taskId: string; finishedAt: string; error: string }>;
+    };
+    const sources = replay.jobs.map((job) => {
+      const featureDir = join(dir, 'features', job.taskId);
+      mkdirSync(featureDir, { recursive: true });
+      return { taskId: job.taskId, featureDir };
+    });
+    const store = new IncidentStore(incidentsDir);
+    await reconcileIncidentCycle({
+      store,
+      candidates: [],
+      cycleComplete: true,
+      repoDir: dir,
+      jobs: { jobs: replay.jobs.map((job) => ({ ...job, kind: 'pr-ci-status', status: 'failed', source: 'fixture' })), source: 'fixture' },
+      failureSources: sources,
+      correlation: { windowMs: 10 * 60_000, threshold: 3, session: null, now },
+    });
+    const stored = await store.getIncidents();
+    assert.equal(stored.length, 1, 'the replay must not create per-task incidents');
+    assert.equal(stored[0].taskId, null);
+    assert.equal(stored[0].rootCauseClass, 'remote_dependency_rate_limited');
+    const attention = deriveAttentionItems({
+      passStampMs: now.getTime(), staleAfterMs: now.getTime() + 60_000, nowMs: now.getTime(), tasks: [],
+      incidents: [{ incident: stored[0], reconciliation: { outcome: 'confirmed_active', evidence: {} } }],
+    });
+    assert.deepEqual(attention.items.map((item) => item.kind), ['fleet-incident']);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

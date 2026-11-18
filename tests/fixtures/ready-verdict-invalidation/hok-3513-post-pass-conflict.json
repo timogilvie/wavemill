@@ -1,0 +1,89 @@
+{
+  "_comment": "HOK-3513 replay fixture: a passed Ready verdict that went stale because the PR stopped being mergeable. Provenance: the 2026-11-15/16 incident recorded in Linear HOK-3513, cut down from .wavemill/ready-watchdog.jsonl (`needs-user` rows reading 'PR #N has real merge conflicts on GitHub') and each task's .wavemill/evals/artifacts/<issue>/.ready-result.json. Gaps stated, not filled: the mill log was not retained for either incident, so `livePr.ciConclusion` is transcribed from the issue's 'CI pending' / 'CI pass' record rather than a retained read; PR head/base SHAs were never quoted in the evidence, so they are omitted. `expected.operatorTouches` is the interaction count the incident recorded (both tasks needed a person). shared/lib/ready-verdict-invalidation.replay.test.ts drives each case through the real readyVerdictInvalidation/planMergeQueueTick planner and classifyReadyTask.",
+  "cases": [
+    {
+      "name": "HOK-3493 at 2026-11-16T18:01:02Z — post-pass conflict while CI is still pending",
+      "protects": "a ready-stale, wm:blocked PR with a real GitHub conflict parking the watchdog at needs-user instead of re-running Ready",
+      "watchdogRow": {
+        "issueId": "HOK-3493",
+        "prNumber": 1865,
+        "classification": "needs-user",
+        "action": "needs-user",
+        "detail": "PR #1865 has real merge conflicts on GitHub.",
+        "observedAt": "2026-11-16T18:01:02Z"
+      },
+      "readyResult": {
+        "stage": "ready",
+        "status": "completed",
+        "agent": "codex",
+        "model": "deepseek-v4-flash",
+        "finishedAt": "2026-11-16T17:57:00Z",
+        "artifacts": {
+          "type": "ready",
+          "verdict": "pass",
+          "prNumber": 1865,
+          "mergeConflict": "CLEAN",
+          "queueState": "ready-stale",
+          "candidateSkipReason": "stuck merge candidate"
+        }
+      },
+      "livePr": {
+        "prNumber": 1865,
+        "state": "OPEN",
+        "baseRefName": "auto/integration",
+        "mergeable": "CONFLICTING",
+        "mergeStateStatus": "DIRTY",
+        "ciConclusion": "pending",
+        "labels": ["wavemill", "wm:blocked"],
+        "checks": []
+      },
+      "expected": {
+        "invalidationCause": "conflict",
+        "watchdogKind": "waiting-on-ci",
+        "operatorTouches": 1
+      }
+    },
+    {
+      "name": "HOK-3382 at 2026-11-15T20:01:46Z — post-pass conflict on a merge candidate with green CI",
+      "protects": "a merge-candidate PR that turns DIRTY never being selected again and parking the watchdog at needs-user",
+      "watchdogRow": {
+        "issueId": "HOK-3382",
+        "prNumber": 1862,
+        "classification": "needs-user",
+        "action": "needs-user",
+        "detail": "PR #1862 has real merge conflicts on GitHub.",
+        "observedAt": "2026-11-15T20:01:46Z"
+      },
+      "readyResult": {
+        "stage": "ready",
+        "status": "completed",
+        "agent": "codex",
+        "model": "deepseek-v4-flash",
+        "finishedAt": "2026-11-15T19:40:00Z",
+        "artifacts": {
+          "type": "ready",
+          "verdict": "pass",
+          "prNumber": 1862,
+          "mergeConflict": "CLEAN",
+          "queueState": "merge-candidate",
+          "candidatePromotedAt": "2026-11-15T19:41:00Z"
+        }
+      },
+      "livePr": {
+        "prNumber": 1862,
+        "state": "OPEN",
+        "baseRefName": "auto/integration",
+        "mergeable": "CONFLICTING",
+        "mergeStateStatus": "DIRTY",
+        "ciConclusion": "pass",
+        "labels": ["wavemill", "wm:blocked"],
+        "checks": []
+      },
+      "expected": {
+        "invalidationCause": "conflict",
+        "watchdogKind": "waiting-on-ci",
+        "operatorTouches": 1
+      }
+    }
+  ]
+}

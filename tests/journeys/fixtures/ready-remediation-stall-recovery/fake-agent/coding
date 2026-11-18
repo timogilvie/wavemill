@@ -1,0 +1,38 @@
+# shellcheck shell=bash
+# Fake coder for the ready-remediation-stall-recovery journey (sourced by
+# tests/fakes/bin/claude).
+#
+# The first coding launch implements the task the usual way. Any later coding
+# launch is Ready remediation (post-PR remediation runs as a prompt-driven
+# coding launch, HOK-3272): it fixes the failing check, commits — and then
+# exits WITHOUT pushing. The mill must publish that commit through the one
+# head-publication seam (HOK-3447: the advanced disposition and the settled
+# one take the same path) before Ready re-checks the head. The journey asserts
+# the mill published it, so an agent that never pushes still lands.
+coding_runs_file="$FAKE_ROOT/coding-runs-$WAVEMILL_ISSUE"
+coding_run=$(( $(cat "$coding_runs_file" 2>/dev/null || echo 0) + 1 ))
+printf '%s\n' "$coding_run" > "$coding_runs_file"
+
+if (( coding_run == 1 )); then
+  default_coding
+else
+  printf '%s phase=coding issue=%s role=ready-remediation\n' "$(date -u +%FT%TZ)" "$WAVEMILL_ISSUE" >> "$FAKE_AGENT_LOG"
+  # The launcher passes the prompt as the CLI argument (sourced, so "$*" is
+  # the fake claude's own argv).
+  printf '%s\n' "$*" > "$FAKE_ROOT/remediation-prompt-$coding_run.txt"
+  # A new head restarts CI: flip PR #1 to PENDING before the commit so the
+  # red head's FAILURE is never read against the fix head.
+  fakes_gh_state_lock
+  jq '.checks.byPr["1"] = [{name: "unit-tests", conclusion: "PENDING"}]' "$FAKE_GH_STATE" > "$FAKE_GH_STATE.tmp.$$" \
+    && mv "$FAKE_GH_STATE.tmp.$$" "$FAKE_GH_STATE"
+  fakes_gh_state_unlock
+  printf 'fixed: unit-tests green\n' >> journey-output.txt
+  git add journey-output.txt
+  git -c user.name=fake-agent -c user.email=fake-agent@example.invalid \
+    commit -q -m "$WAVEMILL_ISSUE: fix failing unit-tests"
+  # Record the repair commit and stop. Deliberately no `git push`: the mill
+  # owns publication. It never writes .coding-complete either — Ready
+  # re-checks the new head.
+  git rev-parse HEAD > "$FAKE_ROOT/remediation-commit"
+  printf 'committed\n' > "$FAKE_ROOT/remediation-committed"
+fi

@@ -328,6 +328,12 @@ export class ClaudeCliAdapter implements CliTransportAdapter {
         inputTokens: parsed.usage.inputTokens,
         outputTokens: parsed.usage.outputTokens,
         totalTokens: parsed.usage.totalTokens,
+        ...(parsed.usage.cacheReadTokens !== undefined
+          ? { cacheReadTokens: parsed.usage.cacheReadTokens }
+          : {}),
+        ...(parsed.usage.cacheWriteTokens !== undefined
+          ? { cacheWriteTokens: parsed.usage.cacheWriteTokens }
+          : {}),
         ...(parsed.costUsd !== undefined ? { costUsd: parsed.costUsd } satisfies Partial<AdapterUsage> : {}),
       };
     }

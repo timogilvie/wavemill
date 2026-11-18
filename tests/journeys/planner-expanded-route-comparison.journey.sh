@@ -73,6 +73,14 @@ journey_post_assertions() {
   # harness already tracks attention; re-assert it explicitly.
   journey_assert "expanded-route pair reached comparison with zero operator touches" \
     test "$JOURNEY_SAW_ATTENTION" = "0"
+
+  # HOK-3506: this journey's materialize path runs through the exact
+  # finalizer rewritten for one-challenge-selection. Guard against the
+  # incident class it fixes: the sealed decision must resolve (not
+  # re-select), so the deleted phantom-pair warning and its
+  # challenger_never_launched write must never appear.
+  journey_assert "no phantom-pair warning (deleted challenger_never_launched guard) during finalization" \
+    bash -c '! grep -q "no challenger arm exists" "$1"' _ "$JOURNEY_TMP/logs/status.log"
 }
 
 source "$(dirname "$0")/challenge-pair-eval.journey.sh"

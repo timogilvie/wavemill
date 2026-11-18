@@ -267,7 +267,17 @@
         "totalTokens": {
           "type": "integer",
           "minimum": 0,
-          "description": "Total tokens (input + output)."
+          "description": "Total tokens — sum of the billable buckets (input + output + cache read/write when reported)."
+        },
+        "cacheReadTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Tokens read from the provider cache. Absent when the judge transport reported no cache counters (HOK-3409)."
+        },
+        "cacheWriteTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Tokens written to the provider cache. Absent when the judge transport reported no cache counters (HOK-3409)."
         }
       },
       "required": [

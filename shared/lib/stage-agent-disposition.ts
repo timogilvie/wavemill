@@ -13,8 +13,9 @@
  * stage reads:
  *
  *   - {@link readStageAgentLaunch} resolves launch identity from the
- *     per-stage `session-ownership` row (HOK-3328). Ready wraps this to layer
- *     the conflict-remediation marker's `launchHead` on top.
+ *     per-stage `session-ownership` row (HOK-3328) through the one canonical
+ *     latest-launch selector over lossless history (HOK-3447). Ready wraps
+ *     this to layer the conflict-remediation marker's `launchHead` on top.
  *   - {@link decideStageAgentDisposition} is pure. Liveness comes only from
  *     the shared task-progress primitive (HOK-3101), including the HOK-3386
  *     owned-session transcript source.
@@ -42,7 +43,7 @@
 
 import { basename, join } from 'node:path';
 import { statSync } from 'node:fs';
-import { readOwnershipRows, type OwnershipKind, type OwnershipStage } from './session-ownership.ts';
+import { readLatestStageLaunch, type OwnershipKind, type OwnershipStage } from './session-ownership.ts';
 import { resolveTaskArtifact } from './task-artifact-lookup.ts';
 import {
   getTaskProgress,
@@ -131,14 +132,6 @@ const LIVE_AGENT_STATES: ReadonlySet<HookState> = new Set<HookState>([
 
 const SETTLED_AGENT_STATES: ReadonlySet<HookState> = new Set<HookState>(['idle', 'error']);
 
-const STAGE_TO_KINDS: Record<StageAgentStage, readonly OwnershipKind[]> = {
-  planning: ['planning'],
-  coding: ['coding'],
-  review: ['review'],
-  'ready-remediation': ['ready-remediation'],
-  'conflict-resolution': ['conflict-resolution'],
-};
-
 function isoToEpochSeconds(iso: string | null | undefined): number | null {
   if (!iso) return null;
   const ms = Date.parse(iso);
@@ -170,29 +163,23 @@ function exitFactBeatsRecord(exit: { at: string } | null, recordEpochSeconds: nu
 }
 
 /**
- * Newest `launch` session-ownership row for this stage. Returns null when no
- * such row exists (the launch happened outside the recorded path, or the
- * stage has not run yet).
+ * The stage's current launch: the newest `session-ownership` row that records
+ * the stage's own launch, read from lossless history by the one canonical
+ * selector (HOK-3447) — a repair that reused a legacy deterministic session id
+ * is still the newest attempt. Returns null when no such row exists (the
+ * launch happened outside the recorded path, or the stage has not run yet).
  */
 export function readStageAgentLaunch(stateDir: string, stage: StageAgentStage): StageAgentLaunch | null {
-  const kinds = new Set<OwnershipKind>(STAGE_TO_KINDS[stage]);
-  let bestMs = -Infinity;
-  let best: StageAgentLaunch | null = null;
-  for (const row of readOwnershipRows(stateDir)) {
-    if (!kinds.has(row.kind)) continue;
-    const ms = Date.parse(row.launchedAt);
-    if (!Number.isFinite(ms) || ms <= bestMs) continue;
-    bestMs = ms;
-    best = {
-      sessionRef: row.sessionRef,
-      harness: row.harness,
-      launchedAt: row.launchedAt,
-      attemptId: row.attemptId,
-      kind: row.kind,
-      ...(row.stage ? { stage: row.stage } : {}),
-    };
-  }
-  return best;
+  const row = readLatestStageLaunch(stateDir, stage);
+  if (!row) return null;
+  return {
+    sessionRef: row.sessionRef,
+    harness: row.harness,
+    launchedAt: row.launchedAt,
+    attemptId: row.attemptId,
+    kind: row.kind,
+    ...(row.stage ? { stage: row.stage } : {}),
+  };
 }
 
 function waitingFromAgentState(state: HookState | null): StageAgentWaitingOn | null {

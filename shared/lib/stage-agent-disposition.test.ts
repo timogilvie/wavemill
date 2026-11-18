@@ -527,6 +527,24 @@ test('readStageAgentLaunch: returns null when no row matches', () => {
   }
 });
 
+// protects (HOK-3447): a repair launch that reused the legacy deterministic
+// runtime ref being collapsed into the launch it repaired — the HOK-3325 Ready
+// stall, where disposition read the old row and never saw the repair.
+test('readStageAgentLaunch: a repair sharing a sessionRef is still the newest launch', () => {
+  const dir = stateDir();
+  try {
+    appendOwnershipRow(dir, { sessionRef: 'wm-coding-HOK-1', harness: 'native', kind: 'native-arm', stage: 'coding', model: 'm', launchedAt: '2026-11-16T10:00:00.000Z' });
+    appendOwnershipRow(dir, { sessionRef: 'wm-coding-HOK-1', harness: 'native', kind: 'ready-remediation', model: 'm', launchedAt: '2026-11-16T10:10:00.000Z' });
+    const launch = readStageAgentLaunch(dir, 'ready-remediation');
+    assert.ok(launch);
+    assert.equal(launch!.sessionRef, 'wm-coding-HOK-1');
+    assert.equal(launch!.launchedAt, '2026-11-16T10:10:00.000Z');
+    assert.equal(launch!.kind, 'ready-remediation');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ── HOK-3422: gather anchors stall clock off ownership launchedAt ─────────────
 //
 // The 2026-11-05 incident: the Ready remediation agent died but the controller

@@ -120,13 +120,20 @@ import {
   assertOpenRouterBalanceSufficient,
   capOpenRouterMaxTokensForBalance,
 } from './openrouter-credits-guard.ts';
-import { updateStageResult, type ModelAttributionIneligibleReason, type StageExecutionUsage } from '../stage-result.ts';
+import {
+  updateStageResult,
+  readStageResult,
+  type ModelAttributionIneligibleReason,
+  type StageExecutionUsage,
+} from '../stage-result.ts';
+import { resolveStageExecutionTruth } from '../executed-model-resolver.ts';
 import { buildStageExecutionUsage } from './prompt-cache.ts';
 import { reportPromptCacheHitRate } from './prompt-cache-detector.ts';
 import { getNativeContextManagementConfig, getNativePayloadCaptureConfig } from '../config.ts';
 import { equivalentOpenRouterModelIds, type NormalizedPricing } from '../openrouter-catalog.ts';
 import { logPromptUsage } from '../prompt-registry.ts';
-import { nativeLaunchKind, recordLaunch } from '../session-ownership.ts';
+import { buildAttemptId, nativeLaunchKind, newSessionRef, recordLaunch } from '../session-ownership.ts';
+import { loopCostLimitUsd, resolveTaskSpendRemainder } from '../task-spend.ts';
 import type { ResourceRef } from '../resource-registry.ts';
 import {
   getBlockedCompletionPath,
@@ -864,6 +871,7 @@ function buildCompletionAttribution(input: {
   const attributionEligible = input.stageCompleted && input.intendedModel === input.model;
   return {
     executedModel,
+    // allow-executed-model-resolver: HOK-3498 leaves this scripted/loop-override success record as the launcher evidence the one resolver reads first.
     executionEvidence: {
       status: 'direct',
       source: 'native-runtime',
@@ -876,7 +884,7 @@ function buildCompletionAttribution(input: {
       : {
         modelAttributionIneligibleReason: !input.stageCompleted
           ? ('stage_not_completed' as const)
-          : ('runtime_fallback' as const),
+          : ('runtime_fallback' as const), // allow-executed-model-resolver: HOK-3498 buildCompletionAttribution's intended-vs-executed check predates the resolver; unchanged here.
       }),
   };
 }
@@ -1197,6 +1205,23 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       : undefined;
     const modelName = model.name ?? model.id;
     const requestedModelName = options.resolvedModel?.trim() || modelName;
+    // HOK-3492: one task spend limit — the recorded budget minus what this
+    // task's owned sessions already cost. Resolved before this launch records
+    // its own row so only prior spend is subtracted.
+    const pricing = normalizedPricingFromModel(model);
+    const taskSpend = await resolveTaskSpendRemainder({
+      repoDir: options.repoDir,
+      worktreePath: options.wtDir,
+      featureDir,
+      issueId: options.issue,
+      slug: options.slug,
+      branchName: options.branch,
+      modelId: modelName,
+      ...(pricing.inputPerMTok !== null && pricing.outputPerMTok !== null
+        ? { modelPricing: { inputCostPerMTok: pricing.inputPerMTok, outputCostPerMTok: pricing.outputPerMTok } }
+        : {}),
+    });
+    const taskSpendLimitUsd = loopCostLimitUsd(taskSpend);
     // HOK-3143: build a provider-identity expectation from the certified
     // artifact when launching through the gate (not an operator loopModelOverride).
     // The tracker is shared across the main run and any recovery/artifact-retry
@@ -1206,8 +1231,18 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       ? undefined
       : readyProvider?.certifiedIdentity;
     const transcriptPath = makeTranscriptPath(options.repoDir, options.session, options.issue);
+    // HOK-3447: every launch is its own attempt. A deterministic session id
+    // (`<session>-coding-<issue>`) made a repair share its ref with the launch
+    // it repaired, which the old sessionRef dedupe collapsed — the repair was
+    // invisible to disposition, progress and the model resolver. The token
+    // keeps the id recognizable and parseable (`…-<token>-coding-<issue>`)
+    // while making two launches in the same second distinct.
+    const launchToken = newSessionRef();
+    const codingNativeSessionId = `${options.session}-${launchToken}-coding-${options.issue}`;
+    const launchedAt = new Date();
+    const launchKind = nativeLaunchKind();
     const transcriptWriter = new TranscriptWriter({
-      sessionId: `${options.session}-coding-${options.issue}`,
+      sessionId: codingNativeSessionId,
       model: modelName,
       api: model.api,
       provider: model.provider,
@@ -1217,14 +1252,15 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
     });
 
     // Construct session stream configuration and create persistent writer
-    const codingNativeSessionId = `${options.session}-coding-${options.issue}`;
     // HOK-3328: own the transcript's session before the loop starts.
     recordLaunch(featureDir, {
       sessionRef: codingNativeSessionId,
       harness: 'native',
-      kind: nativeLaunchKind(),
+      kind: launchKind,
       stage: 'coding',
       model: requestedModelName,
+      launchedAt,
+      attemptId: buildAttemptId(launchKind, null, launchedAt, launchToken),
       cwd: options.wtDir,
     });
     const eventStreamPath = resolveSessionEventStreamPath(codingNativeSessionId, options.repoDir);
@@ -1280,6 +1316,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       // turn has returned. The stage result flips to the provider-reported id on
       // completion.
       executedModel: null,
+      // allow-executed-model-resolver: HOK-3498 — the launch marker records "no turn yet"; exits derive evidence from the resolver.
       executionEvidence: {
         status: 'missing',
         source: providerIdentityExpectation ? 'provider-response' : 'native-runtime',
@@ -1344,9 +1381,14 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
     };
 
     const mutationFailureTracker: MutationFailureTracker = { count: 0, last: null };
-    const codingBudget: LoopBudget = { ...CODING_LOOP_BUDGET, ...(options.loopBudgetOverride ?? {}) };
+    const codingBudget: LoopBudget = {
+      ...CODING_LOOP_BUDGET,
+      // HOK-3492: the loop's existing cost stop now carries the task's
+      // remaining spend; the override still wins for replay tests.
+      ...(taskSpendLimitUsd !== undefined ? { maxCostUsd: taskSpendLimitUsd } : {}),
+      ...(options.loopBudgetOverride ?? {}),
+    };
 
-    const pricing = normalizedPricingFromModel(model);
     const effectiveMaxTokens = model.provider === 'openrouter' && !options.loopModelOverride
       ? capOpenRouterMaxTokensForBalance({
         requestedMaxTokens: CODING_MAX_OUTPUT_TOKENS,
@@ -1370,6 +1412,8 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       maxTokens: effectiveMaxTokens,
       // Coding uses the loop's existing admission and stagnation controls, as planning does.
       budget: codingBudget,
+      // HOK-3492: the loop needs rates to accrue the spend it stops on.
+      ...(taskSpend?.pricing ? { modelPricing: taskSpend.pricing } : {}),
       // HOK-3381: tracked-file content for the shared no-progress rule
       // (.wavemill/ test logs never count as progress).
       progressFingerprint: () => trackedContentFingerprint(options.wtDir),
@@ -1837,6 +1881,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
         model: options.loopModelOverride?.name ?? options.resolvedModel ?? '',
         intendedModel: options.resolvedModel ?? options.loopModelOverride?.name ?? null,
         executedModel: error.reportedModel,
+        // allow-executed-model-resolver: HOK-3498 reserves contradicted + provider_substitution for a provider-identity mismatch; the live error is the authoritative evidence.
         executionEvidence: {
           status: 'contradicted',
           source: 'provider-response',
@@ -1870,22 +1915,33 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       writeTextStatus(options.session, options.issue, 'native coding identity_mismatch');
       throw error;
     }
+    const failureTruth = await resolveStageExecutionTruth({
+      featureDir,
+      stage: 'coding',
+      status: 'failed',
+      worktreePath: options.wtDir,
+      branchName: options.branch,
+      repoDir: options.repoDir,
+      existing: await readStageResult({ featureDir, stage: 'coding' }),
+      agentHint: 'native',
+      flags: {
+        model: options.loopModelOverride?.name ?? options.resolvedModel ?? '',
+        'intended-model': options.resolvedModel ?? options.loopModelOverride?.name ?? '',
+      },
+      evidenceFacts: piRuntimeVersionsField(),
+    });
     await updateStageResult(featureDir, 'coding', {
       status: 'failed',
       finishedAt: new Date().toISOString(),
       agent: 'native',
       model: options.loopModelOverride?.name ?? options.resolvedModel ?? '',
-      intendedModel: options.resolvedModel ?? options.loopModelOverride?.name ?? null,
-      executedModel: null,
-      executionEvidence: {
-        status: 'contradicted',
-        source: 'native-runtime',
-        ...piRuntimeVersionsField(),
-        detail: message,
-        recordedAt: new Date().toISOString(),
-      },
-      modelAttributionEligible: false,
-      modelAttributionIneligibleReason: 'execution_contradicted',
+      intendedModel: failureTruth.intendedModel,
+      executedModel: failureTruth.executedModel,
+      executionEvidence: failureTruth.executionEvidence,
+      modelAttributionEligible: failureTruth.modelAttributionEligible,
+      ...(failureTruth.modelAttributionIneligibleReason
+        ? { modelAttributionIneligibleReason: failureTruth.modelAttributionIneligibleReason }
+        : {}),
       notes: `Native coding failed: ${message}`,
       failureReason: message,
     });

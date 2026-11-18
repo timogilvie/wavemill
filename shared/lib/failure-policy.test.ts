@@ -35,7 +35,7 @@ test('terminal-count-shrinks: fewer distinct terminal codes than before HOK-3176
     `allowlist grew to ${TERMINAL_ALLOWLIST.length} (was ${TERMINAL_CODES_BEFORE_HOK_3176})`,
   );
   const allStage = TERMINAL_ALLOWLIST.filter((cause) => !cause.challengeOnly);
-  assert.equal(allStage.length, 8, 'all-stage terminals changed — update this pin deliberately');
+  assert.equal(allStage.length, 9, 'all-stage terminals changed — update this pin deliberately');
 });
 
 // protects: the one escalation step accepting an operator-decision code that is
@@ -98,6 +98,7 @@ for (const code of [
   'varied_model_unresolvable',
   'operator-gate',
   'coding-dirty-handoff',
+  'task-budget-exhausted',
 ]) {
   test(`terminal:${code}`, () => {
     for (const challengeArm of [false, true]) {
@@ -108,6 +109,29 @@ for (const code of [
     }
   });
 }
+
+test('terminal:recorded cost-kind task budget exhaustion is terminal; other budget kinds still retry', () => {
+  const terminal = classifyFailure({
+    stage: 'coding',
+    failureKind: 'native-stage-timeout',
+    handoffReason: 'budget_exhausted',
+    budgetExhausted: { kind: 'cost' },
+    challengeArm: true,
+  });
+  assert.equal(terminal.class, 'terminal');
+  assert.equal(terminal.cause?.code, 'task-budget-exhausted');
+  assert.equal(terminal.retryBucket, undefined);
+  for (const kind of ['model_time', 'turn', 'tool_call', 'token']) {
+    const retry = classifyFailure({
+      stage: 'coding',
+      failureKind: 'native-stage-timeout',
+      handoffReason: 'budget_exhausted',
+      budgetExhausted: { kind },
+    });
+    assert.equal(retry.class, 'retryable', kind);
+    assert.equal(retry.retryBucket, 'stage-failure-coding', kind);
+  }
+});
 
 test('terminal:challenge-only causes park challenge arms and retry everything else', () => {
   const challengeOnly = TERMINAL_ALLOWLIST.filter((cause) => cause.challengeOnly);

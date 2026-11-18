@@ -1,26 +1,21 @@
 import path from 'node:path';
+import { compileSchemaValidator, type SchemaValidatorFunction } from '../schema-validators.ts';
 
 export const NATIVE_PATCH_VERSION = 1 as const;
 
 export type NativePatchValidationErrorCode =
   | 'invalid_type'
-  | 'invalid_version'
-  | 'non_atomic_patch'
-  | 'empty_operations'
-  | 'invalid_operation'
-  | 'unsupported_operation'
+  | 'schema_validation'
   | 'invalid_path'
-  | 'invalid_text'
-  | 'invalid_context'
-  | 'invalid_expected_occurrences'
-  | 'identical_old_new'
-  | 'invalid_fuzzy_match';
+  | 'identical_old_new';
 
 export interface NativePatchValidationError {
   code: NativePatchValidationErrorCode;
   path: string;
   message: string;
   operationIndex?: number;
+  keyword?: string;
+  params?: Record<string, unknown>;
 }
 
 export interface NativePatchContextAnchors {
@@ -81,9 +76,54 @@ export const NATIVE_PATCH_CONTRACT_SUMMARY = [
   'Optional fuzzyMatch supports minSimilarity, maxMatchCandidates, maxContextLines, ignoreWhitespace, and requireAnchorOverlap.',
 ].join('\n');
 
+const NATIVE_PATCH_OPERATION_SCHEMA = {
+  type: 'object',
+  required: ['op', 'path'],
+  properties: {
+    op: {
+      type: 'string',
+      enum: ['edit', 'edit-diff'],
+      description: 'Operation variant. "edit" requires oldText/newText; "edit-diff" requires diff.',
+    },
+    path: {
+      type: 'string',
+      description: 'Repo-relative POSIX path without traversal, for example "src/app.ts".',
+    },
+  },
+  oneOf: [
+    {
+      properties: {
+        op: { const: 'edit' },
+        path: { type: 'string' },
+        oldText: { type: 'string', minLength: 1, description: 'Required for op "edit": exact existing text to replace. Must be non-empty.' },
+        newText: { type: 'string', description: 'Required for op "edit": replacement text. May be empty to delete oldText.' },
+        anchorBefore: { type: 'string', minLength: 1, description: 'Optional non-empty context that should appear before the edit.' },
+        anchorAfter: { type: 'string', minLength: 1, description: 'Optional non-empty context that should appear after the edit.' },
+        expectedOccurrences: { type: 'integer', minimum: 1, description: 'Optional positive integer for the expected count of oldText matches.' },
+      },
+      required: ['op', 'path', 'oldText', 'newText'],
+      additionalProperties: false,
+    },
+    {
+      properties: {
+        op: { const: 'edit-diff' },
+        path: { type: 'string' },
+        diff: { type: 'string', minLength: 1, description: 'Required for op "edit-diff": unified diff hunk text for this path.' },
+        anchorBefore: { type: 'string', minLength: 1, description: 'Optional non-empty context that should appear before the edit.' },
+        anchorAfter: { type: 'string', minLength: 1, description: 'Optional non-empty context that should appear after the edit.' },
+        expectedOccurrences: { type: 'integer', minimum: 1, description: 'Optional positive integer for the expected count of oldText matches.' },
+      },
+      required: ['op', 'path', 'diff'],
+      additionalProperties: false,
+    },
+  ],
+} as const;
+
 export const NATIVE_PATCH_PARAMETERS_SCHEMA = {
   type: 'object',
   description: 'NativePatch payload. Required envelope: version: 1, atomic: true, operations: non-empty array. Use op "edit" with path/oldText/newText or op "edit-diff" with path/diff.',
+  additionalProperties: false,
+  required: ['version', 'atomic', 'operations'],
   properties: {
     version: {
       type: 'number',
@@ -99,75 +139,21 @@ export const NATIVE_PATCH_PARAMETERS_SCHEMA = {
       type: 'array',
       minItems: 1,
       description: 'Required non-empty array of edit operations. For op "edit", include path, oldText, newText. For op "edit-diff", include path and diff.',
-      items: {
-        type: 'object',
-        properties: {
-          op: {
-            type: 'string',
-            enum: ['edit', 'edit-diff'],
-            description: 'Operation variant. "edit" requires oldText/newText; "edit-diff" requires diff.',
-          },
-          path: {
-            type: 'string',
-            description: 'Repo-relative POSIX path without traversal, for example "src/app.ts".',
-          },
-          oldText: {
-            type: 'string',
-            description: 'Required for op "edit": exact existing text to replace. Must be non-empty.',
-          },
-          newText: {
-            type: 'string',
-            description: 'Required for op "edit": replacement text. May be empty to delete oldText.',
-          },
-          diff: {
-            type: 'string',
-            description: 'Required for op "edit-diff": unified diff hunk text for this path.',
-          },
-          anchorBefore: {
-            type: 'string',
-            description: 'Optional non-empty context that should appear before the edit.',
-          },
-          anchorAfter: {
-            type: 'string',
-            description: 'Optional non-empty context that should appear after the edit.',
-          },
-          expectedOccurrences: {
-            type: 'number',
-            description: 'Optional positive integer for the expected count of oldText matches.',
-          },
-        },
-        additionalProperties: true,
-      },
+      items: NATIVE_PATCH_OPERATION_SCHEMA,
     },
     fuzzyMatch: {
       type: 'object',
       description: 'Optional fuzzy matching settings used when exact oldText matching needs controlled recovery.',
-      properties: {
-        minSimilarity: {
-          type: 'number',
-          description: 'Optional number between 0 and 1.',
-        },
-        maxMatchCandidates: {
-          type: 'number',
-          description: 'Optional positive integer.',
-        },
-        maxContextLines: {
-          type: 'number',
-          description: 'Optional integer greater than or equal to 0.',
-        },
-        ignoreWhitespace: {
-          type: 'boolean',
-          description: 'Optional boolean.',
-        },
-        requireAnchorOverlap: {
-          type: 'boolean',
-          description: 'Optional boolean.',
-        },
-      },
       additionalProperties: false,
+      properties: {
+        minSimilarity: { type: 'number', minimum: 0, maximum: 1, description: 'Optional number between 0 and 1.' },
+        maxMatchCandidates: { type: 'integer', minimum: 1, description: 'Optional positive integer.' },
+        maxContextLines: { type: 'integer', minimum: 0, description: 'Optional integer greater than or equal to 0.' },
+        ignoreWhitespace: { type: 'boolean', description: 'Optional boolean.' },
+        requireAnchorOverlap: { type: 'boolean', description: 'Optional boolean.' },
+      },
     },
   },
-  additionalProperties: true,
 } as const;
 
 export function buildNativePatchGuidance(): string {
@@ -250,6 +236,53 @@ export function normalizePatchPath(input: string): string | null {
   return normalized.replace(/^(?:\.\/)+/, '');
 }
 
+let nativePatchValidator: SchemaValidatorFunction | undefined;
+
+function getNativePatchValidator(): SchemaValidatorFunction {
+  if (!nativePatchValidator) {
+    nativePatchValidator = compileSchemaValidator(NATIVE_PATCH_PARAMETERS_SCHEMA, { allErrors: true, strict: false });
+  }
+  return nativePatchValidator;
+}
+
+function ajvPath(instancePath: string): string {
+  if (!instancePath) {
+    return '$';
+  }
+  const segments = instancePath.slice(1).split('/');
+  return segments
+    .map((segment, index) => {
+      if (/^\d+$/.test(segment)) {
+        return `[${segment}]`;
+      }
+      return index === 0 ? `$.${segment}` : `.${segment}`;
+    })
+    .join('');
+}
+
+function operationIndexFromAjvPath(instancePath: string): number | undefined {
+  const match = /^\/operations\/(\d+)(?:\/|$)/.exec(instancePath);
+  return match ? Number(match[1]) : undefined;
+}
+
+function isRecord(input: unknown): input is Record<string, unknown> {
+  return typeof input === 'object' && input !== null && !Array.isArray(input);
+}
+
+function extractAnchors(operation: Record<string, unknown>): NativePatchContextAnchors {
+  const anchors: NativePatchContextAnchors = {};
+  if (typeof operation.anchorBefore === 'string') {
+    anchors.anchorBefore = operation.anchorBefore;
+  }
+  if (typeof operation.anchorAfter === 'string') {
+    anchors.anchorAfter = operation.anchorAfter;
+  }
+  if (typeof operation.expectedOccurrences === 'number') {
+    anchors.expectedOccurrences = operation.expectedOccurrences;
+  }
+  return anchors;
+}
+
 export function validateNativePatch(input: unknown): ValidateNativePatchResult {
   if (!isRecord(input)) {
     return {
@@ -264,376 +297,87 @@ export function validateNativePatch(input: unknown): ValidateNativePatchResult {
     };
   }
 
-  const errors: NativePatchValidationError[] = [];
-
-  if (input.version !== NATIVE_PATCH_VERSION) {
-    errors.push({
-      code: 'invalid_version',
-      path: '$.version',
-      message: `NativePatch version must be ${NATIVE_PATCH_VERSION}.`,
-    });
-  }
-
-  if (input.atomic !== true) {
-    errors.push({
-      code: 'non_atomic_patch',
-      path: '$.atomic',
-      message: 'NativePatch.atomic must be true.',
-    });
-  }
-
-  const normalizedFuzzyMatch = validateFuzzyMatch(input.fuzzyMatch, errors);
-  const normalizedOperations = validateOperations(input.operations, errors);
-
-  if (errors.length > 0) {
+  const validate = getNativePatchValidator();
+  if (!validate(input)) {
+    const errors: NativePatchValidationError[] = [];
+    for (const ajvError of validate.errors ?? []) {
+      const instancePath = ajvError.instancePath ?? '';
+      errors.push({
+        code: 'schema_validation',
+        path: ajvPath(instancePath),
+        message: ajvError.message ?? 'Invalid value',
+        operationIndex: operationIndexFromAjvPath(instancePath),
+        keyword: ajvError.keyword,
+        params: ajvError.params && Object.keys(ajvError.params).length > 0 ? ajvError.params : undefined,
+      });
+    }
     return { ok: false, errors };
   }
 
-  return {
-    ok: true,
-    value: {
-      version: NATIVE_PATCH_VERSION,
-      atomic: true,
-      operations: normalizedOperations,
-      ...(normalizedFuzzyMatch ? { fuzzyMatch: normalizedFuzzyMatch } : {}),
-    },
-  };
-}
+  const envelope = input as Record<string, unknown>;
+  const operationsInput = envelope.operations as unknown[];
+  const normalizedOperations: NativePatchOperation[] = [];
 
-function validateFuzzyMatch(
-  input: unknown,
-  errors: NativePatchValidationError[],
-): NativePatchFuzzyMatch | undefined {
-  if (input === undefined) {
-    return undefined;
-  }
-
-  if (!isRecord(input)) {
-    errors.push({
-      code: 'invalid_fuzzy_match',
-      path: '$.fuzzyMatch',
-      message: 'NativePatch.fuzzyMatch must be an object.',
-    });
-    return undefined;
-  }
-
-  const result: NativePatchFuzzyMatch = {};
-
-  validateOptionalNumber(input.minSimilarity, '$.fuzzyMatch.minSimilarity', errors, {
-    code: 'invalid_fuzzy_match',
-    integer: false,
-    min: 0,
-    max: 1,
-  }, (value) => {
-    result.minSimilarity = value;
-  });
-
-  validateOptionalNumber(input.maxMatchCandidates, '$.fuzzyMatch.maxMatchCandidates', errors, {
-    code: 'invalid_fuzzy_match',
-    integer: true,
-    min: 1,
-  }, (value) => {
-    result.maxMatchCandidates = value;
-  });
-
-  validateOptionalNumber(input.maxContextLines, '$.fuzzyMatch.maxContextLines', errors, {
-    code: 'invalid_fuzzy_match',
-    integer: true,
-    min: 0,
-  }, (value) => {
-    result.maxContextLines = value;
-  });
-
-  validateOptionalBoolean(input.ignoreWhitespace, '$.fuzzyMatch.ignoreWhitespace', errors, (value) => {
-    result.ignoreWhitespace = value;
-  });
-  validateOptionalBoolean(input.requireAnchorOverlap, '$.fuzzyMatch.requireAnchorOverlap', errors, (value) => {
-    result.requireAnchorOverlap = value;
-  });
-
-  return result;
-}
-
-function validateOperations(
-  input: unknown,
-  errors: NativePatchValidationError[],
-): NativePatchOperation[] {
-  if (!Array.isArray(input)) {
-    errors.push({
-      code: 'invalid_type',
-      path: '$.operations',
-      message: 'NativePatch.operations must be an array.',
-    });
-    return [];
-  }
-
-  if (input.length === 0) {
-    errors.push({
-      code: 'empty_operations',
-      path: '$.operations',
-      message: 'NativePatch.operations must contain at least one operation.',
-    });
-    return [];
-  }
-
-  const operations: NativePatchOperation[] = [];
-
-  for (const [index, operation] of input.entries()) {
-    const validatedOperation = validateOperation(operation, index, errors);
-    if (validatedOperation) {
-      operations.push(validatedOperation);
+  for (const [index, operation] of operationsInput.entries()) {
+    const operationRecord = operation as Record<string, unknown>;
+    const rawPath = operationRecord.path as string;
+    const normalizedPath = normalizePatchPath(rawPath);
+    if (!normalizedPath) {
+      return {
+        ok: false,
+        errors: [
+          {
+            code: 'invalid_path',
+            path: `$.operations[${index}].path`,
+            message: 'NativePatch operation path must be a repo-relative POSIX path without traversal.',
+            operationIndex: index,
+          },
+        ],
+      };
     }
-  }
 
-  return operations;
-}
-
-function validateOperation(
-  input: unknown,
-  index: number,
-  errors: NativePatchValidationError[],
-): NativePatchOperation | null {
-  const basePath = `$.operations[${index}]`;
-  if (!isRecord(input)) {
-    errors.push({
-      code: 'invalid_operation',
-      path: basePath,
-      message: 'NativePatch operation must be an object.',
-      operationIndex: index,
-    });
-    return null;
-  }
-
-  const normalizedPath = validateOperationPath(input.path, index, errors);
-  const anchors = validateContextAnchors(input, index, errors);
-
-  if (input.op === 'edit') {
-    const oldText = validateRequiredNonEmptyString(input.oldText, `${basePath}.oldText`, index, errors, 'invalid_text');
-    const newText = validateRequiredString(input.newText, `${basePath}.newText`, index, errors, 'invalid_text');
-    if (oldText !== null && newText !== null && oldText === newText) {
-      errors.push({
-        code: 'identical_old_new',
-        path: `${basePath}.newText`,
-        message: `${basePath}.newText must differ from oldText.`,
-        operationIndex: index,
+    if (operationRecord.op === 'edit') {
+      const oldText = operationRecord.oldText as string;
+      const newText = operationRecord.newText as string;
+      if (oldText === newText) {
+        return {
+          ok: false,
+          errors: [
+            {
+              code: 'identical_old_new',
+              path: `$.operations[${index}].newText`,
+              message: 'newText must differ from oldText.',
+              operationIndex: index,
+            },
+          ],
+        };
+      }
+      normalizedOperations.push({
+        op: 'edit',
+        path: normalizedPath,
+        oldText,
+        newText,
+        ...extractAnchors(operationRecord),
+      });
+    } else {
+      normalizedOperations.push({
+        op: 'edit-diff',
+        path: normalizedPath,
+        diff: operationRecord.diff as string,
+        ...extractAnchors(operationRecord),
       });
     }
-    if (!normalizedPath || oldText === null || newText === null) {
-      return null;
-    }
-    if (oldText === newText) {
-      return null;
-    }
-    return { op: 'edit', path: normalizedPath, oldText, newText, ...anchors };
   }
 
-  if (input.op === 'edit-diff') {
-    const diff = validateRequiredNonEmptyString(input.diff, `${basePath}.diff`, index, errors, 'invalid_text');
-    if (!normalizedPath || diff === null) {
-      return null;
-    }
-    return { op: 'edit-diff', path: normalizedPath, diff, ...anchors };
+  const result: NativePatch = {
+    version: NATIVE_PATCH_VERSION,
+    atomic: true,
+    operations: normalizedOperations,
+  };
+
+  if (isRecord(envelope.fuzzyMatch)) {
+    result.fuzzyMatch = envelope.fuzzyMatch as NativePatchFuzzyMatch;
   }
 
-  errors.push({
-    code: typeof input.op === 'string' ? 'unsupported_operation' : 'invalid_operation',
-    path: `${basePath}.op`,
-    message: 'NativePatch operation op must be "edit" or "edit-diff".',
-    operationIndex: index,
-  });
-  return null;
-}
-
-function validateOperationPath(
-  input: unknown,
-  index: number,
-  errors: NativePatchValidationError[],
-): string | null {
-  const pathKey = `$.operations[${index}].path`;
-  if (typeof input !== 'string') {
-    errors.push({
-      code: 'invalid_path',
-      path: pathKey,
-      message: 'NativePatch operation path must be a string.',
-      operationIndex: index,
-    });
-    return null;
-  }
-
-  const normalized = normalizePatchPath(input);
-  if (!normalized) {
-    errors.push({
-      code: 'invalid_path',
-      path: pathKey,
-      message: 'NativePatch operation path must be a repo-relative POSIX path without traversal.',
-      operationIndex: index,
-    });
-    return null;
-  }
-
-  return normalized;
-}
-
-function validateContextAnchors(
-  input: NativePatchOperation | Record<string, unknown>,
-  index: number,
-  errors: NativePatchValidationError[],
-): NativePatchContextAnchors {
-  const anchors: NativePatchContextAnchors = {};
-  const basePath = `$.operations[${index}]`;
-
-  if ('anchorBefore' in input) {
-    const value = validateOptionalNonEmptyString(
-      input.anchorBefore,
-      `${basePath}.anchorBefore`,
-      index,
-      errors,
-      'invalid_context',
-    );
-    if (value !== undefined) {
-      anchors.anchorBefore = value;
-    }
-  }
-
-  if ('anchorAfter' in input) {
-    const value = validateOptionalNonEmptyString(
-      input.anchorAfter,
-      `${basePath}.anchorAfter`,
-      index,
-      errors,
-      'invalid_context',
-    );
-    if (value !== undefined) {
-      anchors.anchorAfter = value;
-    }
-  }
-
-  if ('expectedOccurrences' in input) {
-    validateOptionalNumber(
-      input.expectedOccurrences,
-      `${basePath}.expectedOccurrences`,
-      errors,
-      { code: 'invalid_expected_occurrences', integer: true, min: 1 },
-      (value) => {
-        anchors.expectedOccurrences = value;
-      },
-      index,
-    );
-  }
-
-  return anchors;
-}
-
-function validateRequiredString(
-  input: unknown,
-  pathKey: string,
-  index: number,
-  errors: NativePatchValidationError[],
-  code: NativePatchValidationErrorCode,
-): string | null {
-  if (typeof input !== 'string') {
-    errors.push({ code, path: pathKey, message: `${pathKey} must be a string.`, operationIndex: index });
-    return null;
-  }
-  return input;
-}
-
-function validateRequiredNonEmptyString(
-  input: unknown,
-  pathKey: string,
-  index: number,
-  errors: NativePatchValidationError[],
-  code: NativePatchValidationErrorCode,
-): string | null {
-  if (typeof input !== 'string' || input.length === 0) {
-    errors.push({ code, path: pathKey, message: `${pathKey} must be a non-empty string.`, operationIndex: index });
-    return null;
-  }
-  return input;
-}
-
-function validateOptionalNonEmptyString(
-  input: unknown,
-  pathKey: string,
-  index: number,
-  errors: NativePatchValidationError[],
-  code: NativePatchValidationErrorCode,
-): string | undefined {
-  if (input === undefined) {
-    return undefined;
-  }
-
-  if (typeof input !== 'string' || input.length === 0) {
-    errors.push({ code, path: pathKey, message: `${pathKey} must be a non-empty string when provided.`, operationIndex: index });
-    return undefined;
-  }
-
-  return input;
-}
-
-function validateOptionalBoolean(
-  input: unknown,
-  pathKey: string,
-  errors: NativePatchValidationError[],
-  onValid: (value: boolean) => void,
-): void {
-  if (input === undefined) {
-    return;
-  }
-  if (typeof input !== 'boolean') {
-    errors.push({
-      code: 'invalid_fuzzy_match',
-      path: pathKey,
-      message: `${pathKey} must be a boolean when provided.`,
-    });
-    return;
-  }
-  onValid(input);
-}
-
-function validateOptionalNumber(
-  input: unknown,
-  pathKey: string,
-  errors: NativePatchValidationError[],
-  options: {
-    code: NativePatchValidationErrorCode;
-    integer: boolean;
-    min: number;
-    max?: number;
-  },
-  onValid: (value: number) => void,
-  operationIndex?: number,
-): void {
-  if (input === undefined) {
-    return;
-  }
-
-  if (
-    typeof input !== 'number'
-    || Number.isNaN(input)
-    || !Number.isFinite(input)
-    || (options.integer && !Number.isInteger(input))
-    || input < options.min
-    || (options.max !== undefined && input > options.max)
-  ) {
-    const rangeMessage = options.max === undefined
-      ? `>= ${options.min}`
-      : `between ${options.min} and ${options.max}`;
-    const error: NativePatchValidationError = {
-      code: options.code,
-      path: pathKey,
-      message: `${pathKey} must be ${options.integer ? 'an integer' : 'a number'} ${rangeMessage} when provided.`,
-    };
-    if (operationIndex !== undefined) {
-      error.operationIndex = operationIndex;
-    }
-    errors.push(error);
-    return;
-  }
-
-  onValid(input);
-}
-
-function isRecord(input: unknown): input is Record<string, unknown> {
-  return typeof input === 'object' && input !== null && !Array.isArray(input);
+  return { ok: true, value: result };
 }

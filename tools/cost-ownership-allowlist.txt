@@ -32,6 +32,7 @@ shared/lib/challenge-scheduler.ts 1  # pricing_policy: challenge model pool conf
 shared/lib/eval.ts 1  # pricing_policy: judge-call cost
 shared/lib/native-agent/loop.ts 1  # pricing_policy: native per-turn cost for budget enforcement
 shared/lib/native-agent/launch-planning.ts 1  # pricing_policy: native launch budget estimate
+shared/lib/task-spend.ts 1  # pricing_policy: one task spend limit — hands the loop its model rates (loadPricingTable) alongside the metered remainder (HOK-3492)
 shared/lib/native-agent/certification/live-coding-canary.ts 1  # pricing_policy: canary cost estimate (type)
 shared/lib/model-promotion.ts 1  # backfill: normalized evaluation cost for model promotion
 shared/lib/eval-schema.ts 1  # schema: pricing snapshot type on the eval record
@@ -48,11 +49,3 @@ shared/lib/task-progress.ts 1  # wavemill_only_join: HOK-3386 owned-session tran
 
 # ── Regression harness ──
 shared/lib/cost-parity.ts 8  # measurement: parity harness materializes sessions (path) and types its pricing table; also emits raw provider usage keys into fixture transcripts (HOK-3407)
-
-# ── CLI adapter envelope parsers (HOK-3407 slice 2 open shadow) ──
-# These parse the live JSON envelope the Claude / Codex CLIs emit at the agent
-# boundary — they are not transcript parsers. Kept until slice 2/2 moves the
-# remaining adapter sites onto a shared projector (HOK-3460 removed llm-cli's
-# copy; the envelope parsers now live only in model-adapters/).
-shared/lib/model-adapters/claude-cli-output.ts 4  # agent-boundary: single Claude CLI stdout interpreter reads the envelope's raw usage fields (HOK-3448)
-shared/lib/model-adapters/codex-cli-adapter.ts 1  # agent-boundary: reads Codex CLI envelope's reasoning_output_tokens for per-turn cost/tokens

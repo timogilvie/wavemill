@@ -2316,6 +2316,7 @@ for t in "${TASKS[@]}"; do
     fi
     [[ -f "/tmp/${SESSION}-${ISSUE}-taskpacket.md" ]] && challenge_args+=(--file "/tmp/${SESSION}-${ISSUE}-taskpacket.md")
     [[ -n "$rec_model" ]] && challenge_args+=(--primary-model "$rec_model")
+    # allow-challenge-selection-site: launch lottery decides challenge-vs-single
     challenge_plan=$(npx tsx "$TOOLS_DIR/resolve-challenge-task.ts" "${challenge_args[@]}" 2>/dev/null || echo "")
     challenge_mode=$(echo "$challenge_plan" | jq -r '.mode // "single"' 2>/dev/null || echo "single")
     challenge_reason=$(echo "$challenge_plan" | jq -r '.reason // empty' 2>/dev/null || echo "")
@@ -2468,6 +2469,8 @@ for t in "${TASKS[@]}"; do
       log "status" "  $ISSUE: Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger is extra pane]"
     fi
   else
+    single_execution_intent=""
+    single_execution_intent=$(echo "$challenge_plan" | jq -c '.challengeExecutionIntent // empty' 2>/dev/null || true)
     if [[ -n "$challenge_reason" ]] && [[ "$challenge_reason" != "challenge_disabled" ]] && [[ "$challenge_reason" != "roll_not_selected" ]]; then
       log "debug" "  $ISSUE: Challenge skipped ($challenge_reason), launching single-model run"
     fi
@@ -2477,7 +2480,7 @@ for t in "${TASKS[@]}"; do
     TASK_CHALLENGE_ROLE_BY_ISSUE["$ISSUE"]=""
     TASK_CHALLENGE_MODEL_BY_ISSUE["$ISSUE"]=""
     TASK_CHALLENGE_STAGE_BY_ISSUE["$ISSUE"]=""
-    TASK_CHALLENGE_INTENT_BY_ISSUE["$ISSUE"]="null"
+    TASK_CHALLENGE_INTENT_BY_ISSUE["$ISSUE"]="${single_execution_intent:-null}"
     TASK_AGENT_BY_ISSUE["$ISSUE"]="$rec_agent"
     TASK_PLANNER_MODEL_BY_ISSUE["$ISSUE"]="$route_planner"
     TASK_CODER_MODEL_BY_ISSUE["$ISSUE"]="$rec_model"
@@ -2486,6 +2489,9 @@ for t in "${TASKS[@]}"; do
     TASK_CODE_DEPTH_BY_ISSUE["$ISSUE"]="$route_code_depth"
     TASK_REVIEW_MODE_BY_ISSUE["$ISSUE"]="$route_review_mode"
     FINAL_LAUNCH_ARGS+=("$ISSUE|$SLUG|$TITLE")
+    if challenge_intent_json_is_canonical "$single_execution_intent"; then
+      challenge_intent_record_selection "$ISSUE" "" "$single_execution_intent"
+    fi
     slots_used=$((slots_used + 1))
   fi
 done

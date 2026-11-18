@@ -35,6 +35,7 @@ export const CORRELATED_ROOT_CAUSE_CLASSES: ReadonlySet<IncidentRootCauseClass> 
 
 /** Generic per-task stall findings that a correlated incident may supersede. */
 const GENERIC_STALE_TASK_FINDING_RE = /^stale-active-task-(?:live-process|no-live-process)-/;
+const FLEET_REPLACED_FINDING_RE = /^(?:stale-active-task-(?:live-process|no-live-process)-|coding-task-stalled-)/;
 
 export interface RemediationProposalProjection {
   incidentFingerprint: string;
@@ -83,8 +84,23 @@ export function correlatedIncidentIssues(incident: IncidentRecord): string[] {
     incident.taskId,
     metadata.failedIssueId,
     metadata.blockedIssueId,
+    ...(Array.isArray(metadata.knownIssueIds) ? metadata.knownIssueIds : []),
   ].filter((issue): issue is string => typeof issue === 'string' && issue.length > 0);
   return [...new Set(issues)];
+}
+
+/** Remove per-task stall findings while an active fleet incident speaks for them. */
+export function suppressFleetFindings<T extends SupersedableFinding>(findings: T[], incidents: IncidentRecord[]): T[] {
+  const covered = new Set<string>();
+  for (const incident of incidents) {
+    if (incident.lifecycle === 'resolved' || incident.lifecycle === 'archived') continue;
+    if (incident.rootCauseClass !== 'fleet_shared_endpoint_failure' && incident.rootCauseClass !== 'remote_dependency_rate_limited') continue;
+    for (const issue of correlatedIncidentIssues(incident)) covered.add(issue);
+  }
+  if (covered.size === 0) return findings;
+  return findings.filter((finding) => !(
+    finding.issue && covered.has(finding.issue) && FLEET_REPLACED_FINDING_RE.test(finding.id)
+  ));
 }
 
 /** Minimal finding shape `supersedeGenericFindings` reads and rewrites. */

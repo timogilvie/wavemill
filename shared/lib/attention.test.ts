@@ -75,6 +75,29 @@ function incident(fingerprint: string, taskId: string, knownIssueIds: string[]):
   };
 }
 
+function fleetIncidentInput(causeKey: string, affectedTaskIds: string[]): AttentionIncidentInput['incident'] {
+  return {
+    fingerprint: sha256(causeKey),
+    taskId: null,
+    summary: `${causeKey}: ${affectedTaskIds.length} tasks failed together (harness-fault)`,
+    operatorAction: 'Inspect the shared endpoint under metadata.fleet',
+    firstObservedAt: '2026-11-05T09:00:00Z',
+    severity: 'medium',
+    lifecycle: 'active',
+    metadata: {
+      knownIssueIds: affectedTaskIds,
+      fleet: {
+        causeKey,
+        endpoint: 'deepseek-v4-flash',
+        endpointEvidence: 'launch-intent',
+        faultClass: 'harness-fault',
+        fleetFaultClass: 'harness-fault',
+        attempts: [],
+      },
+    },
+  };
+}
+
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'attention-test-'));
   worktrees = join(root, 'worktrees');
@@ -199,6 +222,28 @@ describe('deriveAttentionItems — one item per source (HOK-3423)', () => {
     assert.equal(incidentItems.length, 1);
     assert.deepEqual(incidentItems[0].affectedTaskIds, ['HOK-11', 'HOK-3']);
     assert.equal(incidentItems[0].id, `incident:${'f'.repeat(64)}`);
+  });
+
+  it('HOK-3509: a fleet incident becomes exactly one fleet-incident free item, no `incident` item', () => {
+    // protects: a fleet record both hitting the incident path and then being
+    // re-added as a free item (two inbox rows) or being lost (none).
+    const projection = deriveAttentionItems({
+      passStampMs: PASS,
+      staleAfterMs: PASS,
+      nowMs: NOW,
+      tasks: [],
+      incidents: [{
+        incident: fleetIncidentInput('deepseek-v4-flash::harness-fault', ['HOK-1', 'HOK-2', 'HOK-3']),
+        reconciliation: { outcome: 'confirmed_active' },
+      }],
+    });
+    const fleetItems = projection.items.filter((item) => item.kind === 'fleet-incident');
+    const incidentItems = projection.items.filter((item) => item.kind === 'incident');
+    assert.equal(fleetItems.length, 1);
+    assert.equal(incidentItems.length, 0);
+    assert.deepEqual(fleetItems[0].affectedTaskIds, ['HOK-1', 'HOK-2', 'HOK-3']);
+    assert.equal(fleetItems[0].taskId, undefined);
+    assert.equal(fleetItems[0].id, 'fleet-incident:deepseek-v4-flash::harness-fault');
   });
 
   it('carries the row text the dashboard used to compute privately', async () => {
@@ -351,7 +396,7 @@ describe('deriveAttentionItems — fixed precedence', () => {
     assert.equal(projection.items[1].paneTarget, '@9');
     assert.deepEqual(Object.keys(ATTENTION_KIND_RANK), [
       'approve-plan', 'answer-agent', 'resolve-blocked-completion', 'operator-decision', 'exhausted', 'policy-terminal', 'incident',
-      'queue-health', 'backstage-health', 'openrouter', 'malformed-challenge',
+      'fleet-incident', 'queue-health', 'backstage-health', 'openrouter', 'malformed-challenge',
     ]);
   });
 

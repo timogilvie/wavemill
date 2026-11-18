@@ -707,12 +707,14 @@
                         "dependencyThreshold": {
                             "type": "integer",
                             "minimum": 1,
-                            "default": 3
+                            "default": 3,
+                            "description": "Occurrences before an incident escalates. Also the minimum number of distinct tasks that must share a `(endpoint, faultClass)` cause key inside `cooldownMinutes` before HOK-3509 upserts one fleet incident instead of N per-task records."
                         },
                         "cooldownMinutes": {
                             "type": "integer",
                             "minimum": 1,
-                            "default": 5
+                            "default": 5,
+                            "description": "Cooldown window in minutes between Linear comments on the same incident. Also the HOK-3509 fleet correlation window: failures with the same cause key inside this window group into one incident."
                         },
                         "maxEvidencePerRecord": {
                             "type": "integer",
