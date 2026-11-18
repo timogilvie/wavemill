@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "incident-fixture/1",
+  "chain": "fleet_shared_endpoint_failure",
+  "incidents": ["sanitised-2026-11-10-deepseek-fleet-stalls"],
+  "initialState": {"task": {"issue": "HOK-FIXTURE-3509", "slug": "fleet-deepseek-stalls", "phase": "coding", "status": "working"}, "jobs": []},
+  "incident": {
+    "category": "model_task_harness_outcome", "rootCauseClass": "fleet_shared_endpoint_failure", "severity": "medium", "confidence": "high",
+    "summary": "Five DeepSeek coding arms stalled together across four retry intervals.",
+    "operatorAction": "Inspect the shared endpoint; affected arms retain their bounded retry path.",
+    "metadata": {"fleet": {"causeKey": "deepseek-v4-flash::harness-fault", "endpoint": "deepseek-v4-flash", "endpointEvidence": "direct", "faultClass": "harness-fault", "fleetFaultClass": "harness-fault", "attempts": [{"taskId": "HOK-FIXTURE-3509", "attemptId": "attempt-1", "stage": "coding", "at": "2026-11-10T16:52:57.000Z"}]}, "knownIssueIds": ["HOK-FIXTURE-3509"]}
+  },
+  "observations": [{"absentCyclesBefore": 0, "evidence": [{"type": "stage_result", "source": "features/fleet-deepseek-stalls/.coding-result.json", "timestamp": "2026-11-10T16:52:57.000Z", "redactedData": "replay evidence: five distinct sanitised task attempts, deepseek-v4-flash, agent-stalled; all share harness-fault cause key", "key": "fleet:deepseek-v4-flash:harness-fault"}]}],
+  "trailingAbsentCycles": 6,
+  "failure": {"stage": "coding", "failureKind": "coding-exited-without-result", "detail": "coding agent settled without a result (agent-stalled)", "survivesRelaunches": 1},
+  "convergence": {"mustMerge": true, "maxTickCount": 15, "tickIntervalSeconds": 30},
+  "journey": "fleet-incident-correlation",
+  "expected": {"category": "model_task_harness_outcome", "rootCauseClass": "fleet_shared_endpoint_failure", "occurrenceCount": 1, "lifecycleWhilePresent": "observed", "finalLifecycle": "resolved", "resolutionReasonPrefix": "not re-observed", "recurrences": 0},
+  "source": {"category": "model_task_harness_outcome", "rootCauseClass": "fleet_shared_endpoint_failure", "severity": "medium", "confidence": "high", "recordedLifecycle": "resolved", "recordedResolution": "auto_resolved", "occurrenceCount": 1, "firstObservedAt": "2026-11-10T16:52:57.000Z", "lastObservedAt": "2026-11-10T18:36:00.000Z", "stateSnapshot": null, "convertedBy": "HOK-3509 sanitised incident replay", "observationsTruncated": false}
+}

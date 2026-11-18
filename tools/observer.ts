@@ -46,6 +46,7 @@ import {
   OBSERVER_SNAPSHOT_SCHEMA_VERSION,
   incidentChainEvidenceLines,
   projectRemediationProposals,
+  suppressFleetFindings,
   supersedeGenericFindings,
   type RemediationProposalProjection,
 } from '../shared/lib/wavemill-incident-projection.ts';
@@ -3774,7 +3775,7 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
   let findings = snapshot.findings;
   for (const [repoDir, repoIncidents] of incidentsByRepo) {
     const repoFindings = findings.filter((finding) => finding.repoDir === repoDir);
-    const rewritten = supersedeGenericFindings(repoFindings, repoIncidents);
+    const rewritten = suppressFleetFindings(supersedeGenericFindings(repoFindings, repoIncidents), repoIncidents);
     const replacement = new Map(repoFindings.map((finding, index) => [finding, rewritten[index]] as const));
     findings = findings.map((finding) => replacement.get(finding) ?? finding);
   }

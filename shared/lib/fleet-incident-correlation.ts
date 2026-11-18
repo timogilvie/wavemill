@@ -178,6 +178,10 @@ interface RawStageResult extends RawStageAttempt {
   history?: RawStageAttempt[];
 }
 
+interface RawFailureDecision {
+  class?: unknown;
+}
+
 function parseJson<T>(path: string): T | null {
   try {
     return JSON.parse(readFileSync(path, 'utf8')) as T;
@@ -209,6 +213,7 @@ function factFromAttempt(
   stage: FactStage,
   attempt: RawStageAttempt,
   sourcePath: string,
+  decision?: RawFailureDecision | null,
 ): FailureFact | null {
   const status = typeof attempt.status === 'string' ? attempt.status : '';
   if (status !== 'failed' && status !== 'aborted') return null;
@@ -220,6 +225,10 @@ function factFromAttempt(
   const detail = typeof attempt.failureReason === 'string'
     ? attempt.failureReason
     : (typeof attempt.notes === 'string' ? attempt.notes : '');
+  // The monitor already made the policy decision for the current attempt.
+  // Never let the correlation reader reinterpret an explicitly model/code
+  // failure as an ambiguous shared endpoint failure.
+  if (decision?.class === 'code-failure') return null;
   const failureKind = detectFailureKind(detail);
   const faultClass = classifyArmFault({ failureKind, detail });
   const runId = typeof attempt.runId === 'string' && attempt.runId.length > 0 ? attempt.runId : null;
@@ -256,9 +265,10 @@ export function readTaskFailureFacts(options: ReadTaskFailureFactsOptions): Fail
     const path = join(options.featureDir, `.${stage}-result.json`);
     const result = parseJson<RawStageResult>(path);
     if (!result) continue;
+    const decision = parseJson<RawFailureDecision>(join(options.featureDir, `.${stage}-failure-decision.json`));
     const attempts: RawStageAttempt[] = [result, ...(Array.isArray(result.history) ? result.history : [])];
-    for (const attempt of attempts) {
-      const fact = factFromAttempt(options.taskId, stage, attempt, path);
+    for (const [index, attempt] of attempts.entries()) {
+      const fact = factFromAttempt(options.taskId, stage, attempt, path, index === 0 ? decision : null);
       if (!fact) continue;
       if (fact.failedAt < windowStart || fact.failedAt > options.now) continue;
       facts.push(fact);

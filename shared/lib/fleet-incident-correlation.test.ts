@@ -261,3 +261,21 @@ test('readTaskFailureFacts reads current + history and respects the window', () 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('readTaskFailureFacts honours the cached code-failure decision', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-decision-'));
+  try {
+    const featureDir = join(dir, 'features', 'x');
+    mkdirSync(featureDir, { recursive: true });
+    writeFileSync(join(featureDir, '.coding-result.json'), JSON.stringify({
+      stage: 'coding', status: 'failed', startedAt: '2026-11-10T16:50:00Z', finishedAt: '2026-11-10T16:52:57Z',
+      intendedModel: 'deepseek-v4-flash', notes: 'test failure', runId: 'r-1',
+    }));
+    writeFileSync(join(featureDir, '.coding-failure-decision.json'), JSON.stringify({ class: 'code-failure' }));
+    assert.deepEqual(readTaskFailureFacts({
+      taskId: 'HOK-1', featureDir, now: Date.parse('2026-11-10T17:00:00Z'), windowMs: 10 * 60_000,
+    }), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

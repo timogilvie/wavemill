@@ -25,6 +25,8 @@ export const INCIDENT_CURRENTNESS_GUARD: GuardSpec = {
       description: 'The cause key lives in fleet-incident-correlation.ts; do not derive one privately.' },
     { name: 'task-less-failure-incident', lang: 'ts', re: /rootCauseClass\s*:\s*['"](?:fleet_shared_endpoint_failure|remote_dependency_rate_limited)['"]/,
       description: 'A fleet root cause class must be written through buildFleetIncident in fleet-incident-correlation.ts.' },
+    { name: 'private-cross-task-grouping', lang: 'ts', re: /new\s+(?:Map|Set)<[^>]*taskId|groupBy\([^\n]*taskId|\.reduce\([^\n]*(?:taskId|attemptId)/,
+      description: 'Cross-task failure grouping belongs in correlateFleetFailures in fleet-incident-correlation.ts.' },
   ],
   remediation: [
     'HOK-3324 / HOK-3509: the one incident currentness decision for job-backed records is reconcileIncidentForFiling; the one cross-task correlation step is correlateFleetFailures in fleet-incident-correlation.ts.',

@@ -15,6 +15,7 @@ import {
 import { parseBudgetExhaustedFact, type BudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
 import { resolveNativeStageTimeSplit, type NativeStageTimeSplit } from './native-agent/stage-time-split.ts';
 import { readStageResultSync } from './stage-result.ts';
+import { fleetCauseForAttempt, readFleetIncidents } from './fleet-incident-correlation.ts';
 
 const DEFAULT_EVALS_DIR = '.wavemill/evals';
 const RELIABILITY_RECORDS_FILENAME = 'reliability-records.jsonl';
@@ -167,7 +168,16 @@ export function appendArmReliabilityRecord(
   input: BuildArmReliabilityRecordInput,
   dirOrRepo?: string,
 ): ArmReliabilityRecord {
-  const record = buildArmReliabilityRecord(input);
+  const repoDir = dirOrRepo ? resolve(dirOrRepo) : resolve(process.cwd());
+  // The incident path alone decides correlation. Row creation merely consumes
+  // that decision from the active incident store so Hokusai receives the
+  // endpoint/harness attribution rather than N task faults.
+  const fleetCause = input.fleetCause ?? fleetCauseForAttempt({
+    incidents: readFleetIncidents(join(repoDir, '.wavemill')),
+    taskId: input.issueId,
+    stage: input.stage,
+  });
+  const record = buildArmReliabilityRecord({ ...input, ...(fleetCause ? { fleetCause } : {}) });
   const filePath = resolveReliabilityRecordsFile(dirOrRepo);
   const existing = existsSync(filePath) ? readArmReliabilityRecords(dirOrRepo) : [];
   const duplicate = existing.find((candidate) =>
