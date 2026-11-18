@@ -134,7 +134,7 @@ Available in `~/.claude/commands/`:
 ### Native Certification CLI
 `wavemill native-agent certifications` subcommands: `list`, `inspect`, `verify`, `report`, `certify`, `re-certify`, `reidentify`, `invalidate`, `migrate`, `prune`.
 
-Use `wavemill native-agent certify --provider <provider> --model <model> --phase <phase>` for one model, or `--all --phase workflow` for the full current-suite matrix. `npx tsx tools/native-agent-certify.ts --refresh-canary-cohort` refreshes the `nativeAgent.certification.canaryCohort` live canaries (HOK-3062); preflight runs it once per episode unless `canaryAutoRefresh: false`, and auto-remediates suite gaps, identity drift, stale artifacts and near-TTL renewal. `WAVEMILL_SKIP_CERTIFICATION_AUTO_REMEDIATE=1` requires manual certification; `WAVEMILL_SKIP_CERTIFICATION_COVERAGE_GUARD=1` is a targeted operator override only. `wavemill native-agent certifications prune` lists orphans; `--yes` removes them.
+Use `wavemill native-agent certify --provider <provider> --model <model> --phase <phase>` for one model, or `--all --phase workflow` for the full current-suite matrix. `npx tsx tools/native-agent-certify.ts --refresh-canary-cohort` refreshes the `nativeAgent.certification.canaryCohort` live canaries (HOK-3062); preflight runs it once per episode unless `canaryAutoRefresh: false`, and auto-remediates suite gaps, identity drift, stale artifacts and near-TTL renewal. `WAVEMILL_SKIP_CERTIFICATION_AUTO_REMEDIATE=1` requires manual certification; `WAVEMILL_SKIP_CERTIFICATION_COVERAGE_GUARD=1` is an operator-only override. `wavemill native-agent certifications prune` lists orphans (`--yes` removes).
 
 ## Test Discovery
 
