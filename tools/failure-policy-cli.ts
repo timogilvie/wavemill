@@ -25,6 +25,7 @@ runTool({
     'failure-kind': { type: 'string', description: 'Typed failure kind, when the stage recorded one' },
     detail: { type: 'string', description: 'Raw failure detail (pass as --detail=<text>)' },
     'handoff-reason': { type: 'string', description: 'Typed coding handoff reason' },
+    'budget-kind': { type: 'string', description: 'Recorded budgetExhausted kind (HOK-3492: cost is a terminal task-budget stop)' },
     'ci-category': { type: 'string', description: 'ci-failure-classifier category' },
     'challenge-arm': { type: 'boolean', description: 'The task is a tracked challenge arm' },
     'job-reason': { type: 'string', description: 'Async job settlement reason (eval_failure_disposition)' },
@@ -65,6 +66,7 @@ runTool({
       failureKind: args['failure-kind'],
       detail: args.detail,
       handoffReason: args['handoff-reason'],
+      budgetExhausted: args['budget-kind'] ? { kind: args['budget-kind'] } : undefined,
       ciCategory: ciCategory && CI_CATEGORIES.has(ciCategory) ? (ciCategory as CiFailureCategory) : undefined,
       challengeArm: args['challenge-arm'] === true,
       job: jobReason != null || jobExitRaw != null || jobExcerpt != null

@@ -101,6 +101,12 @@ export interface FailureEvidence {
   executionEvidence?: ExecutionEvidence | null;
   /** A current fleet incident that owns this settled attempt (HOK-3509). */
   fleetCause?: { fleetFaultClass: 'harness-fault' | 'provider-fault' } | null;
+  /**
+   * The recorded native budget fact (HOK-3362), when the stage wrote one. Its
+   * `kind: 'cost'` is the task-budget exhaustion HOK-3492 made terminal —
+   * another run cannot change how much the task may spend.
+   */
+  budgetExhausted?: { kind?: string | null } | null;
 }
 
 export interface FailureDecision {
@@ -181,6 +187,15 @@ export const TERMINAL_ALLOWLIST: readonly TerminalCause[] = Object.freeze([
     reason: 'the HOK-3128 dirty-handoff relaunch budget is already spent; the agent will not commit its own output',
     faultClass: 'model-fault',
     testRef: 'failure-policy.test.ts:terminal:coding-dirty-handoff',
+  },
+  {
+    // HOK-3492: a cost-kind stop is the task's recorded budget being spent
+    // across its owned sessions. Another run cannot change the ceiling, so it
+    // must not spend a bounded-retry attempt.
+    code: 'task-budget-exhausted',
+    reason: "the task's one recorded spend budget is exhausted across its owned sessions; another run cannot change how much it may spend",
+    faultClass: 'model-fault',
+    testRef: 'failure-policy.test.ts:terminal:task-budget-exhausted',
   },
   // Challenge-only: existing pair-resolution semantics. Each is emitted only
   // after its own bounded-retry bucket is exhausted, so the retry already
@@ -528,6 +543,7 @@ const NEXT_ACTIONS: Readonly<Record<string, string>> = {
   'provider-credit-exhausted': 'top up OpenRouter credits at https://openrouter.ai/credits',
   'provider-transient-error': 'transient upstream failure. Start the phase again',
   'native-stage-timeout': 'the native stage exhausted its wall-clock/turn/tool-call/token/cost budget; the recorded budgetExhausted fact decides the fault class. The stage relaunches under its bounded retry (review relaunches the pinned reviewer with an escalated timeout)',
+  'task-budget-exhausted': "the task's one recorded spend budget is exhausted across its owned sessions; a relaunch cannot change the ceiling. Inspect the spent sessions, or raise the task budget deliberately and start a new attempt",
   'policy-denied': 'a mutation/network policy rejected the run (harness fault, not a model/provider signal). Review the policy decision before relaunching',
   cancelled: 'the run was cancelled by an operator or the orchestrator (not a model/provider signal). Relaunch the phase when ready',
   'empty-model-turn': 'relaunch native coding; the runtime exhausted bounded continuation after empty model turns',
@@ -602,14 +618,21 @@ export function classifyFailure(evidence: FailureEvidence): FailureDecision {
     : job?.reason?.trim() || detectFailureKind(detail, evidence.handoffReason);
   const challengeArm = evidence.challengeArm === true;
 
-  const cause = terminalCauseFor(failureKind, challengeArm);
+  // HOK-3492: a recorded cost-kind budget stop is the task's one spend limit
+  // exhausted, not a per-stage timeout — retrying cannot change the ceiling.
+  const taskBudgetCause = evidence.budgetExhausted?.kind === 'cost'
+    ? terminalCauseFor('task-budget-exhausted', challengeArm)
+    : undefined;
+  const cause = taskBudgetCause ?? terminalCauseFor(failureKind, challengeArm);
   if (cause) {
     return {
       class: 'terminal',
       failureKind,
       cause,
-      rationale: `allowlisted terminal cause ${cause.code}: ${cause.reason}`,
-      nextAction: nextActionFor(failureKind),
+      rationale: taskBudgetCause
+        ? `recorded task spend budget exhausted (cost budget fact): ${taskBudgetCause.reason}`
+        : `allowlisted terminal cause ${cause.code}: ${cause.reason}`,
+      nextAction: taskBudgetCause ? nextActionFor('task-budget-exhausted') : nextActionFor(failureKind),
       attribution: attributionFor(failureKind, detail, evidence.executionEvidence, evidence.fleetCause),
     };
   }

@@ -15,7 +15,7 @@ Shared tooling for Claude and Codex workflows:
 - **`.wavemill/manifests/`** - Per-session resource manifests
 
 ### Key Principles
-1. **Single Source of Truth**: This repo is canonical. `shared/lib/` contains all API logic; `tools/` contains all CLI tools. `wavemill` runs tools directly from the repo — never from `~/.claude/tools/`. Install assets resolve via `shared/lib/native-agent/install-paths.ts` (TS) / `WAVEMILL_INSTALL_DIR` + `wavemill_tool_path` (shell); the milled repo is `WAVEMILL_MILLED_REPO_DIR`/`REPO_DIR`. Enforced by `tests/check-install-paths.test.sh` and `tests/check-common-guards.test.sh`.
+1. **Single Source of Truth**: This repo is canonical — `shared/lib/` holds all API logic; `tools/` holds all CLI tools. `wavemill` runs tools directly from the repo — never from `~/.claude/tools/`. Install assets resolve via `shared/lib/native-agent/install-paths.ts` (TS) / `WAVEMILL_INSTALL_DIR` + `wavemill_tool_path` (shell); the milled repo is `WAVEMILL_MILLED_REPO_DIR`/`REPO_DIR`. Enforced by `tests/check-install-paths.test.sh` and `tests/check-common-guards.test.sh`.
 2. **Config Schema**: Both `claude/config.json` and `codex/config.json` follow `claude/config.schema.json`; wavemill runtime config follows `wavemill-config.schema.json`
 3. **Shared Templates**: `tools/prompts/` templates are consumed by both toolchains
 4. **State Separation**: Claude uses `features/`, `bugs/`, `epics/`; Codex uses `.codex/state/`
@@ -24,7 +24,7 @@ Shared tooling for Claude and Codex workflows:
 
 ### Shared Business Logic Modules
 
-**Guards cap new invariants (HOK-3236).** A "never do X" rule lives in its own file under `docs/invariants/<name>.md`, with one index line here naming the rule, its guard, and the file path. A PR that adds a new invariant adds the file, its index line, and its guard (`tools/check-<name>.ts`, built on `tools/lib/source-guard.ts` with `invariantDocs` set to the new file, wired into `test:preflight`) in the same PR; a rule that cannot be enforced mechanically does not get an invariant file. `source-guard.ts` provides the shared semantics: tracked files only, invariant source auto-excluded, whole-line comments skipped, `// allow-<name>: <reason>` on the line or the line above, and a ratcheting allowlist (`<path> [<count>]  # reason`) that only shrinks.
+**Guards cap new invariants (HOK-3236).** A "never do X" rule lives in a file under `docs/invariants/<name>.md`, with one index line naming the rule, guard and path. A PR adding an invariant adds the file, index line and guard (`tools/check-<name>.ts`, built on `tools/lib/source-guard.ts` with `invariantDocs` set to it, wired into `test:preflight`) in that PR; a rule that cannot be enforced mechanically gets no file. `source-guard.ts` provides the semantics: tracked files only, invariant source auto-excluded, whole-line comments skipped, `// allow-<name>: <reason>` on the line or the line above, and a ratcheting allowlist (`<path> [<count>]  # reason`) that only shrinks.
 
 All business logic lives in `shared/lib/` for reusability across CLI tools, commands, and workflows:
 
@@ -90,7 +90,7 @@ All business logic lives in `shared/lib/` for reusability across CLI tools, comm
 - **Task evidence retention (HOK-3475)** — Use one typed inventory for cleanup and readers; archive owned transcripts and Ready results before resource release. Guard: `tools/check-task-evidence.ts`. → [docs/invariants/task-evidence.md](docs/invariants/task-evidence.md)
 - **Session ownership and cost (HOK-3077)** — Record launch costs only through `recordLaunch` / `session_ownership_append`; never add a private cost engine. Guard: `tools/check-cost-ownership.ts`, `tools/check-session-ownership.ts`. → [docs/invariants/session-ownership-cost.md](docs/invariants/session-ownership-cost.md)
 - **Inputs before approval (HOK-3253)** — Never write planning `awaiting_user` without passing this gate. Guard: journey only. → [docs/invariants/inputs-before-approval.md](docs/invariants/inputs-before-approval.md)
-- **Native loop budget** — Native coding uses the shared loop budget; entire tool batches, including invalid calls, are admitted before dispatch. Guard: `tools/check-stage-exit-identity.ts`. → [docs/invariants/native-loop-budget.md](docs/invariants/native-loop-budget.md)
+- **Native loop budget** — Native coding uses the shared loop budget; entire tool batches, including invalid calls, are admitted before dispatch. Every production launch supplies the task spend limit (`resolveTaskSpendRemainder`, HOK-3492). Guard: `tools/check-stage-exit-identity.ts`. → [docs/invariants/native-loop-budget.md](docs/invariants/native-loop-budget.md)
 - **Native harness deadlines (HOK-3382)** — No private harness-time deadline on a native stage. Guard: `tools/check-native-harness-deadlines.ts`. → [docs/invariants/native-harness-deadlines.md](docs/invariants/native-harness-deadlines.md)
 - `prompt-utils.ts` - Prompt template filling
 - **Output reservation (HOK-3448)** — `AdapterLimits.reservedOutputTokens` is input-preflight context space, distinct from the explicit invocation cap `AdapterInvokeOptions.maxOutputTokens`. Guard: `tools/check-output-reservation.ts`. → [docs/invariants/output-reservation.md](docs/invariants/output-reservation.md)

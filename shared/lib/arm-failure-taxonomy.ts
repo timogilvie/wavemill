@@ -311,6 +311,13 @@ export function classifyArmFault(input: {
     // same completion-protocol failure, detected by the monitor instead.
     case 'coding-dirty-handoff':
       return 'model-fault';
+    // HOK-3492: the task's one recorded spend budget was exhausted by the
+    // model-driven work across its owned sessions. The authoritative fault
+    // class for a cost-kind budget fact still comes from
+    // `deriveBudgetExhaustionFaultClass` when the fact is present; this case
+    // keeps the terminal-cause metadata honest when only the code is known.
+    case 'task-budget-exhausted':
+      return 'model-fault';
     // HOK-3128: the mill lost track of a no-PR arm (no agent evidence past the
     // stall grace). Nothing proves the model was at fault, so keep it out of
     // quality signal.

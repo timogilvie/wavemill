@@ -25,7 +25,7 @@
  *    "wavemill native-agent".
  */
 import * as ts from 'typescript';
-import type { GuardSpec } from '../../tools/lib/source-guard.ts';
+import type { GuardSpec, StructuralMatch } from '../../tools/lib/source-guard.ts';
 
 export const STAGE_EXIT_IDENTITY_GUARD: GuardSpec = {
   name: 'stage-exit-identity',
@@ -129,6 +129,44 @@ export const STAGE_EXIT_IDENTITY_GUARD: GuardSpec = {
       return calls.filter(call => !enabled(call.arguments[0])).map(call => ({
         line: file.getLineAndCharacterOfPosition(call.getStart(file)).line + 1,
       }));
+    },
+  }, {
+    name: 'missing-task-spend-limit',
+    description:
+      'every production native loop launch must carry the task spend limit (HOK-3492): resolve it with resolveTaskSpendRemainder and put it on LoopBudget.maxCostUsd',
+    paths: [
+      'shared/lib/native-agent/launch-coding.ts',
+      'shared/lib/native-agent/launch-planning.ts',
+      'shared/lib/native-agent/review.ts',
+      'shared/lib/native-expansion.ts',
+      'shared/lib/native-agent/smoke.ts',
+      'shared/lib/native-agent/lifecycle-smoke.ts',
+    ],
+    find(source) {
+      const file = ts.createSourceFile('launcher.ts', source, ts.ScriptTarget.Latest, true);
+      const findings: StructuralMatch[] = [];
+      const enclosingStage = (node: ts.Node): ts.Node | undefined => {
+        let current: ts.Node | undefined = node.parent;
+        while (current && !ts.isSourceFile(current)) {
+          if (ts.isFunctionDeclaration(current) || ts.isMethodDeclaration(current)) return current;
+          current = current.parent;
+        }
+        return undefined;
+      };
+      const visit = (node: ts.Node): void => {
+        if (ts.isCallExpression(node) && /(?:^|\.)runWavemillLoop$/.test(node.expression.getText(file))) {
+          const owner = enclosingStage(node);
+          // The limit may be inlined on the call or resolved by the launching
+          // function (taskSpendLimit); either counts as supplied.
+          const haystack = `${owner ? owner.getText(file) : ''}\n${node.getText(file)}`;
+          if (!/(?:maxCostUsd|spendLimit|taskSpend)/.test(haystack)) {
+            findings.push({ line: file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1 });
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(file);
+      return findings;
     },
   }],
   remediation: [

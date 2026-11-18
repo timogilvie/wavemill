@@ -32,6 +32,7 @@ shared/lib/challenge-scheduler.ts 1  # pricing_policy: challenge model pool conf
 shared/lib/eval.ts 1  # pricing_policy: judge-call cost
 shared/lib/native-agent/loop.ts 1  # pricing_policy: native per-turn cost for budget enforcement
 shared/lib/native-agent/launch-planning.ts 1  # pricing_policy: native launch budget estimate
+shared/lib/task-spend.ts 1  # pricing_policy: one task spend limit — hands the loop its model rates (loadPricingTable) alongside the metered remainder (HOK-3492)
 shared/lib/native-agent/certification/live-coding-canary.ts 1  # pricing_policy: canary cost estimate (type)
 shared/lib/model-promotion.ts 1  # backfill: normalized evaluation cost for model promotion
 shared/lib/eval-schema.ts 1  # schema: pricing snapshot type on the eval record
