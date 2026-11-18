@@ -586,6 +586,7 @@ export async function runNativeAgentLive(
     compatRegistry: buildSmokeCompatRegistry(readyEntry.modelId, provider),
   };
 
+  // allow-stage-exit-identity: live smoke probe, not a task stage — no task budget applies (HOK-3492)
   const loopResult = await runWavemillLoop(loopConfig);
 
   if (loopResult.stopReason === 'error') {

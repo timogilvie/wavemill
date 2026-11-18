@@ -25,7 +25,7 @@ import {
   writeStageFailureEnvelope,
 } from './stage-failure-envelope.ts';
 import { snapshotPayloadsForFailure } from './payload-capture.ts';
-import type { AgentContext, WavemillLoopConfig } from './loop.ts';
+import type { AgentContext, LoopBudget, WavemillLoopConfig } from './loop.ts';
 import { runWavemillLoop } from './loop.ts';
 import { createNativeModelsCollection } from './models.ts';
 import {
@@ -87,6 +87,7 @@ import {
 import { loadPricingTable } from '../pricing/model-pricing.ts';
 import { priceUsageUsd } from '../sdk-task-cost/price-overrides.ts';
 import { buildAttemptId, nativeLaunchKind, newSessionRef, recordLaunch } from '../session-ownership.ts';
+import { loopCostLimitUsd, resolveTaskSpendRemainder } from '../task-spend.ts';
 
 const DEFAULT_HELPER_TIMEOUT_MS = 12 * 60 * 1000;
 const HELPER_STDERR_TAIL_CHARS = 2000;
@@ -819,6 +820,20 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       tools: menuLaunchProvider.providerToolsForContext as AgentTool<unknown, unknown>[],
     };
     const pricing = normalizedPricingFromModel(model);
+    // HOK-3492: one task spend limit — the recorded budget minus prior owned spend.
+    const taskSpend = await resolveTaskSpendRemainder({
+      repoDir: options.repoDir,
+      worktreePath: options.wtDir,
+      featureDir,
+      issueId: options.issue,
+      slug: options.slug,
+      branchName: options.branch,
+      modelId: modelName,
+      ...(pricing.inputPerMTok !== null && pricing.outputPerMTok !== null
+        ? { modelPricing: { inputCostPerMTok: pricing.inputPerMTok, outputCostPerMTok: pricing.outputPerMTok } }
+        : {}),
+    });
+    const taskSpendLimitUsd = loopCostLimitUsd(taskSpend);
     const effectiveMaxTokens = model.provider === 'openrouter' && !options.loopModelOverride
       ? capOpenRouterMaxTokensForBalance({
         requestedMaxTokens: DEFAULT_MAX_OUTPUT_TOKENS,
@@ -847,6 +862,12 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       },
     };
 
+    // HOK-3492: the budget the loop enforces is also the budget its fact names.
+    const planningBudget: LoopBudget = {
+      ...toLoopBudget(planningLimits),
+      ...(taskSpendLimitUsd !== undefined ? { maxCostUsd: taskSpendLimitUsd } : {}),
+    };
+
     const planningLoopConfig: WavemillLoopConfig = {
       model,
       ...(nativeModels ? { models: nativeModels } : {}),
@@ -869,7 +890,8 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       },
       sessionStreamConfig,
       menuProvider: menuLaunchProvider.menuProvider,
-      budget: toLoopBudget(planningLimits),
+      budget: planningBudget,
+      ...(taskSpend?.pricing ? { modelPricing: taskSpend.pricing } : {}),
       terminalSynthesis: {
         prompt: [
           'Stop investigating. This is your reserved terminal synthesis turn.',
@@ -919,7 +941,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
     if (stopFailureReason) {
       // Stop reason before error text (HOK-3362): a budget stop records the one
       // budget fact; only an `error` stop is read for a provider failure.
-      const budgetExhausted = budgetExhaustionFromLoop(result, toLoopBudget(planningLimits), { transcriptPath });
+      const budgetExhausted = budgetExhaustionFromLoop(result, planningBudget, { transcriptPath });
       const providerError = result.stopReason === 'error'
         ? finalProviderErrorMessage(result)
         : '';

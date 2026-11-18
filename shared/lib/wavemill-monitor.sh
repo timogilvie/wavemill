@@ -8172,6 +8172,23 @@ native_terminal_failure_next_action() {
   failure_policy_next_action "${1:-}"
 }
 
+# The task's remaining spend, from the one seam (HOK-3492). Prints an empty
+# line when the seam cannot answer (no recorded budget, unavailable install,
+# unknown metering) — an absent number never parks a stage by itself.
+task_spend_remaining_usd() {
+  local issue="$1" feature_dir="$2"
+  local repo_dir wt_dir slug out
+  repo_dir="${WAVEMILL_MILLED_REPO_DIR:-${REPO_DIR:-}}"
+  [[ -n "$repo_dir" && -d "$feature_dir" ]] || return 0
+  wt_dir="$(cd "$feature_dir/../.." 2>/dev/null && pwd)" || return 0
+  slug="$(basename "$feature_dir")"
+  out="$(cd "$repo_dir" && wavemill_run_tool task-spend-cli.ts \
+    --repo-dir "$repo_dir" --worktree "$wt_dir" --feature-dir "$feature_dir" \
+    --issue "$issue" --slug "$slug" 2>/dev/null)" || return 0
+  # The CLI keeps its JSON on stdout; take the last JSON line defensively.
+  jq -r '.remainingUsd // empty' <<<"$(printf '%s\n' "$out" | grep '^{' | tail -1)" 2>/dev/null || true
+}
+
 # Resolve and classify a native stage failure once (HOK-3176). Evidence
 # precedence: the agent's terminal hook detail, else the stage notes; a typed
 # stage-failure envelope (HOK-3064) supplies the kind and canonical model; the
@@ -8185,7 +8202,7 @@ native_terminal_failure_next_action() {
 stage_failure_decision() {
   local issue="$1" feature_dir="$2" stage="$3"
   local detail envelope_json="" failure_kind="" envelope_cause="" envelope_model="" handoff_reason=""
-  local budget_exhausted=""
+  local budget_exhausted="" budget_kind="" remaining_usd=""
   local is_challenge cache fingerprint cached decision
 
   if [[ "$stage" == "ready" ]]; then
@@ -8213,12 +8230,21 @@ stage_failure_decision() {
     envelope_cause="$(jq -r '.cause // empty' <<<"$envelope_json" 2>/dev/null || true)"
     envelope_model="$(jq -r '.model // empty' <<<"$envelope_json" 2>/dev/null || true)"
     budget_exhausted="$(jq -c '.budgetExhausted // empty' <<<"$envelope_json" 2>/dev/null || true)"
+    budget_kind="$(jq -r '.budgetExhausted.kind // empty' <<<"$envelope_json" 2>/dev/null || true)"
   fi
   if [[ -z "$failure_kind" && "$stage" == "coding" ]]; then
     handoff_reason="$(native_coding_failure_handoff_reason "$feature_dir" 2>/dev/null || true)"
   fi
+  # HOK-3492: a stage that failed after the task's one spend budget was spent
+  # must not consume a bounded-retry attempt. The seam answers "can this task
+  # still spend?"; `cost` is the typed form the policy already treats as
+  # terminal, so the parking decision still lives in failure-policy.ts.
+  if [[ -z "$budget_kind" ]]; then
+    remaining_usd="$(task_spend_remaining_usd "$issue" "$feature_dir" 2>/dev/null || true)"
+    [[ "$remaining_usd" != "0" ]] || budget_kind="cost"
+  fi
 
-  decision="$(failure_policy_decide "$stage" "$failure_kind" "$detail" "$handoff_reason" "$is_challenge" \
+  decision="$(failure_policy_decide "$stage" "$failure_kind" "$detail" "$handoff_reason" "$is_challenge" "$budget_kind" \
     | jq -c --arg detail "$detail" --arg handoffReason "$handoff_reason" --arg envelopeCause "$envelope_cause" \
         --arg envelopeModel "$envelope_model" --arg fingerprint "$fingerprint" \
         --arg budgetExhausted "$budget_exhausted" \

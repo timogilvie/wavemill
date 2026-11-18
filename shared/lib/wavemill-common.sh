@@ -82,17 +82,22 @@ wavemill_tool_path() {
 
 # The single failure policy (HOK-3176), via shared/lib/failure-policy.ts.
 #
-# Usage: failure_policy_decide <stage> <failure_kind> <detail> [handoff_reason] [challenge_arm]
+# Usage: failure_policy_decide <stage> <failure_kind> <detail> [handoff_reason] [challenge_arm] [budget_kind]
 # Prints one JSON line: {class, failureKind, terminalCode, retryBucket,
 # nextAction, rationale}. class is terminal | code-failure | retryable. Always
 # returns 0: when the bridge cannot run, the decision is the policy default
 # (retryable / native-unclassified) — an unavailable classifier must never
 # park a task.
+#
+# `budget_kind` (HOK-3492) is the recorded `budgetExhausted.kind` from the
+# stage envelope. `cost` is the task's one spend limit exhausted, which the
+# policy treats as terminal; every other kind keeps its existing retry.
 failure_policy_decide() {
-  local stage="$1" failure_kind="${2:-}" detail="${3:-}" handoff_reason="${4:-}" challenge_arm="${5:-false}"
+  local stage="$1" failure_kind="${2:-}" detail="${3:-}" handoff_reason="${4:-}" challenge_arm="${5:-false}" budget_kind="${6:-}"
   local -a args=(--stage "$stage" "--detail=$detail")
   [[ -z "$failure_kind" ]] || args+=("--failure-kind=$failure_kind")
   [[ -z "$handoff_reason" ]] || args+=("--handoff-reason=$handoff_reason")
+  [[ -z "$budget_kind" ]] || args+=("--budget-kind=$budget_kind")
   [[ "$challenge_arm" != "true" ]] || args+=(--challenge-arm)
   local out=""
   out="$(_failure_policy_cli "${args[@]}")" || out=""
