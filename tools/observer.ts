@@ -3776,8 +3776,8 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
   for (const [repoDir, repoIncidents] of incidentsByRepo) {
     const repoFindings = findings.filter((finding) => finding.repoDir === repoDir);
     const rewritten = suppressFleetFindings(supersedeGenericFindings(repoFindings, repoIncidents), repoIncidents);
-    const replacement = new Map(repoFindings.map((finding, index) => [finding, rewritten[index]] as const));
-    findings = findings.map((finding) => replacement.get(finding) ?? finding);
+    const remaining = new Set(rewritten);
+    findings = findings.filter((finding) => finding.repoDir !== repoDir || remaining.has(finding));
   }
   const projection = projectRemediationProposals(uniqueIncidents);
   return {

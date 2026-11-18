@@ -168,11 +168,10 @@ test('HOK-3509: three tasks sharing a cause across the window upsert one fleet i
   try {
     const now = Date.parse('2026-11-10T17:00:00Z');
     const sources: Array<{ taskId: string; featureDir: string }> = [];
-    const stalls = [
-      { taskId: 'HOK-3469', slug: 'f1', at: '2026-11-10T16:52:57Z' },
-      { taskId: 'HOK-3447_c', slug: 'f2', at: '2026-11-10T16:54:02Z' },
-      { taskId: 'HOK-3470', slug: 'f3', at: '2026-11-10T16:55:17Z' },
-    ];
+    const replay = JSON.parse(readFileSync(join(import.meta.dirname, '..', '..', 'tests', 'fixtures', 'incident-replay', 'real', 'fleet_deepseek_stalls.json'), 'utf8')) as {
+      failureFacts: Array<{ taskId: string; slug: string; at: string; attemptId: string }>;
+    };
+    const stalls = replay.failureFacts;
     for (const t of stalls) {
       const featureDir = join(dir, 'features', t.slug);
       mkdirSync(featureDir, { recursive: true });
@@ -185,7 +184,7 @@ test('HOK-3509: three tasks sharing a cause across the window upsert one fleet i
         model: 'deepseek-v4-flash',
         intendedModel: 'deepseek-v4-flash',
         notes: 'Interrupted: coding agent settled without a result (agent-stalled)',
-        runId: `r-${t.slug}`,
+        runId: t.attemptId,
       }));
       sources.push({ taskId: t.taskId, featureDir });
     }
@@ -208,7 +207,7 @@ test('HOK-3509: three tasks sharing a cause across the window upsert one fleet i
     // row-attribution reader uses then maps that to harness-fault.
     assert.equal(stored[0].metadata?.fleet?.causeKey, 'deepseek-v4-flash::model-fault');
     assert.equal(stored[0].metadata?.fleet?.fleetFaultClass, 'harness-fault');
-    assert.deepEqual(stored[0].metadata?.knownIssueIds, ['HOK-3469', 'HOK-3447_c', 'HOK-3470']);
+    assert.deepEqual(stored[0].metadata?.knownIssueIds, stalls.map((stall) => stall.taskId));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

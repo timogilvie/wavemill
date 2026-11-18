@@ -180,6 +180,7 @@ interface RawStageResult extends RawStageAttempt {
 
 interface RawFailureDecision {
   class?: unknown;
+  failureKind?: unknown;
 }
 
 function parseJson<T>(path: string): T | null {
@@ -229,7 +230,12 @@ function factFromAttempt(
   // Never let the correlation reader reinterpret an explicitly model/code
   // failure as an ambiguous shared endpoint failure.
   if (decision?.class === 'code-failure') return null;
-  const failureKind = detectFailureKind(detail);
+  // A current decision is typed evidence for this attempt.  Re-detecting
+  // from notes can change the cause key after the policy already classified
+  // it (for example when a later note is appended by the monitor).
+  const failureKind = typeof decision?.failureKind === 'string' && decision.failureKind.trim()
+    ? decision.failureKind.trim()
+    : detectFailureKind(detail);
   const faultClass = classifyArmFault({ failureKind, detail });
   const runId = typeof attempt.runId === 'string' && attempt.runId.length > 0 ? attempt.runId : null;
   const attemptId = runId ?? `${stage}@${attempt.startedAt ?? attempt.finishedAt ?? failedAt}`;
@@ -431,6 +437,7 @@ export interface FleetCauseLookupInput {
   incidents: readonly IncidentRecord[];
   taskId: string;
   stage?: string;
+  attemptId?: string;
   at?: number;
 }
 
@@ -446,8 +453,18 @@ export function fleetCauseForAttempt(input: FleetCauseLookupInput): FleetCauseLo
     const fleet = incident.metadata?.fleet;
     if (!fleet || typeof fleet !== 'object') continue;
     const attempts = (fleet as FleetIncidentMetadata).attempts ?? [];
-    const match = attempts.some((attempt) => attempt.taskId === input.taskId
-      && (!input.stage || !attempt.stage || attempt.stage === input.stage));
+    const match = attempts.some((attempt) => {
+      if (attempt.taskId !== input.taskId) return false;
+      if (input.stage && attempt.stage && attempt.stage !== input.stage) return false;
+      // A fleet record covers a particular settled attempt, never every
+      // future failure on the same task and stage.
+      if (input.attemptId && attempt.attemptId !== input.attemptId) return false;
+      if (input.at !== undefined) {
+        const attemptAt = attempt.at ? Date.parse(attempt.at) : NaN;
+        if (!Number.isFinite(attemptAt) || attemptAt !== input.at) return false;
+      }
+      return input.attemptId !== undefined || input.at !== undefined;
+    });
     if (!match) continue;
     const fleetFaultClass = (fleet as FleetIncidentMetadata).fleetFaultClass ?? 'harness-fault';
     const causeKey = (fleet as FleetIncidentMetadata).causeKey ?? '';

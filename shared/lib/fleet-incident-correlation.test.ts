@@ -175,11 +175,20 @@ test('fleetCauseForAttempt finds a covering incident; returns null when none', (
     fact({ taskId: 'HOK-2', attemptId: 'r-2', failedAt: Date.parse('2026-11-10T16:54:02Z') }),
     fact({ taskId: 'HOK-3', attemptId: 'r-3', failedAt: Date.parse('2026-11-10T16:55:17Z') }),
   ], { windowMs: 10 * 60_000, threshold: 3 })[0], { session: null, now: new Date() });
-  const hit = fleetCauseForAttempt({ incidents: [draft], taskId: 'HOK-2' });
+  const hit = fleetCauseForAttempt({ incidents: [draft], taskId: 'HOK-2', attemptId: 'r-2' });
   assert.ok(hit);
   assert.equal(hit?.fleetFaultClass, 'harness-fault');
   const miss = fleetCauseForAttempt({ incidents: [draft], taskId: 'HOK-99' });
   assert.equal(miss, null);
+});
+
+test('fleetCauseForAttempt never covers a later failure on the same task and stage', () => {
+  const draft = buildFleetIncident(correlateFleetFailures([
+    fact({ taskId: 'HOK-1' }),
+    fact({ taskId: 'HOK-2', attemptId: 'r-2' }),
+    fact({ taskId: 'HOK-3', attemptId: 'r-3' }),
+  ], { windowMs: 10 * 60_000, threshold: 3 })[0], { session: null, now: new Date() });
+  assert.equal(fleetCauseForAttempt({ incidents: [draft], taskId: 'HOK-2', stage: 'coding', attemptId: 'later-run' }), null);
 });
 
 test('classifyArmFault respects fleetCause override (settled-without-result → harness via fleet)', () => {

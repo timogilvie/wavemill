@@ -2,6 +2,13 @@
   "schemaVersion": "incident-fixture/1",
   "chain": "fleet_shared_endpoint_failure",
   "incidents": ["sanitised-2026-11-10-deepseek-fleet-stalls"],
+  "failureFacts": [
+    {"taskId":"HOK-3469","slug":"hok-3469","at":"2026-11-10T16:52:57Z","attemptId":"attempt-1"},
+    {"taskId":"HOK-3447_c","slug":"hok-3447-c","at":"2026-11-10T16:54:02Z","attemptId":"attempt-2"},
+    {"taskId":"HOK-3470","slug":"hok-3470","at":"2026-11-10T16:54:11Z","attemptId":"attempt-3"},
+    {"taskId":"HOK-3447","slug":"hok-3447","at":"2026-11-10T16:55:17Z","attemptId":"attempt-4"},
+    {"taskId":"HOK-3467","slug":"hok-3467","at":"2026-11-10T16:57:06Z","attemptId":"attempt-5"}
+  ],
   "initialState": {"task": {"issue": "HOK-FIXTURE-3509", "slug": "fleet-deepseek-stalls", "phase": "coding", "status": "working"}, "jobs": []},
   "incident": {
     "category": "model_task_harness_outcome", "rootCauseClass": "fleet_shared_endpoint_failure", "severity": "medium", "confidence": "high",

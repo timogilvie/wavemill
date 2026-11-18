@@ -169,6 +169,11 @@ export function appendArmReliabilityRecord(
   dirOrRepo?: string,
 ): ArmReliabilityRecord {
   const repoDir = dirOrRepo ? resolve(dirOrRepo) : resolve(process.cwd());
+  const settledAttempt = input.featureDir ? readStageResultSync(input.featureDir, input.stage) : null;
+  const settledAt = input.timestamp ? Date.parse(input.timestamp) : NaN;
+  const stageAt = typeof settledAttempt?.finishedAt === 'string'
+    ? Date.parse(settledAttempt.finishedAt)
+    : (typeof settledAttempt?.startedAt === 'string' ? Date.parse(settledAttempt.startedAt) : NaN);
   // The incident path alone decides correlation. Row creation merely consumes
   // that decision from the active incident store so Hokusai receives the
   // endpoint/harness attribution rather than N task faults.
@@ -176,6 +181,8 @@ export function appendArmReliabilityRecord(
     incidents: readFleetIncidents(join(repoDir, '.wavemill')),
     taskId: input.issueId,
     stage: input.stage,
+    attemptId: typeof settledAttempt?.runId === 'string' ? settledAttempt.runId : undefined,
+    at: Number.isFinite(stageAt) ? stageAt : (Number.isFinite(settledAt) ? settledAt : undefined),
   });
   const record = buildArmReliabilityRecord({ ...input, ...(fleetCause ? { fleetCause } : {}) });
   const filePath = resolveReliabilityRecordsFile(dirOrRepo);
