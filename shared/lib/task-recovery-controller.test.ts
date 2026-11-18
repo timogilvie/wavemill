@@ -258,6 +258,21 @@ test('a terminal cause escalates with a policy-terminal basis', () => {
   assert.equal(d.escalationBasis?.kind, 'policy-terminal');
 });
 
+test('HOK-3492: a recorded cost-kind task-budget stop escalates once and never retries the stage', () => {
+  const decision = classifyFailure({
+    stage: 'coding',
+    failureKind: 'native-stage-timeout',
+    handoffReason: 'budget_exhausted',
+    budgetExhausted: { kind: 'cost' },
+  });
+  assert.equal(decision.class, 'terminal');
+  assert.equal(decision.cause?.code, 'task-budget-exhausted');
+  // Even with a retry budget still available, the controller must not relaunch.
+  const d = decideTaskRecovery(snapshot({ stageResult: { kind: 'failed' }, failure: { decision, retry: 'proceed' } }));
+  assert.equal(d.action, 'escalate');
+  assert.equal(d.escalationBasis?.kind, 'policy-terminal');
+});
+
 test('a recognised code failure is sent to remediation', () => {
   const decision = classifyFailure({ stage: 'coding', detail: 'CONFLICT (content): merge conflict in foo.ts' });
   assert.equal(decision.class, 'code-failure');

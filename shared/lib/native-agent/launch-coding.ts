@@ -133,6 +133,7 @@ import { getNativeContextManagementConfig, getNativePayloadCaptureConfig } from 
 import { equivalentOpenRouterModelIds, type NormalizedPricing } from '../openrouter-catalog.ts';
 import { logPromptUsage } from '../prompt-registry.ts';
 import { buildAttemptId, nativeLaunchKind, newSessionRef, recordLaunch } from '../session-ownership.ts';
+import { loopCostLimitUsd, resolveTaskSpendRemainder } from '../task-spend.ts';
 import type { ResourceRef } from '../resource-registry.ts';
 import {
   getBlockedCompletionPath,
@@ -1204,6 +1205,23 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       : undefined;
     const modelName = model.name ?? model.id;
     const requestedModelName = options.resolvedModel?.trim() || modelName;
+    // HOK-3492: one task spend limit — the recorded budget minus what this
+    // task's owned sessions already cost. Resolved before this launch records
+    // its own row so only prior spend is subtracted.
+    const pricing = normalizedPricingFromModel(model);
+    const taskSpend = await resolveTaskSpendRemainder({
+      repoDir: options.repoDir,
+      worktreePath: options.wtDir,
+      featureDir,
+      issueId: options.issue,
+      slug: options.slug,
+      branchName: options.branch,
+      modelId: modelName,
+      ...(pricing.inputPerMTok !== null && pricing.outputPerMTok !== null
+        ? { modelPricing: { inputCostPerMTok: pricing.inputPerMTok, outputCostPerMTok: pricing.outputPerMTok } }
+        : {}),
+    });
+    const taskSpendLimitUsd = loopCostLimitUsd(taskSpend);
     // HOK-3143: build a provider-identity expectation from the certified
     // artifact when launching through the gate (not an operator loopModelOverride).
     // The tracker is shared across the main run and any recovery/artifact-retry
@@ -1363,9 +1381,14 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
     };
 
     const mutationFailureTracker: MutationFailureTracker = { count: 0, last: null };
-    const codingBudget: LoopBudget = { ...CODING_LOOP_BUDGET, ...(options.loopBudgetOverride ?? {}) };
+    const codingBudget: LoopBudget = {
+      ...CODING_LOOP_BUDGET,
+      // HOK-3492: the loop's existing cost stop now carries the task's
+      // remaining spend; the override still wins for replay tests.
+      ...(taskSpendLimitUsd !== undefined ? { maxCostUsd: taskSpendLimitUsd } : {}),
+      ...(options.loopBudgetOverride ?? {}),
+    };
 
-    const pricing = normalizedPricingFromModel(model);
     const effectiveMaxTokens = model.provider === 'openrouter' && !options.loopModelOverride
       ? capOpenRouterMaxTokensForBalance({
         requestedMaxTokens: CODING_MAX_OUTPUT_TOKENS,
@@ -1389,6 +1412,8 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       maxTokens: effectiveMaxTokens,
       // Coding uses the loop's existing admission and stagnation controls, as planning does.
       budget: codingBudget,
+      // HOK-3492: the loop needs rates to accrue the spend it stops on.
+      ...(taskSpend?.pricing ? { modelPricing: taskSpend.pricing } : {}),
       // HOK-3381: tracked-file content for the shared no-progress rule
       // (.wavemill/ test logs never count as progress).
       progressFingerprint: () => trackedContentFingerprint(options.wtDir),

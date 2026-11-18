@@ -102,6 +102,7 @@ import { equivalentOpenRouterModelIds } from '../openrouter-catalog.ts';
 import { getNativeContextManagementConfig, getNativePayloadCaptureConfig, getNativeReviewTimeoutConfig } from '../config.ts';
 import type { NormalizedPricing } from '../openrouter-catalog.ts';
 import { buildAttemptId, nativeLaunchKind, newSessionRef, recordLaunch } from '../session-ownership.ts';
+import { loopCostLimitUsd, resolveTaskSpendRemainder } from '../task-spend.ts';
 import {
   buildExecutedIdentity,
   type ExecutedIdentity,
@@ -983,6 +984,19 @@ export async function runNativeReview(
     tools: menuLaunchProvider.providerToolsForContext as unknown as AgentContext['tools'],
   };
   const pricing = normalizedPricingFromModel(modelConfig);
+  // HOK-3492: one task spend limit — the recorded budget minus prior owned spend.
+  const taskSpend = await resolveTaskSpendRemainder({
+    repoDir,
+    worktreePath: repoDir,
+    featureDir: options.featureDir,
+    issueId: options.issue,
+    branchName: context.metadata.branch,
+    modelId: modelConfig.name ?? modelConfig.id,
+    ...(pricing.inputPerMTok !== null && pricing.outputPerMTok !== null
+      ? { modelPricing: { inputCostPerMTok: pricing.inputPerMTok, outputCostPerMTok: pricing.outputPerMTok } }
+      : {}),
+  });
+  const taskSpendLimitUsd = loopCostLimitUsd(taskSpend);
   const effectiveMaxTokens = modelConfig.provider === 'openrouter'
     ? capOpenRouterMaxTokensForBalance({
       requestedMaxTokens: REVIEW_MAX_OUTPUT_TOKENS,
@@ -1031,6 +1045,8 @@ export async function runNativeReview(
     maxTurns: analysisTurnLimit + 1,
     maxToolCalls: REVIEW_TOOL_CALL_LIMIT,
     maxModelTimeMs: effectiveNativeTimeoutMs,
+    // HOK-3492: the task's remaining spend bounds the reviewer too.
+    ...(taskSpendLimitUsd !== undefined ? { maxCostUsd: taskSpendLimitUsd } : {}),
   };
   let loopResult;
   try {
@@ -1073,6 +1089,7 @@ export async function runNativeReview(
       },
       menuProvider: menuLaunchProvider.menuProvider,
       budget: reviewBudget,
+      ...(taskSpend?.pricing ? { modelPricing: taskSpend.pricing } : {}),
       terminalSynthesis: {
         prompt: REVIEW_FINAL_SYNTHESIS_PROMPT,
       },

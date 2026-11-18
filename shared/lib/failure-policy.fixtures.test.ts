@@ -370,10 +370,31 @@ const HISTORICAL_FIXTURES: Fixture[] = [
     evidence: { stage: 'coding', detail: 'Stage head publication failed: push of task/x to origin failed: fatal: unable to access remote (connection reset)' },
     expectedClass: 'retryable',
   },
+  // ── HOK-3492: one task spend limit ──
   {
-    name: 'HOK-3370: post-push verification failure stays retryable',
-    evidence: { stage: 'review', detail: 'Stage head publication failed: origin/task/x resolved to (absent) after push instead of the published head 4ea98a06' },
+    name: 'HOK-3492: native session crosses the remaining task budget (cost fact) — terminal, not a stage retry',
+    evidence: {
+      stage: 'coding',
+      failureKind: 'native-stage-timeout',
+      handoffReason: 'budget_exhausted',
+      budgetExhausted: { kind: 'cost' },
+      detail: 'native-stage-timeout: native coding exhausted its cost budget ($25.00 of $25.00); 40 turn(s), 120 tool call(s)',
+      challengeArm: true,
+    },
+    expectedClass: 'terminal',
+    expectedKind: 'native-stage-timeout',
+  },
+  {
+    name: 'HOK-3492: a model-time budget stop is still a bounded retry, not a task-budget terminal',
+    evidence: {
+      stage: 'coding',
+      failureKind: 'native-stage-timeout',
+      handoffReason: 'budget_exhausted',
+      budgetExhausted: { kind: 'model_time' },
+      detail: 'native-stage-timeout: native coding exhausted its model time budget (3600s of 3600s)',
+    },
     expectedClass: 'retryable',
+    expectedKind: 'native-stage-timeout',
   },
 ];
 
