@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   selectMergeCandidates,
   isCandidateStuck,
+  isCiGreen,
+  readyVerdictInvalidation,
   MERGE_QUEUE_STATES,
   isMergeQueueState,
   mergeLanePosition,
@@ -14,6 +16,8 @@ import {
   type MergeQueueConfigResolved,
   type MergeQueuePr,
 } from './merge-queue.ts';
+import { enrichReadyPrsWithTendRebaseConflicts } from '../../tools/merge-queue-select.ts';
+import { TEND_ATTEMPT_FACT_FILE, writeTendAttemptFact } from './tend-attempt-fact.ts';
 
 const config: MergeQueueConfigResolved = {
   enabled: true,
@@ -160,7 +164,7 @@ test('tick planner demotes stuck candidate and promotes disjoint replacement', (
   });
   assert.deepEqual(plan.stuckIssues, ['HOK-1']);
   assert.deepEqual(plan.selectedIssues, ['HOK-2']);
-  assert.deepEqual(plan.ciBlockedIssues, []);
+  assert.deepEqual(plan.invalidatedIssues, []);
 });
 
 test('active transient merge retry candidates are not demoted as stuck', () => {
@@ -187,7 +191,7 @@ test('active transient merge retry candidates are not demoted as stuck', () => {
   });
   assert.deepEqual(plan.stuckIssues, []);
   assert.deepEqual(plan.selectedIssues, ['HOK-1', 'HOK-2']);
-  assert.deepEqual(plan.ciBlockedIssues, []);
+  assert.deepEqual(plan.invalidatedIssues, []);
 });
 
 test('expired transient merge retry candidates can still be demoted as stuck', () => {
@@ -207,7 +211,7 @@ test('expired transient merge retry candidates can still be demoted as stuck', (
   });
   assert.deepEqual(plan.stuckIssues, ['HOK-1']);
   assert.deepEqual(plan.selectedIssues, []);
-  assert.deepEqual(plan.ciBlockedIssues, []);
+  assert.deepEqual(plan.invalidatedIssues, []);
 });
 
 // --- Terminal workflow status predicate tests ---
@@ -323,7 +327,7 @@ test('planMergeQueueTick excludes terminal candidates from selectedIssues', () =
   });
   assert.deepEqual(plan.selectedIssues, ['HOK-3']);
   assert.deepEqual(plan.stuckIssues, []);
-  assert.deepEqual(plan.ciBlockedIssues, []);
+  assert.deepEqual(plan.invalidatedIssues, []);
 });
 
 test('terminal stale active candidates do not appear in stuckIssues', () => {
@@ -342,7 +346,7 @@ test('terminal stale active candidates do not appear in stuckIssues', () => {
   });
   assert.deepEqual(plan.stuckIssues, []);
   assert.deepEqual(plan.selectedIssues, []);
-  assert.deepEqual(plan.ciBlockedIssues, []);
+  assert.deepEqual(plan.invalidatedIssues, []);
 });
 
 test('closed unmerged active candidates are excluded from selectedIssues and stuckIssues', () => {
@@ -362,7 +366,7 @@ test('closed unmerged active candidates are excluded from selectedIssues and stu
   });
   assert.deepEqual(plan.stuckIssues, []);
   assert.deepEqual(plan.selectedIssues, []);
-  assert.deepEqual(plan.ciBlockedIssues, []);
+  assert.deepEqual(plan.invalidatedIssues, []);
 });
 
 test('closed unmerged candidate does not block open clean ready PR selection', () => {
@@ -390,7 +394,7 @@ test('closed unmerged candidate does not block open clean ready PR selection', (
   });
   assert.deepEqual(plan.stuckIssues, []);
   assert.deepEqual(plan.selectedIssues, ['HOK-OPEN']);
-  assert.deepEqual(plan.ciBlockedIssues, []);
+  assert.deepEqual(plan.invalidatedIssues, []);
 });
 
 test('closed prState is excluded case-insensitively', () => {
@@ -418,7 +422,7 @@ test('closed prState is excluded case-insensitively', () => {
   });
   assert.deepEqual(plan.stuckIssues, []);
   assert.deepEqual(plan.selectedIssues, ['HOK-OPEN']);
-  assert.deepEqual(plan.ciBlockedIssues, []);
+  assert.deepEqual(plan.invalidatedIssues, []);
 });
 
 test('HOK-2850: partial live CI is not selected', () => {
@@ -446,7 +450,7 @@ test('missing live CI is not selected', () => {
   assert.deepEqual(selected.map((item) => item.issue), []);
 });
 
-test('failing active candidate is ciBlocked and green replacement can be selected', () => {
+test('failing active candidate is invalidated and green replacement can be selected', () => {
   const plan = planMergeQueueTick({
     readyPrs: [
       pr({
@@ -466,9 +470,38 @@ test('failing active candidate is ciBlocked and green replacement can be selecte
     now: '2026-05-06T12:30:00.000Z',
     config: { ...config, maxConcurrentCandidates: 1 },
   });
-  assert.deepEqual(plan.ciBlockedIssues, ['HOK-RED']);
+  assert.deepEqual(plan.invalidatedIssues, [{ issue: 'HOK-RED', prNumber: 1, cause: 'ci-failing' }]);
   assert.deepEqual(plan.selectedIssues, ['HOK-GREEN']);
   assert.deepEqual(plan.stuckIssues, []);
+});
+
+test('readyVerdictInvalidation identifies only positive live invalidation evidence', () => {
+  assert.equal(readyVerdictInvalidation(pr({ ci: { conclusion: 'fail' } })), 'ci-failing');
+  for (const conclusion of ['pass', 'pending', 'unknown'] as const) {
+    assert.equal(readyVerdictInvalidation(pr({
+      ci: { conclusion, mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' },
+    })), 'conflict');
+  }
+  assert.equal(readyVerdictInvalidation(pr({
+    ci: { conclusion: 'pass', mergeable: 'UNKNOWN', mergeStateStatus: 'UNKNOWN' },
+  })), null);
+  assert.equal(readyVerdictInvalidation(pr({ ci: { conclusion: 'pass' } })), null);
+  assert.equal(readyVerdictInvalidation(pr({
+    ci: { conclusion: 'pass', mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY', readError: { reason: 'stale read' } },
+  })), null);
+  for (const mergeStateStatus of ['BLOCKED', 'UNSTABLE']) {
+    const candidate = pr({ ci: { conclusion: 'pass', mergeStateStatus } });
+    assert.equal(readyVerdictInvalidation(candidate), null);
+    assert.equal(isCiGreen(candidate), false);
+  }
+});
+
+test('readyVerdictInvalidation re-runs Ready once for each newer tend rebase fact', () => {
+  const readyAt = '2026-05-06T12:00:00.000Z';
+  assert.equal(readyVerdictInvalidation(pr({ readyAt, tendRebaseConflictAt: '2026-05-06T12:00:01.000Z' })), 'tend-rebase-conflict');
+  assert.equal(readyVerdictInvalidation(pr({ readyAt: undefined, tendRebaseConflictAt: '2026-05-06T12:00:01.000Z' })), 'tend-rebase-conflict');
+  assert.equal(readyVerdictInvalidation(pr({ readyAt, tendRebaseConflictAt: '2026-05-06T11:59:59.000Z' })), null);
+  assert.equal(readyVerdictInvalidation(pr({ readyAt, tendRebaseConflictAt: readyAt })), null);
 });
 
 test('blocked merge state is not green even with passing checks', () => {
@@ -484,6 +517,130 @@ test('blocked merge state is not green even with passing checks', () => {
     config,
   });
   assert.deepEqual(selected.map((item) => item.issue), []);
+});
+
+test('a DIRTY wm:blocked PR is invalidated before label exclusion', () => {
+  const plan = planMergeQueueTick({
+    readyPrs: [pr({
+      issue: 'HOK-DIRTY',
+      prNumber: 42,
+      queueState: 'ready-stale',
+      labels: ['wm:blocked'],
+      ci: { conclusion: 'pass', headSha: 'head-42', mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' },
+    })],
+    now: '2026-05-06T12:30:00.000Z',
+    config,
+  });
+  assert.deepEqual(plan.invalidatedIssues, [{
+    issue: 'HOK-DIRTY', prNumber: 42, headSha: 'head-42', cause: 'conflict',
+  }]);
+  assert.deepEqual(plan.excludedIssues, []);
+  assert.deepEqual(plan.selectedIssues, []);
+});
+
+test('a DIRTY non-candidate with pending CI is still invalidated', () => {
+  const plan = planMergeQueueTick({
+    readyPrs: [pr({
+      issue: 'HOK-PENDING-DIRTY',
+      prNumber: 43,
+      queueState: 'ready-stale',
+      ci: { conclusion: 'pending', headSha: 'head-43', mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' },
+    })],
+    now: '2026-05-06T12:30:00.000Z',
+    config,
+  });
+  assert.equal(plan.invalidatedIssues[0]?.cause, 'conflict');
+  assert.deepEqual(plan.stuckIssues, []);
+  assert.deepEqual(plan.selectedIssues, []);
+});
+
+test('a DIRTY candidate is neither stuck nor selected while a clean candidate advances', () => {
+  const plan = planMergeQueueTick({
+    readyPrs: [
+      pr({
+        issue: 'HOK-CONFLICTED',
+        prNumber: 44,
+        queueState: 'merge-candidate',
+        candidatePromotedAt: '2026-05-06T12:00:00.000Z',
+        ci: { conclusion: 'pass', headSha: 'head-44', mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' },
+      }),
+      pr({
+        issue: 'HOK-CLEAN',
+        prNumber: 45,
+        branch: 'task/clean',
+        changedFiles: ['clean.ts'],
+        ci: { conclusion: 'pass', headSha: 'head-45', mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' },
+      }),
+    ],
+    now: '2026-05-06T12:30:00.000Z',
+    config: { ...config, maxConcurrentCandidates: 1 },
+  });
+  assert.equal(plan.invalidatedIssues[0]?.issue, 'HOK-CONFLICTED');
+  assert.deepEqual(plan.stuckIssues, []);
+  assert.deepEqual(plan.selectedIssues, ['HOK-CLEAN']);
+});
+
+test('merge-queue-select feeds only a current tend rebase fact into Ready invalidation (HOK-3316)', async (t) => {
+  const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const stateDir = mkdtempSync(join(tmpdir(), 'merge-queue-tend-fact-'));
+  t.after(() => rmSync(stateDir, { recursive: true, force: true }));
+  const head = 'a'.repeat(40);
+  const base = 'c'.repeat(40);
+  const inputPr = (overrides: Partial<MergeQueuePr> = {}) => ({
+    ...pr({
+      issue: 'HOK-3316',
+      prNumber: 1591,
+      ci: { conclusion: 'pass', headSha: head, mergeStateStatus: 'CLEAN' },
+      ...overrides,
+    }),
+    stateDir,
+    integrationBaseSha: base,
+  });
+  const writeRebaseFact = (writtenAt: string) => {
+    writeTendAttemptFact(stateDir, {
+      phase: 'rebase', prNumber: 1591, headSha: head, baseSha: base,
+      excerpt: 'CONFLICT (content)', failureClass: 'code-failure',
+    });
+    const factPath = join(stateDir, TEND_ATTEMPT_FACT_FILE);
+    const fact = JSON.parse(readFileSync(factPath, 'utf8')) as { writtenAt: string };
+    fact.writtenAt = writtenAt;
+    writeFileSync(factPath, JSON.stringify(fact));
+  };
+
+  let enriched = enrichReadyPrsWithTendRebaseConflicts([inputPr()]);
+  assert.equal(enriched[0].tendRebaseConflictAt, undefined, 'no fact: no Ready re-run');
+
+  writeRebaseFact('2026-10-22T17:12:29.000Z');
+  enriched = enrichReadyPrsWithTendRebaseConflicts([
+    inputPr({ readyAt: '2026-10-22T12:05:00.000Z' }),
+  ]);
+  assert.equal(enriched[0].tendRebaseConflictAt, '2026-10-22T17:12:29.000Z');
+  let plan = planMergeQueueTick({
+    readyPrs: enriched,
+    now: '2026-10-22T17:13:00.000Z',
+    config,
+  });
+  assert.deepEqual(plan.invalidatedIssues, [{
+    issue: 'HOK-3316', prNumber: 1591, headSha: head, cause: 'tend-rebase-conflict',
+  }], 'newer fact at the live head and base: re-run Ready');
+
+  enriched = enrichReadyPrsWithTendRebaseConflicts([
+    { ...inputPr(), integrationBaseSha: 'd'.repeat(40) },
+  ]);
+  assert.equal(enriched[0].tendRebaseConflictAt, undefined, 'base moved: tend retries instead');
+
+  enriched = enrichReadyPrsWithTendRebaseConflicts([
+    inputPr({ ci: { conclusion: 'pass', headSha: 'b'.repeat(40), mergeStateStatus: 'CLEAN' } }),
+  ]);
+  assert.equal(enriched[0].tendRebaseConflictAt, undefined, 'head moved: old fact does not hold');
+
+  enriched = enrichReadyPrsWithTendRebaseConflicts([
+    inputPr({ readyAt: '2026-10-22T17:13:00.000Z' }),
+  ]);
+  plan = planMergeQueueTick({ readyPrs: enriched, now: '2026-10-22T17:14:00.000Z', config });
+  assert.deepEqual(plan.invalidatedIssues, [], 'Ready already re-ran after the fact: no second re-run');
 });
 
 test('lane progress telemetry (HOK-2919)', async (t) => {
@@ -599,7 +756,7 @@ test('wm:blocked green PR is excluded, not promoted, not selected', () => {
   });
   assert.deepEqual(plan.selectedIssues, ['HOK-OK']);
   assert.deepEqual(plan.stuckIssues, []);
-  assert.deepEqual(plan.ciBlockedIssues, []);
+  assert.deepEqual(plan.invalidatedIssues, []);
   assert.equal(plan.excludedIssues.length, 1);
   assert.equal(plan.excludedIssues[0].issue, 'HOK-3106');
   assert.equal(plan.excludedIssues[0].blockingLabel, 'wm:blocked');
@@ -623,7 +780,7 @@ test('wm:blocked candidate does not enter stuckIssues after timeout', () => {
   });
   assert.deepEqual(plan.stuckIssues, []);
   assert.deepEqual(plan.selectedIssues, []);
-  assert.deepEqual(plan.ciBlockedIssues, []);
+  assert.deepEqual(plan.invalidatedIssues, []);
   assert.equal(plan.excludedIssues.length, 1);
   assert.equal(plan.excludedIssues[0].blockingLabel, 'wm:blocked');
 });

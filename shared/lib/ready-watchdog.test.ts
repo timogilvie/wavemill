@@ -18,6 +18,7 @@ import { createStateDirRetry } from './bounded-retry.ts';
 import { appendOwnershipRow } from './session-ownership.ts';
 import type { TaskProgress } from './task-progress.ts';
 import { setTerminalExecForTest } from './terminal-backend.ts';
+import { planMergeQueueTick, type MergeQueuePr } from './merge-queue.ts';
 
 function remediationDisposition(
   kind: ReadyRemediationDisposition['kind'],
@@ -625,7 +626,7 @@ test('classify active eval or comparison as waiting-on-eval-comparison', () => {
   assert.equal(classification.kind, 'waiting-on-eval-comparison');
 });
 
-test('classify real conflict as needs-user', () => {
+test('classify real conflict as monitor-owned code-failure, not a watchdog park', () => {
   const classification = classifyReadyTask(
     makeSnapshot({ hasConflictMarker: true }),
     makeTruth({ mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' }),
@@ -638,8 +639,96 @@ test('classify real conflict as needs-user', () => {
     },
   );
 
-  assert.equal(classification.kind, 'needs-user');
-  assert.match(classification.detail, /merge conflicts/);
+  assert.equal(classification.kind, 'waiting-on-ci');
+  assert.equal(classification.autoRemediable, false);
+  assert.match(classification.detail, /code-failure/);
+  assert.match(classification.detail, /Ready invalidation runs the conflict resolver/);
+});
+
+test('HOK-3513 replay: post-pass conflicts invalidate Ready instead of parking needs-user', () => {
+  const cases: Array<{
+    issue: string;
+    prNumber: number;
+    recordedAt: string;
+    recordedWatchdog: { kind: string; detail: string };
+    readyResult: {
+      verdict: 'pass'; readyHeadSha: string; readyBaseSha: string;
+      queueState: 'ready-stale' | 'merge-candidate'; mergeConflict: 'CLEAN'; agent: string; model: string;
+    };
+    conclusion: 'pending' | 'pass';
+  }> = [{
+    issue: 'HOK-3493',
+    prNumber: 3493,
+    recordedAt: '2026-11-16T18:01:02Z',
+    recordedWatchdog: { kind: 'needs-user', detail: 'real merge conflicts' },
+    readyResult: {
+      verdict: 'pass', readyHeadSha: 'head-3493', readyBaseSha: 'base-before-3493',
+      queueState: 'ready-stale', mergeConflict: 'CLEAN', agent: 'codex', model: 'deepseek-v4-flash',
+    },
+    conclusion: 'pending',
+  }, {
+    issue: 'HOK-3382',
+    prNumber: 3382,
+    recordedAt: '2026-11-15T20:01:46Z',
+    recordedWatchdog: { kind: 'needs-user', detail: 'real merge conflicts' },
+    readyResult: {
+      verdict: 'pass', readyHeadSha: 'head-3382', readyBaseSha: 'base-before-3382',
+      queueState: 'merge-candidate', mergeConflict: 'CLEAN', agent: 'codex', model: 'deepseek-v4-flash',
+    },
+    conclusion: 'pass',
+  }];
+
+  for (const incident of cases) {
+    assert.equal(incident.recordedWatchdog.kind, 'needs-user', 'recorded incident parked for a person');
+    const input: MergeQueuePr = {
+      issue: incident.issue,
+      slug: incident.issue.toLowerCase(),
+      prNumber: incident.prNumber,
+      branch: `task/${incident.issue.toLowerCase()}`,
+      readyAt: '2026-11-15T19:00:00Z',
+      readyBaseSha: incident.readyResult.readyBaseSha,
+      queueState: incident.readyResult.queueState,
+      labels: ['wm:blocked'],
+      ci: {
+        conclusion: incident.conclusion,
+        headSha: incident.readyResult.readyHeadSha,
+        mergeable: 'CONFLICTING',
+        mergeStateStatus: 'DIRTY',
+      },
+    };
+    const plan = planMergeQueueTick({
+      readyPrs: [input],
+      now: incident.recordedAt,
+      config: {
+        enabled: true, maxConcurrentCandidates: 2, stuckTimeoutSeconds: 900,
+        conflictGroupingEnabled: true, skipCooldownSeconds: 60,
+      },
+    });
+    assert.deepEqual(plan.invalidatedIssues, [{
+      issue: incident.issue,
+      prNumber: incident.prNumber,
+      headSha: incident.readyResult.readyHeadSha,
+      cause: 'conflict',
+    }]);
+    assert.deepEqual(plan.excludedIssues, []);
+    assert.deepEqual(plan.stuckIssues, []);
+    assert.deepEqual(plan.selectedIssues, []);
+
+    const classification = classifyReadyTask(
+      makeSnapshot({
+        issueId: incident.issue,
+        prNumber: incident.prNumber,
+        readyResultStatus: 'completed',
+        readyVerdict: 'pass',
+      }),
+      makeTruth({ mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' }),
+      new Date(incident.recordedAt),
+      WATCHDOG_CONFIG,
+    );
+    assert.equal(classification.kind, 'waiting-on-ci');
+    assert.notEqual(classification.kind, incident.recordedWatchdog.kind);
+    assert.match(classification.detail, /code-failure/);
+  }
 });
 
 test('classify disconnected resolved merge remediation as auto-resumable', () => {
@@ -2360,8 +2449,8 @@ test('tick reaps prior actionable finding when task evaluates fresh', async () =
       },
     });
     assert.equal(first.findings.length, 1);
-    assert.equal(first.findings[0].classification, 'needs-user');
-    assert.match(first.findings[0].detail, /real merge conflicts/);
+    assert.equal(first.findings[0].classification, 'waiting-on-ci');
+    assert.match(first.findings[0].detail, /Ready invalidation runs the conflict resolver/);
 
     const workflowState = JSON.parse(readFileSync(stateFile, 'utf-8')) as {
       tasks: Record<string, { updated?: string }>;

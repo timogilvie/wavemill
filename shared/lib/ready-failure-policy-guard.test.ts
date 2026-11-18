@@ -70,6 +70,34 @@ test('the retired failed-ready-recheck bucket is forbidden in code but not in pr
   assert.deepEqual(prose, []);
 });
 
+test('a reintroduced watchdog conflict park is a finding', () => {
+  const conflictPark = [
+    "if (githubTruth.mergeStateStatus === 'DIRTY') {",
+    '  return {',
+    "    kind: 'needs-user',",
+    "    detail: 'real merge conflicts',",
+    '  };',
+    '}',
+  ].join('\n');
+  const findings = checkGuardSource(READY_FAILURE_POLICY_GUARD, 'shared/lib/ready-watchdog.ts', conflictPark);
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].pattern, 'conflict-park-outside-ready-launcher');
+  assert.equal(findings[0].line, 1);
+});
+
+test("the Ready launcher's own conflict handling is exempt", () => {
+  const launcher = [
+    'launch_ready_phase() {',
+    '  if [[ "$merge_status" == "CONFLICTED" ]]; then',
+    '    bounded_retry_mark_exhausted "$state_dir" "conflict-remediation-relaunch" "spent"',
+    '    escalate_operator_attention "$state_dir" exhausted conflict-remediation-relaunch "spent"',
+    '  fi',
+    '}',
+  ].join('\n');
+  const findings = checkGuardSource(READY_FAILURE_POLICY_GUARD, 'shared/lib/wavemill-monitor.sh', launcher);
+  assert.deepEqual(findings, []);
+});
+
 test('the suppression marker exempts one line', () => {
   const suppressed = [
     '# allow-ready-failure-policy: upgrade-compatibility shim kept for in-flight sessions',

@@ -59,6 +59,10 @@ JOURNEY_TICK_BUDGET=0
 # Optional function name a journey sets to inject faults right before the
 # first tend tick (e.g. move the integration branch, add gh read lag).
 JOURNEY_BEFORE_FIRST_TEND=""
+# Optional predicate that must hold before the first tend tick. Useful when a
+# fault must be injected only after Ready completed, since a handoff can be
+# published while the Ready result is still running.
+JOURNEY_FIRST_TEND_GATE=""
 # Plan approvals the operator will give (-1 = unbounded). Every approval
 # request (planning awaiting_user without .plan-approved) is one episode in
 # $JOURNEY_TMP/approval-episodes.jsonl; a request beyond the budget fails the
@@ -406,6 +410,9 @@ journey_operator_tick() {
 }
 
 journey_tend_tick() {
+  if (( JOURNEY_TEND_TICKS == 0 )) && [[ -n "$JOURNEY_FIRST_TEND_GATE" ]] && ! "$JOURNEY_FIRST_TEND_GATE"; then
+    return 0
+  fi
   if (( JOURNEY_TEND_TICKS == 0 )) && [[ -n "$JOURNEY_BEFORE_FIRST_TEND" ]]; then
     "$JOURNEY_BEFORE_FIRST_TEND"
   fi

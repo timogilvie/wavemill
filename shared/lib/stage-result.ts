@@ -29,7 +29,7 @@ export type { CleanupDecision, CleanupReport, TreeState } from './native-agent/c
 import type { ReadyRemediationDecision } from './native-agent/workflow-tools/ready-remediation.ts';
 export type { ReadyRemediationDecision } from './native-agent/workflow-tools/ready-remediation.ts';
 import type { ReviewExecutedIdentitySet } from './challenge-execution-contract.ts';
-import type { MergeQueueState } from './merge-queue.ts';
+import type { MergeQueueState, ReadyInvalidationCause } from './merge-queue.ts';
 export type { ReviewExecutedIdentitySet, ExecutedIdentity, ExecutedIdentityRole } from './challenge-execution-contract.ts';
 import { isSameRunId, runIdStartedAt } from './attempt-identity.ts';
 import { challengeModelIdsEquivalent } from './challenge-comparison.ts';
@@ -445,8 +445,11 @@ export interface ReadyArtifacts {
   lastCiHeadSha?: string;
   lastCiObservedAt?: string;
   lastCiSummary?: string;
-  ciInvalidatedAt?: string;
-  ciInvalidationReason?: string;
+  verdictInvalidatedAt?: string;
+  verdictInvalidationReason?: string;
+  verdictInvalidationCause?: ReadyInvalidationCause;
+  liveMergeable?: string;
+  liveMergeStateStatus?: string;
   ciFailingChecks?: string[];
   changedFiles?: string[];
   unblocksCount?: number;

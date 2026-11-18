@@ -171,7 +171,7 @@ Operational note: `mergeConflict.status` is independent from the main verdict. A
 
 The mill merge-queue selector receives live CI state for every ready PR. A PR is selectable only when `ci.conclusion` is `pass` and GitHub `mergeStateStatus` is not `BLOCKED`, `DIRTY`, or `UNSTABLE`.
 
-Stored ready passes are invalidated when a later tick observes live CI `fail` for that PR. The ready result is rewritten as `failed` with `ciInvalidatedAt`, `ciInvalidationReason`, `ciFailingChecks`, and `lastCi*` artifact fields. Pending or unreadable live CI is not promoted; it remains waiting until a later tick can prove green.
+Stored ready passes are invalidated by `readyVerdictInvalidation` when a later tick observes live CI `fail`, a positive GitHub conflict (`CONFLICTING` or `DIRTY`), or a current tend rebase-conflict fact newer than the pass. The monitor's `invalidate_ready_verdict` rewrites the result as `failed` with `verdictInvalidatedAt`, `verdictInvalidationReason`, `verdictInvalidationCause`, `liveMergeable`, `liveMergeStateStatus`, `ciFailingChecks`, and `lastCi*` artifact fields, while preserving the pass's `mergeConflict` and execution identity. The existing failed-Ready path then re-runs Ready, whose CONFLICTED branch is the only conflict resolver. Unknown or unreadable mergeability does not invalidate; pending or unreadable live CI is not promoted and remains waiting until a later tick can prove green.
 
 Queue logs no longer claim `clean/green` from stored state. Promotion logs now cite the live CI observation, for example `live CI pass: 15/15 checks @abc1234`.
 

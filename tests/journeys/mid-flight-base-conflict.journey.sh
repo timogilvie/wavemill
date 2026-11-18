@@ -88,3 +88,87 @@ journey_assert "the contending integration change survived the merge" \
 journey_assert_landed "$ISSUE"
 
 journey_finish
+
+# HOK-3513: run the post-pass variant in a fresh world. The original world
+# above still pins the in-Ready timing and one-resolver contract; this world
+# enables the real merge queue and introduces the same conflict only after a
+# completed pass has published its tend handoff.
+journey_cleanup
+source "$(dirname "$0")/harness.sh"
+ISSUE="JRN-3513"
+export FAKE_POST_READY_CONFLICT=1
+export FAKE_AGENT_SCRIPT_DIR
+FAKE_AGENT_SCRIPT_DIR="$(cd "$(dirname "$0")/fixtures/hok-3273/fake-agent" && pwd)"
+journey_init post-ready-base-conflict
+fakes_linear_add_issue "$ISSUE" "Conflict after Ready passed" Todo
+# The original world covers the cross-PR guard; this world isolates the
+# post-pass invalidation and resolver path from that unrelated async check.
+journey_write_config '{"reviewMerge":{"crossPrRevertCheck":{"enabled":false}}}'
+# The queue pass is the invalidation entry point under test.
+export MERGE_QUEUE_ENABLED=true
+export WAVEMILL_SESSION_CAPABILITIES_JSON='{"tend":true,"observer":false,"mergeExecutor":"tend","mergeQueue":true}'
+
+inject_post_ready_conflict() {
+  local fd
+  fd="$(journey_feature_dir "$ISSUE")"
+  if [[ "$(jq -r '.status // empty' "$fd/.ready-result.json")" != "completed" ]] \
+    || ! jq -e '.artifacts.verdict == "pass" or .artifacts.verdict == "warn"' "$fd/.ready-result.json" >/dev/null; then
+    journey_fail "post-ready hook ran without a completed passing Ready verdict"
+  fi
+  fakes_repo_commit "$JOURNEY_INTEGRATION_BRANCH" "journey-output.txt" \
+    "contending change landed after Ready passed" "post-ready contending change to journey-output.txt"
+  touch "$JOURNEY_TMP/post-ready-conflict-injected"
+  journey_log "fault: integration conflict introduced after Ready passed, before tend's first tick"
+}
+ready_pass_completed() {
+  local fd
+  fd="$(journey_feature_dir "$ISSUE")"
+  [[ "$(jq -r '.status // empty' "$fd/.ready-result.json")" == "completed" ]] \
+    && jq -e '.artifacts.verdict == "pass" or .artifacts.verdict == "warn"' "$fd/.ready-result.json" >/dev/null 2>&1
+}
+JOURNEY_FIRST_TEND_GATE=ready_pass_completed
+JOURNEY_BEFORE_FIRST_TEND=inject_post_ready_conflict
+
+journey_start_monitor
+journey_set_tick_budget 100
+journey_wait_until "$ISSUE" 5  "backlog offers $ISSUE" journey_backlog_offers "$ISSUE"
+journey_command "select 1"
+
+phase_is() { [[ "$(journey_task_field "$ISSUE" phase)" == "$1" ]]; }
+pr_exists() { [[ -n "$(fakes_gh_pr_field 1 state)" ]]; }
+journey_resolver_launches() { grep -c "phase=coding issue=$ISSUE role=conflict-resolver" "$FAKE_AGENT_LOG" 2>/dev/null || true; }
+resolver_launched() { [[ "$(journey_resolver_launches)" -ge 1 ]]; }
+mill_log_count() {
+  sed 's/\x1b\[[0-9;]*[A-Za-z]//g' "$JOURNEY_TMP/logs/monitor.out" "$JOURNEY_TMP/logs/status.log" 2>/dev/null \
+    | grep -c "$1" || true
+}
+verdict_invalidated() { [[ "$(mill_log_count "ready verdict invalidated (conflict)")" -ge 1 ]]; }
+
+journey_wait_until "$ISSUE" 5  "task launched into planning" phase_is planning
+journey_wait_until "$ISSUE" 15 "review opened PR #1 without an early conflict" pr_exists
+journey_wait_until "$ISSUE" 20 "the post-pass conflict invalidated Ready" verdict_invalidated
+journey_wait_until "$ISSUE" 15 "the invalidated verdict launched the conflict resolver" resolver_launched
+journey_wait_until "$ISSUE" 25 "PR merged by tend after post-pass resolution" journey_pr_merged
+journey_wait_until "$ISSUE" 8  "task reaped after merge" journey_task_reaped "$ISSUE"
+
+echo ""
+echo "post-ready assertions:"
+journey_assert "the conflict was injected only after a completed Ready pass" \
+  test -f "$JOURNEY_TMP/post-ready-conflict-injected"
+journey_assert "the Ready verdict was invalidated with cause conflict" \
+  bash -c '(( $1 >= 1 ))' _ "$(mill_log_count "ready verdict invalidated (conflict)")"
+journey_assert "exactly one resolver launched for the post-pass conflict" \
+  test "$(journey_resolver_launches)" = "1"
+journey_assert "the mill opened the merge before the post-pass resolver ran" \
+  grep -q "role=conflict-resolver merge_in_progress=yes" "$FAKE_AGENT_LOG"
+journey_assert "both sides' lines survived the post-pass resolution" \
+  bash -c 'content="$(git --git-dir "$1" show "refs/heads/$2:journey-output.txt")" \
+    && grep -q "implemented" <<<"$content" && grep -q "contending change" <<<"$content"' \
+    _ "$FAKE_GH_ORIGIN" "$JOURNEY_INTEGRATION_BRANCH"
+journey_assert "no 'Conflict remediation exhausted' after the post-pass conflict" \
+  test "$(mill_log_count "Conflict remediation exhausted")" = "0"
+journey_assert "no legacy 'real merge conflicts' watchdog park" \
+  test "$(mill_log_count "real merge conflicts")" = "0"
+journey_assert_landed "$ISSUE"
+
+journey_finish

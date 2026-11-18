@@ -250,6 +250,14 @@ JSON
 {"stage":"ready","status":"failed","agent":"codex","artifacts":{"verdict":"fail"}}
 JSON
         ;;
+      ready_failed_deferred_repolls)
+        CURRENT_PHASE="ready"
+        READY_STATUS="failed"
+        READY_LAUNCH_RC=4
+        cat > "$READY_DIR/.ready-result.json" <<JSON
+{"stage":"ready","status":"failed","agent":"codex","artifacts":{"verdict":"fail","verdictInvalidationCause":"conflict"}}
+JSON
+        ;;
       ready_failed_recheck_backoff_holds)
         CURRENT_PHASE="ready"
         READY_STATUS="failed"
@@ -625,7 +633,6 @@ JSON
     ready_exhausted_challenge_sibling_green() { return 1; }
     monitor_task_reap_reason() { return 1; }
     codex_capacity_idle_confirmed() { return 1; }
-    tend_attempt_conflict_needs_ready() { return 1; }
     review_gate_refusal_is_terminal() { return 1; }
     effective_task_base_branch() { printf "%s\n" "$BASE_BRANCH"; }
     read_state_value() { printf "%s\n" "${1-}"; }
@@ -687,6 +694,12 @@ JSON
       printf -v WRITE_STAGE_CALLS '%s%s\n' \
         "$WRITE_STAGE_CALLS" \
         "${1-}|${2-}|${3-}|${4-}|${5-}|${6-}|${7-}"
+    }
+    write_ready_queue_artifacts() {
+      local tmp
+      tmp=$(mktemp)
+      jq --argjson patch "$2" ".artifacts = ((.artifacts // {}) + \$patch)" "$1/.ready-result.json" > "$tmp"
+      mv "$tmp" "$1/.ready-result.json"
     }
     set_task_phase() {
       CURRENT_PHASE="$2"
@@ -803,6 +816,7 @@ JSON
     printf "pending_count=%s\npending_sentinel=%s\npending_exhausted_log_count=%s\n" \
       "$pending_count" "$pending_sentinel" "$pending_exhausted_log_count"
     printf "handler_calls=%s\n" "$HANDLER_CALLS"
+    printf "ready_verdict=%s\n" "$(jq -r ".artifacts.verdict // empty" "$READY_DIR/.ready-result.json" 2>/dev/null || true)"
   '
 }
 
@@ -851,6 +865,10 @@ check_contains "failed ready resumes by re-running checks" "$ready_failed_resume
 check_contains "failed ready re-run logs bounded attempt" "$ready_failed_resume_repolls_output" "re-running Ready checks (attempt 1/3)"
 check_contains "failed ready pass clears attention" "$ready_failed_resume_repolls_output" "attention=clear"
 check_contains "failed ready pass holds slot active" "$ready_failed_resume_repolls_output" "active_count=1"
+
+ready_failed_deferred_output="$(run_monitor_case ready_failed_deferred_repolls)"
+check_contains "a deferred failed-Ready relaunch leaves a pending verdict" "$ready_failed_deferred_output" "ready_verdict=pending"
+check_contains "a deferred failed-Ready relaunch is handled without attention" "$ready_failed_deferred_output" "attention=clear"
 
 ready_failed_recheck_backoff_output="$(run_monitor_case ready_failed_recheck_backoff_holds)"
 check_contains "recheck backoff skips relaunch" "$ready_failed_recheck_backoff_output" "ready_launches=0"

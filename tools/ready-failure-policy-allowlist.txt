@@ -1,8 +1,10 @@
-# Allowlist for the ready-failure-policy guard (HOK-3371). Fresh invariant:
-# the monitor itself must have zero legacy sites. These entries are the
-# deliberate upgrade-compatibility shims for the retired failed-ready-recheck
-# bucket (in-flight sessions carry its sentinels); remove them with the shims.
+# Allowlist for the ready-failure-policy guard (HOK-3371/HOK-3513).
+# Uncounted entries are deliberate upgrade-compatibility shims for the retired
+# failed-ready-recheck bucket. Counted entries ratchet the two legacy conflict
+# parks named as HOK-3513 follow-ups; any additional finding still fails.
 shared/lib/bounded-retry.sh # legacy failed-ready-recheck file-name mapping so in-flight state survives an upgrade
 shared/lib/condition-reconciler.sh # legacy .failed-ready-recheck-exhausted sentinel expiry (HOK-3172 reconciler)
 shared/lib/retry-sentinel-guard.ts # legacy bucket file-name shape in the sentinel-name guard regex
 tools/state-invariants.ts # legacy sentinel enumeration for the state-invariants audit
+shared/lib/ready-watchdog.ts 1 # HOK-3513 follow-up: the separate auto-update conflict result still parks; post-pass GitHub conflicts no longer do
+shared/lib/wavemill-monitor.sh 1 # HOK-3513 follow-up: _ready_failure_update_base conflict:* retains its legacy page-first base-drift path

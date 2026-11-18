@@ -57,11 +57,13 @@ export type MergeQueueCiConclusion = 'pass' | 'fail' | 'pending' | 'unknown' | '
 export interface MergeQueueCiState {
   conclusion: MergeQueueCiConclusion;
   headSha?: string;
+  mergeable?: string;
   mergeStateStatus?: string;
   observedAt?: string;
   failing?: string[];
   observed?: number;
   required?: number;
+  readError?: unknown;
 }
 
 export interface MergeQueuePr {
@@ -73,6 +75,8 @@ export interface MergeQueuePr {
   queueState?: MergeQueueState;
   changedFiles?: string[];
   readyAt?: string;
+  /** Written timestamp of tend's valid rebase-conflict fact at the live head/base. */
+  tendRebaseConflictAt?: string;
   unblocksCount?: number;
   candidatePromotedAt?: string;
   candidateLastProgressAt?: string;
@@ -224,10 +228,29 @@ export function isSelectableMergeQueuePr(pr: Pick<MergeQueuePr, 'workflowStatus'
   return true;
 }
 
+export type ReadyInvalidationCause = 'ci-failing' | 'conflict' | 'tend-rebase-conflict';
+
+type ReadyVerdictPr = Pick<MergeQueuePr, 'ci' | 'readyAt' | 'tendRebaseConflictAt'>;
+
+function hasLiveConflict(ci: MergeQueueCiState | undefined): boolean {
+  if (!ci || ci.readError) return false;
+  return ci.mergeable === 'CONFLICTING' || ci.mergeStateStatus === 'DIRTY';
+}
+
+/** The one decision about whether a completed Ready pass still describes the live PR. */
+export function readyVerdictInvalidation(pr: ReadyVerdictPr): ReadyInvalidationCause | null {
+  if (pr.ci?.conclusion === 'fail') return 'ci-failing';
+  if (hasLiveConflict(pr.ci)) return 'conflict';
+  const conflictAt = timestampMs(pr.tendRebaseConflictAt);
+  const readyAt = timestampMs(pr.readyAt);
+  if (conflictAt > 0 && (readyAt === 0 || conflictAt > readyAt)) return 'tend-rebase-conflict';
+  return null;
+}
+
 export function isCiGreen(pr: Pick<MergeQueuePr, 'ci'>): boolean {
-  if (pr.ci?.conclusion !== 'pass') return false;
+  if (pr.ci?.conclusion !== 'pass' || hasLiveConflict(pr.ci)) return false;
   const mergeStateStatus = pr.ci.mergeStateStatus ?? '';
-  return !['BLOCKED', 'DIRTY', 'UNSTABLE'].includes(mergeStateStatus);
+  return !['BLOCKED', 'UNSTABLE'].includes(mergeStateStatus);
 }
 
 export interface MergeQueueConfigResolved {
@@ -247,15 +270,22 @@ export interface MergeQueueExclusion {
   nextAction?: string;
 }
 
+export interface MergeQueueInvalidation {
+  issue: string;
+  prNumber: number;
+  headSha?: string;
+  cause: ReadyInvalidationCause;
+}
+
 export interface MergeQueueTickPlan {
   stuckIssues: string[];
   selectedIssues: string[];
-  ciBlockedIssues: string[];
+  invalidatedIssues: MergeQueueInvalidation[];
   /**
    * PRs that are excluded from candidate accounting because tend will refuse
    * to consume them (e.g. carry `wm:blocked`) or because live label state
    * could not be read. Excluded PRs never enter `selectedIssues`, and are
-   * ignored for stuck/ciBlocked accounting so a `wm:blocked` PR does not
+   * ignored for stuck accounting so a `wm:blocked` PR does not
    * bounce between promote and demote (HOK-3111).
    */
   excludedIssues: MergeQueueExclusion[];
@@ -392,41 +422,52 @@ export function planMergeQueueTick(options: {
   const { readyPrs, now, config } = options;
   const selectablePrs = readyPrs.filter(isSelectableMergeQueuePr);
 
+  // Invalidate before label exclusion: a conflicted Ready pass normally already
+  // carries wm:blocked, but its verdict still needs the one recovery path.
+  const invalidatedIssues: MergeQueueInvalidation[] = [];
+  const invalidatedIssueSet = new Set<string>();
+  for (const pr of selectablePrs) {
+    const cause = readyVerdictInvalidation(pr);
+    if (!cause) continue;
+    invalidatedIssueSet.add(pr.issue);
+    invalidatedIssues.push({
+      issue: pr.issue,
+      prNumber: pr.prNumber,
+      ...(pr.ci?.headSha ? { headSha: pr.ci.headSha } : {}),
+      cause,
+    });
+  }
+
   // HOK-3111: split tend-refusal PRs (e.g. wm:blocked) out before any
   // candidate/stuck accounting so they never enter promote/demote cycles.
   const excludedIssues: MergeQueueExclusion[] = [];
   const excludedIssueSet = new Set<string>();
   const consumablePrs: MergeQueuePr[] = [];
   for (const pr of selectablePrs) {
+    if (invalidatedIssueSet.has(pr.issue)) continue;
     const verdict = classifyMergeQueueConsumability(pr);
-    if (verdict.consumable) {
-      consumablePrs.push(pr);
+    if (verdict.consumable === false) {
+      excludedIssueSet.add(pr.issue);
+      excludedIssues.push({
+        issue: pr.issue,
+        prNumber: pr.prNumber,
+        headSha: pr.ci?.headSha,
+        reason: verdict.reason,
+        blockingLabel: verdict.blockingLabel,
+        nextAction: verdict.nextAction,
+      });
       continue;
     }
-    excludedIssueSet.add(pr.issue);
-    excludedIssues.push({
-      issue: pr.issue,
-      prNumber: pr.prNumber,
-      headSha: pr.ci?.headSha,
-      reason: verdict.reason,
-      blockingLabel: verdict.blockingLabel,
-      nextAction: verdict.nextAction,
-    });
+    consumablePrs.push(pr);
   }
 
-  const ciBlockedIssues = consumablePrs
-    .filter((pr) => pr.queueState === 'merge-candidate')
-    .filter((pr) => pr.ci?.conclusion === 'fail')
-    .map((pr) => pr.issue);
   const stuckIssues = consumablePrs
     .filter((pr) => pr.queueState === 'merge-candidate')
-    .filter((pr) => !ciBlockedIssues.includes(pr.issue))
     .filter((pr) => isCandidateStuck(pr, now, config))
     .map((pr) => pr.issue);
 
   const activeCandidates = consumablePrs
     .filter((pr) => pr.queueState === 'merge-candidate')
-    .filter((pr) => !ciBlockedIssues.includes(pr.issue))
     .filter((pr) => !stuckIssues.includes(pr.issue));
   const eligibleReadyPrs = consumablePrs.filter((pr) => !stuckIssues.includes(pr.issue));
 
@@ -439,5 +480,5 @@ export function planMergeQueueTick(options: {
     .filter((pr) => !excludedIssueSet.has(pr.issue))
     .map((pr) => pr.issue);
 
-  return { stuckIssues, selectedIssues, ciBlockedIssues, excludedIssues };
+  return { stuckIssues, selectedIssues, invalidatedIssues, excludedIssues };
 }

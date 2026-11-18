@@ -146,7 +146,7 @@ Ready tasks now also move through a small merge-lane queue once many PRs reach r
 - `ready-stale`: the PR passed before, but the base branch advanced. Mill records the staleness cheaply and does not immediately launch remediation.
 - `merge-candidate`: the PR has been promoted into the bounded merge lane and is allowed to refresh against the latest base, remediate conflicts, and attempt merge readiness again.
 
-When the base branch advances after one merge, mill marks the other completed ready tasks as `ready-stale` first. It only promotes a bounded candidate set back into active refresh, which prevents every ready PR from independently rerunning conflict remediation and ready checks on the same tick. Stuck candidates are demoted back to `ready-stale` so unrelated work can continue.
+When the base branch advances after one merge and the PR remains mergeable, mill marks the other completed ready tasks as `ready-stale` first. It only promotes a bounded candidate set back into active refresh, which prevents every ready PR from independently rerunning conflict remediation and ready checks on the same tick. Stuck candidates are demoted back to `ready-stale` so unrelated work can continue. A live `CONFLICTING`/`DIRTY` read instead invalidates the passed Ready verdict in the same queue pass and re-runs Ready's conflict resolver; conflict is not a `ready-stale` end state.
 
 The ready watchdog runs once per monitor tick for `phase=ready` tasks. After `ready.watchdog.thresholdMinutes` of no local progress, it compares controller state with GitHub truth and classifies the task as one of:
 
@@ -156,7 +156,7 @@ The ready watchdog runs once per monitor tick for `phase=ready` tasks. After `re
 - `waiting on eval/comparison`
 - `needs user`
 
-When GitHub says the PR is `MERGEABLE` but `BEHIND`, the watchdog treats that as a mechanically recoverable branch-update path. It fetches the latest base, merges it into the PR branch, pushes the branch, and then resets the controller-owned ready result back to a pending rerun. If the auto-update conflicts, the push fails repeatedly, or the local worktree is not safe to mutate, the watchdog escalates to `needs user` with the real failure detail.
+When GitHub reports a conflict, the watchdog classifies `code-failure` through the shared failure policy and only observes monitor-owned recovery; it does not park the PR as `needs user`. When GitHub says the PR is `MERGEABLE` but `BEHIND`, the watchdog treats that as a mechanically recoverable branch-update path. It fetches the latest base, merges it into the PR branch, pushes the branch, and then resets the controller-owned ready result back to a pending rerun. If the auto-update conflicts, the push fails repeatedly, or the local worktree is not safe to mutate, the watchdog escalates to `needs user` with the real failure detail.
 
 When GitHub says the PR is open, mergeable, and green, the watchdog still performs local recovery for stale controller state. That path is limited to clearing stale local ready markers and resetting the ready result. During the later merge-lane step, tend skips its pre-merge rebase when `origin/auto/integration` is already an ancestor of the PR head; otherwise it performs the rebase before merging. If auto-recovery is disabled or unsafe, the watchdog prints an explicit `tools/ready-watchdog.ts --recover <ISSUE>` command instead.
 

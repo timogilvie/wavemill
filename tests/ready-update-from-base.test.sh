@@ -72,6 +72,7 @@ extract_function "$MONITOR_SCRIPT_FILE" "coding_compare_commit_counts" >> "$FUNC
 extract_function "$MONITOR_SCRIPT_FILE" "ready_failure_reason"          >> "$FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "ready_failure_evidence_detail" >> "$FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "ready_failure_base_drift"      >> "$FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "invalidate_ready_verdict"       >> "$FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "try_update_branch_from_base"   >> "$FUNC_FILE"
 
 # The monitor helper delegates the base-ref lookup to wavemill-common; the
@@ -94,6 +95,22 @@ STUB
 # shellcheck disable=SC1090
 source "$FUNC_FILE"
 
+BASE_BRANCH=main
+log() { :; }
+log_warn() { printf 'WARN: %s\n' "$*" >&2; }
+# Capture the production helper's write while preserving a complete result for
+# the idempotence and base-drift assertions below.
+write_stage_result() {
+  local dir="$1" status="$3" agent="$4" model="$5" notes="$6" artifacts="$7"
+  local tmp
+  tmp=$(mktemp)
+  jq --arg status "$status" --arg agent "$agent" --arg model "$model" \
+    --arg notes "$notes" --argjson artifacts "$artifacts" \
+    '.status = $status | .agent = $agent | .model = $model | .notes = $notes | .artifacts = $artifacts' \
+    "$dir/.ready-result.json" > "$tmp"
+  mv "$tmp" "$dir/.ready-result.json"
+}
+
 # ---------------------------------------------------------------------------
 # 1) ready_failure_base_drift — drift evidence gates the head move (HOK-3371).
 # ---------------------------------------------------------------------------
@@ -106,6 +123,70 @@ write_ready_fixture() {
   mkdir -p "$dir"
   printf '%s\n' "$json" > "$dir/.ready-result.json"
 }
+
+fixture_ready_result() {
+  local dir="$1" status="$2" verdict="$3"
+  mkdir -p "$dir"
+  node --import tsx "$REPO_DIR/tools/stage-result-cli.ts" write "$dir" ready "$status" \
+    --agent codex --model deepseek-v4-flash \
+    --artifacts "{\"type\":\"ready\",\"verdict\":\"$verdict\",\"prNumber\":42,\"mergeConflict\":\"CLEAN\",\"readyHeadSha\":\"head-42\",\"readyBaseSha\":\"base-1\"}" \
+    >/dev/null
+}
+
+dir="$TEST_TMP/invalidated-conflict"
+fixture_ready_result "$dir" completed pass
+invalidate_ready_verdict HOK-3513 "$dir" \
+  '{"conclusion":"pending","headSha":"head-42","mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","failing":[]}' conflict
+check_eq "conflict invalidation writes a failed Ready result" \
+  "$(jq -r '.status' "$dir/.ready-result.json")" "failed"
+check_eq "conflict invalidation preserves the prior agent" \
+  "$(jq -r '.agent' "$dir/.ready-result.json")" "codex"
+check_eq "conflict invalidation preserves the prior model" \
+  "$(jq -r '.model' "$dir/.ready-result.json")" "deepseek-v4-flash"
+check_eq "conflict invalidation records its cause" \
+  "$(jq -r '.artifacts.verdictInvalidationCause' "$dir/.ready-result.json")" "conflict"
+check_eq "conflict invalidation records live mergeability separately" \
+  "$(jq -r '[.artifacts.liveMergeable, .artifacts.liveMergeStateStatus] | join("/")' "$dir/.ready-result.json")" "CONFLICTING/DIRTY"
+check_eq "conflict invalidation keeps the pass's mergeConflict" \
+  "$(jq -r '.artifacts.mergeConflict' "$dir/.ready-result.json")" "CLEAN"
+check_contains "conflict invalidation explains the live conflict" \
+  "$(jq -r '.artifacts.verdictInvalidationReason' "$dir/.ready-result.json")" "PR #42 conflicts with main after Ready passed"
+check_eq "an invalidated live conflict is not base-drift evidence" \
+  "$(ready_failure_base_drift "$dir" "$TEST_TMP" main)" "no"
+before="$(shasum -a 256 "$dir/.ready-result.json" | awk '{print $1}')"
+invalidate_ready_verdict HOK-3513 "$dir" '{"conclusion":"fail","failing":["tests"]}' ci-failing
+check_eq "invalidation is a no-op on an already failed result" \
+  "$(shasum -a 256 "$dir/.ready-result.json" | awk '{print $1}')" "$before"
+node --import tsx "$REPO_DIR/tools/stage-result-cli.ts" write "$dir" ready running \
+  --agent codex --model deepseek-v4-flash --notes "Ready deferred" \
+  --artifacts '{"type":"ready","verdict":"pending","prNumber":42,"pendingReason":"cross-pr-guard-running"}' \
+  >/dev/null
+check_eq "a failed invalidation can transition to a running pending verdict" \
+  "$(jq -r '.artifacts.verdict' "$dir/.ready-result.json")" "pending"
+
+dir="$TEST_TMP/invalidated-running"
+fixture_ready_result "$dir" running pass
+before="$(shasum -a 256 "$dir/.ready-result.json" | awk '{print $1}')"
+invalidate_ready_verdict HOK-3513 "$dir" '{"conclusion":"pass","mergeStateStatus":"DIRTY"}' conflict
+check_eq "invalidation is a no-op on a running result" \
+  "$(shasum -a 256 "$dir/.ready-result.json" | awk '{print $1}')" "$before"
+
+dir="$TEST_TMP/invalidated-ci"
+fixture_ready_result "$dir" completed warn
+invalidate_ready_verdict HOK-3513 "$dir" '{"conclusion":"fail","headSha":"head-42","failing":["unit tests"]}' ci-failing
+check_eq "CI invalidation retains the established reason" \
+  "$(jq -r '.artifacts.verdictInvalidationReason' "$dir/.ready-result.json")" \
+  "CI regressed after ready pass: unit tests"
+check_eq "CI invalidation records its cause and failing checks" \
+  "$(jq -r '[.artifacts.verdictInvalidationCause, (.artifacts.ciFailingChecks | join(","))] | join("/")' "$dir/.ready-result.json")" \
+  "ci-failing/unit tests"
+
+dir="$TEST_TMP/invalidated-tend"
+fixture_ready_result "$dir" completed pass
+invalidate_ready_verdict HOK-3513 "$dir" '{"conclusion":"pass","headSha":"head-42"}' tend-rebase-conflict
+check_eq "tend invalidation names the rebase conflict" \
+  "$(jq -r '.artifacts.verdictInvalidationReason' "$dir/.ready-result.json")" \
+  "tend could not rebase PR #42 onto main after Ready passed"
 
 dir="$TEST_TMP/drift-conflict"
 write_ready_fixture "$dir" '{"artifacts":{"mergeConflict":"CONFLICTED"}}'

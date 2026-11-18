@@ -1112,9 +1112,12 @@ export function classifyReadyTask(
   }
 
   if (githubTruth.mergeable === 'CONFLICTING' || githubTruth.mergeStateStatus === 'DIRTY') {
+    const detail = `PR #${snapshot.prNumber} conflicts with its base`;
+    const decision = classifyFailure({ stage: 'ready', failureKind: 'rebase-conflict', detail });
     return {
-      kind: 'needs-user',
-      detail: `PR #${snapshot.prNumber} has real merge conflicts on GitHub.`,
+      kind: 'waiting-on-ci',
+      detail: `${detail}; ${decision.class} — the monitor's Ready invalidation runs the conflict resolver (conflict-remediation-relaunch pages on exhaustion).`,
+      autoRemediable: false,
     };
   }
 
