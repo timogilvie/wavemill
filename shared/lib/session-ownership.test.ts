@@ -29,6 +29,7 @@ import {
   readOwnershipRows,
   recordLaunch,
   resolveLineageForStageResult,
+  resolveRetryLineage,
   rowsForStage,
   stageForKind,
   type SessionOwnershipRow,
@@ -411,5 +412,30 @@ describe('one launch identity (HOK-3447)', () => {
     assert.equal(lineage.stageAttemptId, undefined);
     assert.equal(lineage.parentRunId, undefined);
     assert.equal(lineage.retryOf, undefined);
+  });
+
+  // protects: a relaunch's retryOf/parentRunId linking to the prior attempt
+  // it replaces (HOK-3476 Acceptance #2: "retryOf distinct from parent").
+  it('resolveRetryLineage links a relaunch to the prior attempt at the same stage', () => {
+    const dir = tempDir();
+    appendOwnershipRow(dir, {
+      sessionRef: 'attempt-a', harness: 'native', kind: 'coding', model: 'm',
+      runId: 'HOK-1:epoch:1', stageAttemptId: 'attempt-a-id', launchedAt: '2026-11-18T10:00:00.000Z',
+    });
+    const retry = resolveRetryLineage(dir, 'coding');
+    assert.equal(retry.parentRunId, 'HOK-1:epoch:1');
+    assert.equal(retry.retryOf, 'attempt-a-id');
+  });
+
+  it('resolveRetryLineage returns {} for a stage\'s first launch (no prior row)', () => {
+    assert.deepEqual(resolveRetryLineage(tempDir(), 'coding'), {});
+  });
+
+  it('resolveRetryLineage never fabricates from a different stage or a missing feature dir', () => {
+    const dir = tempDir();
+    appendOwnershipRow(dir, { sessionRef: 'planning-attempt', harness: 'native', kind: 'planning', model: 'm', launchedAt: '2026-11-18T10:00:00.000Z' });
+    assert.deepEqual(resolveRetryLineage(dir, 'coding'), {});
+    assert.deepEqual(resolveRetryLineage(undefined, 'coding'), {});
+    assert.deepEqual(resolveRetryLineage(null, 'coding'), {});
   });
 });

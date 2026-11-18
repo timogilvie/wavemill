@@ -101,7 +101,7 @@ import { resolveStageExecutionTruth } from '../executed-model-resolver.ts';
 import { equivalentOpenRouterModelIds } from '../openrouter-catalog.ts';
 import { getNativeContextManagementConfig, getNativePayloadCaptureConfig, getNativeReviewTimeoutConfig } from '../config.ts';
 import type { NormalizedPricing } from '../openrouter-catalog.ts';
-import { buildAttemptId, nativeLaunchKind, newSessionRef, recordLaunch } from '../session-ownership.ts';
+import { buildAttemptId, nativeLaunchKind, newSessionRef, recordLaunch, resolveRetryLineage } from '../session-ownership.ts';
 import { mintRunId, mintStageAttemptId } from '../attempt-identity.ts';
 import {
   buildExecutedIdentity,
@@ -820,12 +820,18 @@ export async function runNativeReview(
   const launchedAt = new Date();
   const launchKind = nativeLaunchKind();
   // HOK-3328: own the transcript's session before the loop starts.
-  const runId = mintRunId({
-    issue: options.issue,
-    runEpoch: process.env.WAVEMILL_RUN_EPOCH ?? '',
-    launchedAt,
-  });
+  // An ad-hoc review with no tracked issue (e.g. options.issue unset) has no
+  // task row to stamp a run id on; mintRunId requires one, so lineage stays
+  // unknown rather than fabricated from an empty issue.
+  const runId = options.issue
+    ? mintRunId({
+      issue: options.issue,
+      runEpoch: process.env.WAVEMILL_RUN_EPOCH ?? '',
+      launchedAt,
+    })
+    : undefined;
   const stageAttemptId = mintStageAttemptId();
+  const retryLineage = resolveRetryLineage(options.featureDir, 'review');
   recordLaunch(options.featureDir, {
     sessionRef: sessionId,
     harness: 'native',
@@ -836,6 +842,7 @@ export async function runNativeReview(
     attemptId: buildAttemptId(launchKind, null, launchedAt, launchToken),
     runId,
     stageAttemptId,
+    ...retryLineage,
   });
   const transcriptPath = makeTranscriptPath(repoDir, sessionId);
   const transcriptWriter = new TranscriptWriter({

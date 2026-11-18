@@ -132,7 +132,7 @@ import { reportPromptCacheHitRate } from './prompt-cache-detector.ts';
 import { getNativeContextManagementConfig, getNativePayloadCaptureConfig } from '../config.ts';
 import { equivalentOpenRouterModelIds, type NormalizedPricing } from '../openrouter-catalog.ts';
 import { logPromptUsage } from '../prompt-registry.ts';
-import { buildAttemptId, nativeLaunchKind, newSessionRef, recordLaunch } from '../session-ownership.ts';
+import { buildAttemptId, nativeLaunchKind, newSessionRef, recordLaunch, resolveRetryLineage } from '../session-ownership.ts';
 import { mintRunId, mintStageAttemptId } from '../attempt-identity.ts';
 import type { ResourceRef } from '../resource-registry.ts';
 import {
@@ -1242,6 +1242,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       launchedAt,
     });
     const stageAttemptId = mintStageAttemptId();
+    const retryLineage = resolveRetryLineage(featureDir, 'coding');
     recordLaunch(featureDir, {
       sessionRef: codingNativeSessionId,
       harness: 'native',
@@ -1253,6 +1254,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       cwd: options.wtDir,
       runId,
       stageAttemptId,
+      ...retryLineage,
     });
     const eventStreamPath = resolveSessionEventStreamPath(codingNativeSessionId, options.repoDir);
 

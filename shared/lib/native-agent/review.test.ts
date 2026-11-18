@@ -832,6 +832,48 @@ describe('native review', () => {
     }
   });
 
+  // protects: an ad-hoc review with no tracked issue (options.issue unset,
+  // e.g. a manual review invocation) must still launch — mintRunId throws on
+  // an empty issue, so a prior HOK-3476 change that called it unconditionally
+  // broke every issue-less review call.
+  it('launches a review with no tracked issue and records a launch row with no run id', async () => {
+    const repoDir = makeTempRepo();
+    const featureDir = mkdtempSync(join(tmpdir(), 'native-review-feature-'));
+    setReadyProvider();
+
+    nativeReviewTestUtils.setRunWavemillLoop(async (config) => {
+      const message = assistantMessage(JSON.stringify({ verdict: 'ready', codeReviewFindings: [] }));
+      emitCommonEvents(config, message);
+      return {
+        messages: [message],
+        stopReason: 'stop',
+        turnsCompleted: 1,
+        toolCallsExecuted: 0,
+        totalInputTokens: 10,
+        totalOutputTokens: 10,
+        totalCostUsd: 0,
+        wallClockMs: 1_000,
+      };
+    });
+
+    try {
+      // options.issue intentionally omitted.
+      const result = await runNativeReview(makeReviewContext(), repoDir, { featureDir });
+      assert.equal(result.verdict, 'ready');
+      const rows = readFileSync(join(featureDir, '.session-ownership.jsonl'), 'utf-8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      const launch = rows.find((row) => row.type === 'launch');
+      assert.ok(launch, 'expected a launch row');
+      assert.equal(launch?.runId, undefined);
+      assert.equal(typeof launch?.stageAttemptId, 'string');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(featureDir, { recursive: true, force: true });
+    }
+  });
+
   it('maps context-window pre-flight failures to a review blocker', async () => {
     const repoDir = makeTempRepo();
     setReadyProvider();

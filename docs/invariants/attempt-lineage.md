@@ -31,9 +31,8 @@ Every launch mints explicit, joinable run and stage-attempt identity before exec
 ## Enforcement
 
 This invariant is enforced by:
-- `tools/check-session-ownership.ts` - prevents bypass writing of lineage fields
-- `tools/check-executed-model-resolver.ts` - prevents hand-written lineage construction
-- Guards ensure lineage fields only flow through canonical writers
+- `tools/check-executed-model-resolver.ts` - rejects a hand-written `runId:`/`stageAttemptId:`/`parentRunId:`/`retryOf:` literal in TypeScript outside the canonical writers
+- `tools/check-session-ownership.ts` does not yet reject a bypassed lineage write in a jsonl-append call (plan Phase 5 follow-up; not implemented in this change)
 
 ## Related Files
 

@@ -524,6 +524,28 @@ export function resolveLineageForStageResult(launchRow: SessionOwnershipRow) {
 }
 
 /**
+ * Lineage linking a new stage launch to the attempt it replaces (HOK-3476).
+ * Call before recording the new launch row: reads the latest *prior* launch
+ * row for `stage`, and returns its identity as this launch's parent/retryOf.
+ * A stage's first launch has no prior row, so it returns `{}` — retryOf and
+ * parentRunId are never fabricated from a different stage or an absent row.
+ * `stateDir` is optional, like {@link recordLaunch}'s: a caller without a
+ * feature dir (e.g. an ad-hoc review with no tracked task) gets `{}`.
+ */
+export function resolveRetryLineage(
+  stateDir: string | null | undefined,
+  stage: ExecutionStage,
+): { parentRunId?: string; retryOf?: string } {
+  if (!stateDir) return {};
+  const prior = readLatestStageLaunch(stateDir, stage);
+  if (!prior) return {};
+  return {
+    ...(prior.runId ? { parentRunId: prior.runId } : {}),
+    ...(prior.stageAttemptId ? { retryOf: prior.stageAttemptId } : {}),
+  };
+}
+
+/**
  * The task's full launch history. Execution questions (which launch, which
  * attempt) must read this; only cost metering may collapse by `sessionRef`.
  */

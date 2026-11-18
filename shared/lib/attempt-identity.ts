@@ -44,13 +44,20 @@ export function mintStageAttemptId(): string {
   return randomUUID();
 }
 
+/** The minimal shape {@link projectTaskAttemptRef} reads from an ownership row. */
+export interface ProjectableOwnershipRow {
+  issue: string;
+  runId?: string;
+  stageAttemptId?: string;
+}
+
 /**
  * Project a TaskAttemptRef from an ownership row.
- * 
+ *
  * Returns undefined run_id for legacy rows with no runId field.
  * The stage_attempt_id is always present for new rows.
  */
-export function projectTaskAttemptRef(ownershipRow: any): TaskAttemptRef {
+export function projectTaskAttemptRef(ownershipRow: ProjectableOwnershipRow): TaskAttemptRef {
   return {
     task_id: ownershipRow.issue,
     run_id: ownershipRow.runId,

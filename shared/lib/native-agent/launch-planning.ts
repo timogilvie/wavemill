@@ -86,7 +86,7 @@ import {
 } from './planning-guards.ts';
 import { loadPricingTable } from '../pricing/model-pricing.ts';
 import { priceUsageUsd } from '../sdk-task-cost/price-overrides.ts';
-import { buildAttemptId, nativeLaunchKind, newSessionRef, recordLaunch } from '../session-ownership.ts';
+import { buildAttemptId, nativeLaunchKind, newSessionRef, recordLaunch, resolveRetryLineage } from '../session-ownership.ts';
 import { mintRunId, mintStageAttemptId } from '../attempt-identity.ts';
 
 const DEFAULT_HELPER_TIMEOUT_MS = 12 * 60 * 1000;
@@ -755,6 +755,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       launchedAt,
     });
     const stageAttemptId = mintStageAttemptId();
+    const retryLineage = resolveRetryLineage(featureDir, 'planning');
     recordLaunch(featureDir, {
       sessionRef: planningNativeSessionId,
       harness: 'native',
@@ -766,6 +767,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       cwd: options.wtDir,
       runId,
       stageAttemptId,
+      ...retryLineage,
     });
     const eventStreamPath = resolveSessionEventStreamPath(planningNativeSessionId, options.repoDir);
     const sessionStreamConfig: SessionStreamConfig = {
