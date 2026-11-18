@@ -174,6 +174,21 @@ export function executionStageForRow(row: Pick<SessionOwnershipRow, 'kind' | 'st
   return rowStage(row) ?? null;
 }
 
+/**
+ * The stage whose *own launch* a row records, or null (HOK-3447).
+ *
+ * {@link executionStageForRow} answers "which stage does this session's work
+ * and cost count toward?". A helper call does a stage's work — its cost
+ * counts there — but it is not the stage's launch: no helper call is the
+ * agent whose liveness the controller tracks. This predicate is the one used
+ * by {@link latestStageLaunch}, so "which launch is this?" never names a
+ * helper session.
+ */
+export function stageLaunchForRow(row: Pick<SessionOwnershipRow, 'kind' | 'stage'>): ExecutionStage | null {
+  if (row.kind.startsWith('helper:')) return null;
+  return executionStageForRow(row);
+}
+
 /** Rows grouped by {@link executionStageForRow}; rows no stage owns are left out. */
 export function groupByExecutionStage(rows: readonly SessionOwnershipRow[]): Map<ExecutionStage, SessionOwnershipRow[]> {
   const groups = new Map<ExecutionStage, SessionOwnershipRow[]>();
@@ -213,10 +228,22 @@ export function extractLaunchNonce(text: string): string | null {
   return match ? match[1] : null;
 }
 
-/** `<kind>@<head7>#<epoch-seconds>` — identical to the shell twin's format. */
-export function buildAttemptId(kind: OwnershipKind, head: string | null | undefined, at: Date): string {
+/**
+ * `<kind>@<head7>#<epoch-seconds>` — identical to the shell twin's format.
+ *
+ * `uniqueToken` is appended (`…-<token>`) by launch sites that can start twice
+ * within one second (native launches, HOK-3447): the whole-seconds stamp alone
+ * would give two real attempts one identity and let readers group them.
+ */
+export function buildAttemptId(
+  kind: OwnershipKind,
+  head: string | null | undefined,
+  at: Date,
+  uniqueToken?: string,
+): string {
   const head7 = typeof head === 'string' && /^[0-9a-f]{7,}$/i.test(head) ? head.slice(0, 7).toLowerCase() : 'nohead';
-  return `${kind}@${head7}#${Math.floor(at.getTime() / 1000)}`;
+  const base = `${kind}@${head7}#${Math.floor(at.getTime() / 1000)}`;
+  return uniqueToken ? `${base}-${uniqueToken}` : base;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -408,9 +435,63 @@ export function getSdkMeteringProjection(rows: readonly SessionOwnershipRow[]): 
   return [...byRef.values()].sort((a, b) => Date.parse(a.launchedAt) - Date.parse(b.launchedAt));
 }
 
+/**
+ * Canonical latest-stage-launch selection (HOK-3447).
+ *
+ * The one answer to "which recorded launch is this stage's current attempt?".
+ * It consumes the *full* launch history and never collapses rows by
+ * `sessionRef`: a repair that reused a legacy deterministic session id is
+ * still the newest attempt, and dropping it hid the repair from disposition
+ * and progress. `sessionRef` deduplication exists only for SDK metering
+ * ({@link getSdkMeteringProjection}).
+ *
+ * Ties (two launches in the same second) are broken by append order: the
+ * later row in the file wins, which is the launch that actually happened
+ * last. Rows are expected in {@link readLaunchHistory} order (launchedAt
+ * ascending, stable), and the comparison is done in place so any order with
+ * ties resolves to the last candidate.
+ */
+export function latestStageLaunch(
+  rows: readonly SessionOwnershipRow[],
+  stage: ExecutionStage,
+  query: StageLaunchQuery = {},
+): SessionOwnershipRow | null {
+  const harnesses = query.harnesses ? new Set(query.harnesses) : null;
+  let best: SessionOwnershipRow | null = null;
+  let bestMs = Number.NEGATIVE_INFINITY;
+  for (const row of rows) {
+    if (stageLaunchForRow(row) !== stage) continue;
+    if (harnesses && !harnesses.has(row.harness)) continue;
+    const ms = Date.parse(row.launchedAt);
+    if (!Number.isFinite(ms)) continue;
+    if (best !== null && ms < bestMs) continue;
+    best = row;
+    bestMs = ms;
+  }
+  return best;
+}
+
+/** Narrowing for {@link latestStageLaunch}. */
+export interface StageLaunchQuery {
+  /** Restrict the launch to these harnesses (omit for any harness). */
+  harnesses?: readonly SessionHarness[];
+}
+
+/** {@link latestStageLaunch} over one state directory's recorded history. */
+export function readLatestStageLaunch(
+  stateDir: string,
+  stage: ExecutionStage,
+  query: StageLaunchQuery = {},
+): SessionOwnershipRow | null {
+  return latestStageLaunch(readLaunchHistory([join(stateDir, SESSION_OWNERSHIP_FILE)]).rows, stage, query);
+}
+
+/**
+ * The task's full launch history. Execution questions (which launch, which
+ * attempt) must read this; only cost metering may collapse by `sessionRef`.
+ */
 export function readOwnershipFiles(files: readonly string[]): OwnershipReadResult {
-  const result = readLaunchHistory(files);
-  return { ...result, rows: getSdkMeteringProjection(result.rows) };
+  return readLaunchHistory(files);
 }
 
 /** Rows recorded in one state directory. */

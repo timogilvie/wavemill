@@ -20,6 +20,8 @@ import { readFileSync } from 'node:fs';
 import type { IngestUsageInput } from '@hokusai/costs';
 import { extractOwnedSessionUsageRows } from './sdk-task-cost/measure.ts';
 import {
+  latestStageLaunch,
+  readLatestStageLaunch,
   readOwnershipRows,
   rowsForStage,
   type OwnershipKind,
@@ -282,15 +284,11 @@ function selectHarness(
   stage: OwnershipStage,
   agentHint: string | undefined,
 ): SessionHarness | null {
-  const stageRows = rowsForStage(ownership, stage);
-  if (stageRows.length > 0) {
-    // Any row for this stage decides the harness. Multiple harnesses on one
-    // stage would be a bug upstream; the latest launch wins.
-    const latest = [...stageRows].sort(
-      (a, b) => Date.parse(b.launchedAt) - Date.parse(a.launchedAt),
-    )[0];
-    return latest?.harness ?? null;
-  }
+  // The canonical selector answers "which launch is this?" from lossless
+  // history: a repair that reused a legacy sessionRef is still the newest
+  // attempt, and a helper call that did the stage's work is never the launch.
+  const latest = latestStageLaunch(ownership, stage);
+  if (latest) return latest.harness;
   if (agentHint === 'claude') return 'claude-code';
   if (agentHint === 'codex') return 'codex';
   if (agentHint === 'native' || agentHint === 'native-openrouter') return 'native';
@@ -552,14 +550,13 @@ function resolveNativeExecutedModel(input: ResolveStageExecutedModelInput & {
   // A retry receives a fresh ownership attempt. A prior attempt can still
   // flush stream events after that retry begins, so timestamp filtering alone
   // is not sufficient: only the latest attempt's session refs may contribute
-  // to the current stage record.
+  // to the current stage record. The attempt is named by the one canonical
+  // selector (HOK-3447), over the full (never sessionRef-deduplicated) rows.
   const launchMs = (row: typeof ownedRows[number]) => {
     const ms = Date.parse(row.launchedAt);
     return Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY;
   };
-  const latestLaunch = ownedRows.reduce((latest, row) => (
-    launchMs(row) > launchMs(latest) ? row : latest
-  ));
+  const latestLaunch = latestStageLaunch(ownedRows, input.stage) ?? ownedRows[ownedRows.length - 1];
   const latestAttemptRows = ownedRows.filter((row) => row.attemptId === latestLaunch.attemptId);
   const ownedRefs = new Set(latestAttemptRows.map((row) => row.sessionRef));
   const latestLaunchMs = Math.max(...latestAttemptRows.map(launchMs));
@@ -746,18 +743,13 @@ export function latestLaunchAtForStage(
   featureDir: string,
   stage: OwnershipStage,
 ): string | null {
-  let rows: SessionOwnershipRow[];
   try {
-    rows = rowsForStage(readOwnershipRows(featureDir), stage);
+    // HOK-3447: the canonical selector over lossless history — a repair that
+    // reused a legacy sessionRef is still a newer attempt.
+    return readLatestStageLaunch(featureDir, stage)?.launchedAt ?? null;
   } catch {
     return null;
   }
-  const latest = rows
-    .map((row) => row.launchedAt)
-    .filter((at): at is string => typeof at === 'string')
-    .sort()
-    .pop();
-  return latest ?? null;
 }
 
 /**

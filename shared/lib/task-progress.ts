@@ -76,7 +76,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import {
   isPendingSessionRef,
-  readOwnershipRows,
+  readLatestStageLaunch,
   type OwnershipKind,
   type OwnershipStage,
   type SessionOwnershipRow,
@@ -1489,13 +1489,8 @@ export type StageAgentStage = 'planning' | 'coding' | 'review' | 'ready-remediat
 const OWNED_SESSION_MTIME_SLACK_MS = 60_000;
 const OWNED_SESSION_TAIL_BYTES = 64 * 1024;
 
-const STAGE_TO_OWNERSHIP_KIND: Record<StageAgentStage, readonly OwnershipKind[]> = {
-  planning: ['planning'],
-  coding: ['coding'],
-  review: ['review'],
-  'ready-remediation': ['ready-remediation'],
-  'conflict-resolution': ['conflict-resolution'],
-};
+/** Harnesses whose transcripts this reader can resolve from a launch row. */
+const OWNED_TRANSCRIPT_HARNESSES = ['claude-code', 'codex'] as const;
 
 export interface OwnedStageLaunch {
   sessionRef: string;
@@ -1508,22 +1503,13 @@ export interface OwnedStageLaunch {
 }
 
 /**
- * Newest `launch` ownership row whose kind maps to `stage`, filtered to
- * claude-code or codex harnesses. Native rows are ignored here — the native
- * session stream reader (HOK-3381) already covers them.
+ * The stage's current external-harness launch, from the one canonical
+ * selector (HOK-3447): newest stage-launch row over lossless history, filtered
+ * to claude-code or codex. Native rows are ignored here — the native session
+ * stream reader (HOK-3381) already covers them.
  */
 export function readOwnedStageLaunch(stateDir: string, stage: StageAgentStage): OwnedStageLaunch | null {
-  const kinds = new Set<OwnershipKind>(STAGE_TO_OWNERSHIP_KIND[stage]);
-  let best: SessionOwnershipRow | null = null;
-  let bestMs = -Infinity;
-  for (const row of readOwnershipRows(stateDir)) {
-    if (!kinds.has(row.kind)) continue;
-    if (row.harness !== 'claude-code' && row.harness !== 'codex') continue;
-    const ms = Date.parse(row.launchedAt);
-    if (!Number.isFinite(ms) || ms <= bestMs) continue;
-    bestMs = ms;
-    best = row;
-  }
+  const best = readLatestStageLaunch(stateDir, stage, { harnesses: OWNED_TRANSCRIPT_HARNESSES });
   if (!best) return null;
   return {
     sessionRef: best.sessionRef,
