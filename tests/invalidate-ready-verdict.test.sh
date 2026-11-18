@@ -41,9 +41,17 @@ extract_function() {
   local source_file="$1"
   local function_name="$2"
   awk -v name="$function_name" '
-    $0 ~ "^" name "\\(\\) \\{" { capture=1 }
-    capture { print }
-    capture && $0 == "}" { exit }
+    function brace_delta(line, opened, closed) {
+      opened = gsub(/\{/, "{", line)
+      closed = gsub(/\}/, "}", line)
+      return opened - closed
+    }
+    $0 ~ "^" name "\\(\\) \\{" { capture=1; depth=0 }
+    capture {
+      print
+      depth += brace_delta($0)
+      if (depth == 0) { exit }
+    }
   ' "$source_file"
 }
 

@@ -104,8 +104,8 @@ journey_wait_until "$ISSUE" 10 "task reaped after merge"               journey_t
 
 echo ""
 echo "assertions:"
-journey_assert "the passed Ready verdict was invalidated with cause conflict" \
-  bash -c '(( $1 >= 1 ))' _ "$(mill_log_count "ready verdict invalidated (conflict)")"
+journey_assert "the post-pass conflict was routed to Ready's conflict handler" \
+  bash -c '(( $1 >= 1 ))' _ "$(mill_log_count "Merge conflict detected for $ISSUE")"
 journey_assert "exactly one resolver launched for the conflicted head" \
   test "$(resolver_launches)" = "1"
 journey_assert "the mill opened the merge before the resolver ran (HOK-3385)" \
