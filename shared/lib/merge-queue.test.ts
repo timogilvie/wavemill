@@ -826,6 +826,8 @@ test('withTendRebaseConflictFacts fills tendRebaseConflictAt only for a valid re
       'a moved head invalidates the fact');
     assert.equal(withTendRebaseConflictFacts([input({ stateDir: undefined })])[0].tendRebaseConflictAt, undefined,
       'no state dir means no fact read');
+    assert.equal(withTendRebaseConflictFacts([input({ integrationBaseSha: undefined })])[0].tendRebaseConflictAt, undefined,
+      'without a live base read, an old same-head fact cannot invalidate Ready');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

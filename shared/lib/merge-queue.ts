@@ -310,7 +310,9 @@ export function readyVerdictInvalidation(
  */
 export function withTendRebaseConflictFacts(prs: readonly MergeQueueSelectPr[]): MergeQueuePr[] {
   return prs.map(({ stateDir, integrationBaseSha, ...pr }) => {
-    if (!stateDir || !pr.ci?.headSha) return pr;
+    // A rebase fact has meaning only against the live integration tip. When
+    // that read failed, do not let an old same-head fact withdraw Ready.
+    if (!stateDir || !pr.ci?.headSha || !integrationBaseSha) return pr;
     const fact = readValidTendAttemptFact(stateDir, {
       prHeadSha: pr.ci.headSha,
       integrationBaseSha,

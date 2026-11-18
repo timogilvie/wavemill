@@ -1,4 +1,6 @@
 # shellcheck shell=bash
+# Fixture provenance: hand-authored HOK-3513 golden-journey adapter, derived
+# from the 2026-11-15/16 HOK-3493/HOK-3382 post-Ready conflict incidents.
 # Fake coder for the post-Ready base conflict journey (HOK-3513).
 #
 # The first coding launch implements the task. Any later coding launch is the
