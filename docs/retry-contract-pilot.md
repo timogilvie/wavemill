@@ -138,3 +138,8 @@ build a general framework or mandate broad prompt changes.
 Final rerun: six contract checks pass in 63.5 seconds (seed 3570245532);
 latest monitor journey passes in 25 ticks / 236 seconds; shell checks pass
 877/877. No external deployment or model execution was performed.
+
+The second application is recorded in
+[Recovery refusal contract pilot](recovery-refusal-contract-pilot.md). It reuses
+this recipe on HOK-3512 and adds a fast in-process action oracle, then uses real
+journeys to expose integration defects that the pure oracle alone did not catch.

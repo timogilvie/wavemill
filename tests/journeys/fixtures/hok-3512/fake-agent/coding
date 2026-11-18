@@ -1,0 +1,10 @@
+# shellcheck shell=bash
+# Inject the saved-route mismatch only after the correctly routed agent runs.
+# A test operator must repair this evidence; no model substitution is automatic.
+if [[ ! -f "$FEATURE_DIR/refusal-injected" ]]; then
+  touch "$FEATURE_DIR/refusal-injected"
+  jq '.coding.agent = "codex"' "$FEATURE_DIR/.phase-config.json" > "$FEATURE_DIR/.phase-config.json.tmp"
+  mv "$FEATURE_DIR/.phase-config.json.tmp" "$FEATURE_DIR/.phase-config.json"
+  exit 143
+fi
+default_coding
