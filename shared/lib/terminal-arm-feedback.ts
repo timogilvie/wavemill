@@ -17,6 +17,7 @@ import { buildTaskDescriptor } from './task-descriptor-builder.ts';
 import { attachEligibility, attachWorkflowCostMetadata, attachTaskCostSummaries, attachModelIdentityAttribution } from './eval-record-builder.ts';
 import { getEffectiveRegistry, resolveModelRegistryKey } from './model-registry.ts';
 import { meterWorkflowCost, type MeteredWorkflowCost } from './sdk-task-cost/meter.ts';
+import { fleetCauseForAttempt, readFleetIncidents } from './fleet-incident-correlation.ts';
 
 export interface TerminalArmFeedbackOptions {
   repoDir: string;
@@ -52,9 +53,21 @@ export async function prepareTerminalArmFeedback(
     if (!failureKind) return unchanged;
     // HOK-3382: a settled-without-result attempt's own exit evidence decides
     // harness vs model fault; absent evidence keeps the historical fallback.
-    const exitEvidence = readStageResultSync(featureDir, ownershipStage)?.artifacts?.exitEvidence ?? null;
+    const stageResult = readStageResultSync(featureDir, ownershipStage);
+    const exitEvidence = stageResult?.artifacts?.exitEvidence ?? null;
+    const settledAt = typeof stageResult?.finishedAt === 'string'
+      ? Date.parse(stageResult.finishedAt)
+      : (typeof stageResult?.startedAt === 'string' ? Date.parse(stageResult.startedAt) : NaN);
+    const fleetCause = fleetCauseForAttempt({
+      incidents: readFleetIncidents(resolve(options.repoDir, '.wavemill')),
+      taskId: evalTaskStateKey(record.issueId, record.challengeSide),
+      stage: ownershipStage,
+      attemptId: typeof stageResult?.runId === 'string' ? stageResult.runId : undefined,
+      at: Number.isFinite(settledAt) ? settledAt : undefined,
+    });
     const faultClass = classifyArmFault({ failureKind, detail: termination.detail, budgetExhausted,
-      timeSplit: resolveNativeStageTimeSplit(budgetExhausted, { featureDir }) ?? undefined, exitEvidence });
+      timeSplit: resolveNativeStageTimeSplit(budgetExhausted, { featureDir }) ?? undefined, exitEvidence,
+      ...(fleetCause ? { fleetCause: { fleetFaultClass: fleetCause.fleetFaultClass } } : {}) });
     const worktreePath = lookup.worktreeDir ?? options.repoDir;
     const branchName = options.branchName ?? '';
     const evidence = resolveStageExecutedModel({ featureDir, stage: ownershipStage, worktreePath, branchName, repoDir: options.repoDir });
@@ -82,7 +95,8 @@ export async function prepareTerminalArmFeedback(
     }, record.challengeSide ?? 'primary', record.timestamp);
     const recovered: EvalRecord = {
       ...record,
-      metadata: { ...record.metadata, arm_termination: { ...(record.metadata?.arm_termination as object ?? {}), faultClass, qualitySignalEligible: isModelQualitySignal(faultClass) } },
+      metadata: { ...record.metadata, arm_termination: { ...(record.metadata?.arm_termination as object ?? {}), faultClass, qualitySignalEligible: isModelQualitySignal(faultClass),
+        ...(fleetCause ? { fleetIncident: fleetCause } : {}) } },
       originalPrompt: readFileSync(packet.path, 'utf8'),
       challengeStage: stage,
       routingDecision: convertToRoutingDecision(executionRoute),

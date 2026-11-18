@@ -8,6 +8,94 @@
  */
 
 import { ensureCleanTree } from './git.ts';
+
+/**
+ * Categories a GitHub call failure can fall into. Matches the shape of
+ * {@link './linear.ts'} `ErrorCategory` so the two dependencies share a single
+ * vocabulary; the fleet-incident correlator (HOK-3509) keys on this.
+ */
+export type GitHubCallFailureCategory =
+  | 'rate_limit'
+  | 'network'
+  | 'timeout'
+  | 'auth'
+  | 'not_found'
+  | 'server'
+  | 'unknown';
+
+export interface GitHubCallFailureClassification {
+  category: GitHubCallFailureCategory;
+  isTransient: boolean;
+}
+
+/**
+ * The one classifier for GitHub call failures (HOK-3509). It reads error
+ * text or an Error-like object and names a category from the shared
+ * vocabulary above. Rate-limit detection matches only GitHub-shaped text:
+ * `API rate limit exceeded`, `secondary rate limit`, `GraphQL: ... rate
+ * limit`, `abuse detection`, or HTTP 403/429 together with
+ * `x-ratelimit`/`api.github.com`/`gh:`. No private regex lives outside this
+ * function.
+ */
+export function classifyGitHubCallFailure(
+  input: unknown,
+): GitHubCallFailureClassification {
+  const text = extractErrorText(input);
+  if (!text) return { category: 'unknown', isTransient: false };
+
+  // Rate limit — GitHub-shaped, never generic 429 in isolation.
+  if (
+    /API rate limit exceeded/i.test(text)
+    || /secondary rate limit/i.test(text)
+    || /GraphQL:[^\n]*rate limit/i.test(text)
+    || /abuse detection/i.test(text)
+    || ((/\b(?:HTTP\s+)?(?:403|429)\b/.test(text))
+      && (/x-ratelimit/i.test(text)
+        || /api\.github\.com/i.test(text)
+        || /gh:/i.test(text)))
+  ) {
+    return { category: 'rate_limit', isTransient: true };
+  }
+
+  if (/\bHTTP 401\b|\bHTTP 403\b|permission denied|unauthorized|requires authentication|Bad credentials/i.test(text)) {
+    return { category: 'auth', isTransient: false };
+  }
+  if (/\bHTTP 404\b|Not Found|does not exist/i.test(text)) {
+    return { category: 'not_found', isTransient: false };
+  }
+  if (/\bHTTP 5\d\d\b|server error|bad gateway|service unavailable|gateway timeout|internal server error/i.test(text)) {
+    return { category: 'server', isTransient: true };
+  }
+  if (/timeout|timed out|ETIMEDOUT|EAI_AGAIN/i.test(text)) {
+    return { category: 'timeout', isTransient: true };
+  }
+  if (/ECONNRESET|ECONNREFUSED|ENETUNREACH|socket hang up|network/i.test(text)) {
+    return { category: 'network', isTransient: true };
+  }
+  return { category: 'unknown', isTransient: false };
+}
+
+function extractErrorText(value: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (value instanceof Error) {
+    const err = value as Error & { stderr?: unknown };
+    const stderr = typeof err.stderr === 'string'
+      ? err.stderr
+      : (err.stderr as { toString?: () => string } | undefined)?.toString?.() ?? '';
+    return `${err.message ?? ''}\n${stderr}`;
+  }
+  if (typeof value === 'object') {
+    const object = value as { message?: unknown; stderr?: unknown; toString?: () => string };
+    const message = typeof object.message === 'string' ? object.message : '';
+    const stderr = typeof object.stderr === 'string'
+      ? object.stderr
+      : (object.stderr as { toString?: () => string } | undefined)?.toString?.() ?? '';
+    if (message || stderr) return `${message}\n${stderr}`;
+    try { return String(value); } catch { return ''; }
+  }
+  return String(value);
+}
 import { runBuildCheck, type BuildCheckConfig } from './checks.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
 import { recordMillLabelWrite } from './label-write-ledger.ts';

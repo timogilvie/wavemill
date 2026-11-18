@@ -32,6 +32,7 @@ import type { ArmFaultClass } from './arm-failure-taxonomy.ts';
 import { classifyArmFault, isModelQualitySignal } from './arm-failure-taxonomy.ts';
 import type { CiFailureCategory } from './ci-failure-classifier.ts';
 import { classifyProviderError } from './native-agent/provider-error-classifier.ts';
+import { classifyGitHubCallFailure } from './github.ts';
 
 export type FailureClass = 'terminal' | 'code-failure' | 'retryable';
 
@@ -98,6 +99,8 @@ export interface FailureEvidence {
   job?: JobEvidence | null;
   /** Proof of which model's output the failure belongs to (HOK-3143 shape). */
   executionEvidence?: ExecutionEvidence | null;
+  /** A current fleet incident that owns this settled attempt (HOK-3509). */
+  fleetCause?: { fleetFaultClass: 'harness-fault' | 'provider-fault' } | null;
 }
 
 export interface FailureDecision {
@@ -439,6 +442,11 @@ export function detectFailureKind(detail: string | null | undefined, handoffReas
   for (const [pattern, kind] of NATIVE_PRE_PROVIDER_SIGNATURES) {
     if (pattern.test(lower)) return kind;
   }
+  // HOK-3509: a GitHub API rate-limit must not read as a model provider rate
+  // limit. Run the shared classifier before the provider classifier.
+  if (classifyGitHubCallFailure(text).category === 'rate_limit') {
+    return 'github-rate-limited';
+  }
   const providerKind = text ? classifyProviderError(text).kind : 'provider-unknown-error';
   if (providerKind !== 'provider-unknown-error' && providerKind !== 'provider-response-incomplete') {
     return providerKind;
@@ -535,6 +543,7 @@ const NEXT_ACTIONS: Readonly<Record<string, string>> = {
   'planning-artifact-invalid': 'the plan artifact failed structural validation after one repair turn. Inspect the recorded validationError; the model for the next attempt is Hokusai\'s decision',
   'review-no-output': 'the review model finished without emitting findings or a terminal verdict. Relaunch the review phase on a stronger reviewer',
   'coding-exited-without-result': 'the coding agent settled without recording a terminal result (durable commits preserved) — either it exited, or a harness tool held the loop until the recovery controller settled it. Relaunch coding to resume from the last durable commit',
+  'github-rate-limited': 'the GitHub API rate-limit is exhausted; this is an external dependency fault, not a model/provider signal. The mill retries it with backoff; wait for the window to reset or top up CI minutes',
   'native-unclassified': 'unrecognised failure signature: the mill retries it with backoff and one fresh relaunch before escalating. Inspect the recorded detail if it escalates',
 };
 
@@ -574,9 +583,10 @@ function attributionFor(
   failureKind: string,
   detail: string | null | undefined,
   executionEvidence: ExecutionEvidence | null | undefined,
+  fleetCause?: FailureEvidence['fleetCause'],
 ): FailureAttribution {
   if (!executionEvidence?.model.trim()) return 'unattributed';
-  return isModelQualitySignal(classifyArmFault({ failureKind, detail })) ? 'model' : 'unattributed';
+  return isModelQualitySignal(classifyArmFault({ failureKind, detail, ...(fleetCause ? { fleetCause } : {}) })) ? 'model' : 'unattributed';
 }
 
 /**
@@ -600,7 +610,7 @@ export function classifyFailure(evidence: FailureEvidence): FailureDecision {
       cause,
       rationale: `allowlisted terminal cause ${cause.code}: ${cause.reason}`,
       nextAction: nextActionFor(failureKind),
-      attribution: attributionFor(failureKind, detail, evidence.executionEvidence),
+      attribution: attributionFor(failureKind, detail, evidence.executionEvidence, evidence.fleetCause),
     };
   }
 
@@ -620,7 +630,7 @@ export function classifyFailure(evidence: FailureEvidence): FailureDecision {
             ? 'CI classified the failure as locally replayable'
             : `${failureKind} is a recognised code failure`,
         nextAction: 'remediate the failing change from the recorded excerpt, then push a new head',
-        attribution: attributionFor(failureKind, detail, evidence.executionEvidence),
+        attribution: attributionFor(failureKind, detail, evidence.executionEvidence, evidence.fleetCause),
       };
     }
   }
@@ -635,7 +645,7 @@ export function classifyFailure(evidence: FailureEvidence): FailureDecision {
         ? 'unrecognised failure: retry by default (HOK-3176)'
         : `${failureKind} is not on the terminal allowlist: retry by default (HOK-3176)`,
     nextAction: nextActionFor(failureKind),
-    attribution: attributionFor(failureKind, detail, evidence.executionEvidence),
+    attribution: attributionFor(failureKind, detail, evidence.executionEvidence, evidence.fleetCause),
   };
 }
 

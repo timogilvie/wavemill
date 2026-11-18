@@ -85,6 +85,13 @@ export const INCIDENT_ROOT_CAUSE_CLASSES = [
   // HOK-3254: node_modules has drifted from the lockfile; a bump landed but
   // nothing reinstalled, so the mill is running against an older install.
   'stale_dependency_install',
+  // HOK-3509: one fleet incident covers N task failures that share a cause
+  // key `(endpoint, faultClass)`. `taskId` is null and the affected tasks
+  // live under `metadata.fleet` / `metadata.knownIssueIds`.
+  'fleet_shared_endpoint_failure',
+  // HOK-3509: a remote dependency (e.g. the GitHub API) is rate-limiting
+  // every caller. The `remote_` prefix keeps `isRemoteRootCauseClass` true.
+  'remote_dependency_rate_limited',
   'unclassified_local_failure',
 ] as const;
 
@@ -443,7 +450,34 @@ export interface IncidentMetadata {
   recurrence?: IncidentRecurrenceMetadata;
   /** Lifecycle transition sync state for the linked Linear issue (HOK-3035). */
   lifecycleSync?: IncidentLifecycleSyncMetadata;
+  /**
+   * HOK-3509: fleet correlation payload. Present only on fleet records
+   * (`taskId: null`). The store keys the fingerprint on `fleet.causeKey` so
+   * the identity stays stable while the `attempts` evidence list grows.
+   */
+  fleet?: FleetIncidentMetadata;
   [key: string]: unknown;
+}
+
+/**
+ * HOK-3509: metadata the correlation module writes onto a fleet incident.
+ * `causeKey` is the stable identity; it is a string concatenation of the
+ * endpoint and the fault class so two independent callers that compute the
+ * same key always collide on the same fingerprint.
+ */
+export interface FleetIncidentMetadata {
+  /** `<endpoint>::<faultClass>`. The cause key the store hashes. */
+  causeKey: string;
+  /** The model / endpoint / dependency the cause names. */
+  endpoint: string;
+  /** How the endpoint was proven. */
+  endpointEvidence: 'direct' | 'launch-intent' | 'dependency';
+  /** The underlying fault class the attempts share. */
+  faultClass: string;
+  /** The class written onto per-attempt failure rows for Hokusai. */
+  fleetFaultClass: 'harness-fault' | 'provider-fault';
+  /** Distinct `(taskId, attemptId)` pairs the fleet covers. */
+  attempts: Array<{ taskId: string; attemptId: string; stage?: string; at?: string }>;
 }
 
 export interface IncidentRecord {

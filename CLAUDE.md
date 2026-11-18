@@ -204,4 +204,4 @@ The `permissions` section in `.wavemill-config.json` configures auto-approval fo
 
 ### Current incident disposition
 
-- **Current incident disposition** — `shared/lib/incident-filing-reconciler.ts` owns read-only job currentness; detection, projection, filing and retry draining consume `reconcileIncidentForFiling`. Guard: `tools/check-incident-currentness.ts`. → [docs/invariants/incident-currentness.md](docs/invariants/incident-currentness.md)
+- **Current incident disposition** — `incident-filing-reconciler.ts` gates filing (`reconcileIncidentForFiling`); `fleet-incident-correlation.ts` (HOK-3509) groups by `(endpoint, faultClass)`. Guard: `tools/check-incident-currentness.ts`. → [docs/invariants/incident-currentness.md](docs/invariants/incident-currentness.md)

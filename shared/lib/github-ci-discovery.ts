@@ -12,6 +12,7 @@ import { execSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { cachedNameWithOwner, cachedRequiredChecks } from './session-gh-cache.ts';
+import { classifyGitHubCallFailure } from './github.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -85,9 +86,8 @@ async function retryWithBackoff<T>(
         throw err;
       }
 
-      // Check if this is a transient error
-      const isTransient =
-        /timeout|ECONNRESET|ECONNREFUSED|rate limit/i.test((err as Error).message);
+      // HOK-3509: route through the single shared classifier.
+      const isTransient = classifyGitHubCallFailure(err).isTransient;
 
       if (!isTransient || attempt === maxAttempts) {
         throw err;
