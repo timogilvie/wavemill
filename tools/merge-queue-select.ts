@@ -1,11 +1,11 @@
 #!/usr/bin/env -S npx tsx
 
 import fs from 'node:fs';
-import { planMergeQueueTick } from '../shared/lib/merge-queue.ts';
-import type { MergeQueueConfigResolved, MergeQueuePr } from '../shared/lib/merge-queue.ts';
+import { planMergeQueueTick, withTendRebaseConflictFacts } from '../shared/lib/merge-queue.ts';
+import type { MergeQueueConfigResolved, MergeQueueSelectPr } from '../shared/lib/merge-queue.ts';
 
 interface CliInput {
-  readyPrs: MergeQueuePr[];
+  readyPrs: MergeQueueSelectPr[];
   now: string;
   config: MergeQueueConfigResolved;
 }
@@ -22,4 +22,10 @@ if (args[0] !== '--input' || !args[1]) {
 }
 
 const input = readInput(args[1]);
-console.log(JSON.stringify(planMergeQueueTick(input), null, 2));
+// HOK-3513: the planner never reads files. The tend rebase-conflict fact is
+// filled here, from the task state dir each PR input carries.
+const plan = planMergeQueueTick({
+  ...input,
+  readyPrs: withTendRebaseConflictFacts(input.readyPrs),
+});
+console.log(JSON.stringify(plan, null, 2));

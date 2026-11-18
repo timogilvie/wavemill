@@ -79,3 +79,58 @@ test('the suppression marker exempts one line', () => {
   const findings = checkGuardSource(READY_FAILURE_POLICY_GUARD, 'tools/observer.ts', suppressed);
   assert.deepEqual(findings, []);
 });
+
+// --- HOK-3513: no conflict park outside the Ready launcher ---
+
+test('a reintroduced watchdog conflict park fires', () => {
+  const bogus = [
+    'export function classifyReadyTask(snapshot, githubTruth) {',
+    "  if (githubTruth.mergeable === 'CONFLICTING' || githubTruth.mergeStateStatus === 'DIRTY') {",
+    "    return { kind: 'needs-user', detail: 'PR has real merge conflicts on GitHub.' };",
+    '  }',
+    '}',
+  ].join('\n');
+  const findings = checkGuardSource(READY_FAILURE_POLICY_GUARD, 'shared/lib/ready-watchdog.ts', bogus);
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].pattern, 'conflict-park-outside-ready-launcher');
+  assert.equal(findings[0].line, 2);
+});
+
+test("the Ready launcher's own conflict handling is exempt", () => {
+  const launcher = [
+    'launch_ready_phase() {',
+    '  if [[ "$merge_status" == "CONFLICTED" ]]; then',
+    '    escalate_operator_attention "$state_dir" exhausted conflict-remediation-relaunch "$reason" || true',
+    '    set_window_attention_state "$win" needs-user',
+    '  fi',
+    '}',
+  ].join('\n');
+  assert.deepEqual(checkGuardSource(READY_FAILURE_POLICY_GUARD, 'shared/lib/wavemill-monitor.sh', launcher), []);
+});
+
+test('a conflict read with no park near it is clean', () => {
+  const predicate = [
+    'export function readyVerdictInvalidation(pr) {',
+    "  if (pr.ci?.mergeStateStatus === 'DIRTY') return 'conflict';",
+    '  return null;',
+    '}',
+  ].join('\n');
+  assert.deepEqual(checkGuardSource(READY_FAILURE_POLICY_GUARD, 'shared/lib/merge-queue.ts', predicate), []);
+});
+
+test('a park far below the conflict read is a different decision', () => {
+  const distant = [
+    "const conflicted = githubTruth.mergeable === 'CONFLICTING';",
+    ...Array.from({ length: 20 }, (_, i) => `const filler${i} = ${i};`),
+    "setWindowAttentionState(win, 'needs-user');",
+  ].join('\n');
+  assert.deepEqual(checkGuardSource(READY_FAILURE_POLICY_GUARD, 'shared/lib/ready-watchdog.ts', distant), []);
+});
+
+test('prose that names a conflict and a park never fires', () => {
+  const prose = [
+    '# A CONFLICTING PR used to park at needs-user; HOK-3513 routes it through the invalidation.',
+    '# A DIRTY read now re-runs Ready (mark_ready_stale is not its end state).',
+  ].join('\n');
+  assert.deepEqual(checkGuardSource(READY_FAILURE_POLICY_GUARD, 'shared/lib/wavemill-monitor.sh', prose), []);
+});
