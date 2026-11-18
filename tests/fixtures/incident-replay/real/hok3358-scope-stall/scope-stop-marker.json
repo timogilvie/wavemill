@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "kind": "review-scope-stop",
+  "headSha": "0000000000000000000000000000000000003358",
+  "writtenAt": "2026-11-02T11:18:00.000Z",
+  "reason": "review scope guard refused staged/committed paths",
+  "detail": {
+    "findings": [
+      {
+        "category": "scope-violation",
+        "offendingPath": "shared/lib/wavemill-monitor.sh",
+        "message": "Unexpected review change outside task scope: shared/lib/wavemill-monitor.sh (M, working-tree)."
+      }
+    ],
+    "offendingPaths": ["shared/lib/wavemill-monitor.sh"],
+    "reason": "review scope guard refused staged/committed paths"
+  },
+  "condition": {
+    "head": "0000000000000000000000000000000000003358",
+    "expiresOn": ["head", "operator-event"]
+  }
+}

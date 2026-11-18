@@ -8208,32 +8208,22 @@ stage_failure_decision() {
     local scope_stop_file="$feature_dir/.review-scope-stop.json"
     if [[ -f "$scope_stop_file" ]]; then
       # Read the marker and check if it's valid
-      local marker_json head_sha findings offending_paths code_failure_excerpt
+      local marker_json head_sha findings offending_paths code_failure_excerpt marker_detail scope_fp
       if marker_json="$(marker_read "$scope_stop_file" 2>/dev/null)" && [[ -n "$marker_json" ]]; then
         if ! marker_is_stale "$scope_stop_file" "$(git rev-parse HEAD 2>/dev/null || echo "")"; then
-          # Valid scope stop marker found, synthesize code-failure decision
+          # Valid scope stop marker found, synthesize code-failure decision.
           head_sha="$(jq -r '.headSha // empty' <<<"$marker_json" 2>/dev/null || echo "")"
           findings="$(jq -c '.detail.findings // []' <<<"$marker_json" 2>/dev/null || echo "[]")"
           offending_paths="$(jq -c '.detail.offendingPaths // []' <<<"$marker_json" 2>/dev/null || echo "[]")"
-          
-          # Build code failure excerpt from findings
-          code_failure_excerpt=""
-          local path msg
-          while IFS= read -r finding; do
-            path="$(jq -r '.offendingPath // empty' <<<"$finding" 2>/dev/null || echo "")"
-            msg="$(jq -r '.message // empty' <<<"$finding" 2>/dev/null || echo "")"
-            if [[ -n "$path" && -n "$msg" ]]; then
-              code_failure_excerpt="${code_failure_excerpt}${code_failure_excerpt:+; }$path: $msg"
-            elif [[ -n "$path" ]]; then
-              code_failure_excerpt="${code_failure_excerpt}${code_failure_excerpt:+; }$path"
-            fi
-          done < <(jq -c '.[]' <<<"$findings" 2>/dev/null || true)
-          
-          # Return early with code-failure decision
-          printf '{"class":"code-failure","failureKind":"review-scope-stop","codeFailureExcerpt":"%s","rationale":"review scope guard refused staged/committed paths","nextAction":"coding stage must either narrow the diff to the declared scope or widen the plan'\''s Scope In","attribution":"unattributed","detail":"%s","handoffReason":"","envelopeCause":"","envelopeModel":"","fingerprint":"%s"}\n' \
-            "${code_failure_excerpt:-"review scope violation"}" \
-            "$(jq -r '.detail // "review scope violation"' <<<"$marker_json" 2>/dev/null || echo "review scope violation")" \
-            "$(printf '%s|%s|%s' "$head_sha" "$findings" "$offending_paths" | cksum | awk '{print $1}')"
+          code_failure_excerpt="$(jq -r '[.detail.findings[]? | if (.message // empty) == "" then (.offendingPath // empty) else "\(.offendingPath // ""): \(.message)" end | select(length>0)] | join("; ")' <<<"$marker_json" 2>/dev/null || echo "")"
+          [[ -n "$code_failure_excerpt" ]] || code_failure_excerpt="review scope violation"
+          marker_detail="$(jq -r '.detail.reason // .reason // "review scope violation"' <<<"$marker_json" 2>/dev/null || echo "review scope violation")"
+          scope_fp="$(printf '%s|%s|%s' "$head_sha" "$findings" "$offending_paths" | cksum | awk '{print $1}')"
+          jq -nc \
+            --arg excerpt "$code_failure_excerpt" \
+            --arg detail "$marker_detail" \
+            --arg fingerprint "$scope_fp" \
+            '{class:"code-failure",failureKind:"review-scope-stop",codeFailureExcerpt:$excerpt,rationale:"review scope guard refused staged/committed paths",nextAction:"coding stage must either narrow the diff to the declared scope or widen the plan'\''s Scope In",attribution:"unattributed",detail:$detail,handoffReason:"",envelopeCause:"",envelopeModel:"",fingerprint:$fingerprint}'
           return 0
         fi
       fi
@@ -8437,6 +8427,35 @@ stage_failure_owned_by_bucket() {
 # head or an operator event expires it: escalation never latches.
 #
 # Coding retries replay the persisted execution contract directly, retaining
+# Archive the current review scope baseline and clear it for regeneration.
+# Called when returning to coding from a scope stop so the fresh review runs
+# against a baseline rebuilt from the new coding head. The previous baseline is
+# appended to .review-scope-baseline.history.jsonl before removal. All JSON is
+# built via jq so quotes/newlines in `reason` cannot corrupt the history file.
+archive_review_scope_baseline() {
+  local feature_dir="$1" reason="${2:-scope stop remediation}"
+  local baseline_path="$feature_dir/.review-scope-baseline.json"
+  local history_path="$feature_dir/.review-scope-baseline.history.jsonl"
+  local timestamp baseline_content entry
+  [[ -f "$baseline_path" ]] || { log_info "No review-scope baseline to archive at $baseline_path"; return 0; }
+  baseline_content="$(cat "$baseline_path" 2>/dev/null || true)"
+  [[ -n "$baseline_content" ]] || { log_info "Empty review-scope baseline at $baseline_path; nothing to archive"; rm -f "$baseline_path" 2>/dev/null || true; return 0; }
+  timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  if ! entry="$(printf '%s' "$baseline_content" | jq -c \
+    --arg replacedAt "$timestamp" --arg reason "$reason" \
+    '{replacedAt:$replacedAt,reason:$reason,baseline:.}' 2>/dev/null)"; then
+    log_warn "archive_review_scope_baseline: could not encode baseline at $baseline_path; leaving file in place"
+    return 1
+  fi
+  printf '%s\n' "$entry" >>"$history_path" || {
+    log_warn "archive_review_scope_baseline: could not append to $history_path"
+    return 1
+  }
+  rm -f "$baseline_path" 2>/dev/null || true
+  log_info "Archived review-scope baseline to history and removed $baseline_path"
+  return 0
+}
+
 # the approved plan and implementation. An unavailable contract stays failed
 # under this same bounded budget. Other stages use their existing phase handoff.
 #
@@ -24938,31 +24957,3 @@ while :; do
     poll_sleep "$POLL_SECONDS"
   fi
 done
-
-# Archive the current review scope baseline and clear it for regeneration.
-# Called when returning to coding from a scope stop.
-archive_review_scope_baseline() {
-  local feature_dir="$1" reason="$2"
-  local baseline_path="$feature_dir/.review-scope-baseline.json"
-  local history_path="$feature_dir/.review-scope-baseline.history.jsonl"
-  local timestamp
-  timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  
-  if [[ -f "$baseline_path" ]]; then
-    # Read the existing baseline
-    local baseline_content
-    baseline_content="$(cat "$baseline_path" 2>/dev/null || true)"
-    if [[ -n "$baseline_content" ]]; then
-      # Archive it to history
-      printf '{"replacedAt":"%s","reason":"%s","baseline":%s}\n' \
-        "$timestamp" "$reason" "$baseline_content" >> "$history_path" 2>/dev/null || true
-      # Remove the current baseline
-      rm -f "$baseline_path" 2>/dev/null || true
-      log_info "Archived review-scope baseline to history and removed $baseline_path"
-      return 0
-    fi
-  fi
-  
-  log_info "No review-scope baseline to archive at $baseline_path"
-  return 0
-}

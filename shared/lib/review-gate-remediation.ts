@@ -85,10 +85,7 @@ export function decideReviewGateRemediation(
     return {
       disposition: 'code-failure',
       deliverTo: 'agent',
-      deliveryPayload: buildRemediationPayload(
-        agentFinding,
-        evidence.planScopeAllowlist || [],
-      ),
+      deliveryPayload: { finding: agentFinding },
     };
   }
 
@@ -200,10 +197,3 @@ export function dispositionFromReviewArtifactSignals(
   return 'terminal';
 }
 
-function buildRemediationPayload(
-  finding: ReviewGateFinding,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  _planAllowlist: Array<{ path: string; reason: string; source: string }>,
-): AgentRemediationPayload {
-  return { finding };
-}

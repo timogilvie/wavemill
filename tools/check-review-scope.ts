@@ -66,43 +66,44 @@ runTool({
         writeBaseline: true,
       });
 
-      // Write the typed stop record if this is a scope violation
+      // Write the typed stop record if this is a scope violation. Failing to
+      // record it would silently reproduce the HOK-3358 stall (the mill reads
+      // this marker to return the task to coding), so a resolve/write failure
+      // is a hard tool-infrastructure error (exit 2), not a soft warning.
       if (result.status === 'fail' && exitCodeForResult(result) === REVIEW_SCOPE_GUARD_EXIT_POLICY) {
         const stateDir = args['state-dir'] as string | undefined;
         const featureDir = stateDir ?? resolveTaskFeatureDir(repoDir);
-        
+
         if (!featureDir) {
-          console.warn('Warning: Could not resolve feature directory for scope stop marker');
-        } else {
-          try {
-            const head = execShellCommand('git rev-parse HEAD', { cwd: repoDir }).trim();
-            
-            // Build findings from scope violations
-            const findings: ReviewGateFinding[] = result.findings
-              .filter(f => f.severity === 'blocker' && f.kind === 'violation' && f.category === 'review-scope')
-              .map(finding => ({
-                category: 'scope-violation',
-                offendingPath: finding.path,
-                message: finding.message,
-              }));
-            
-            if (findings.length > 0) {
-              writeMarker(
-                { path: join(featureDir, '.review-scope-stop.json'), kind: 'review-scope-stop' },
-                {
-                  headSha: head,
-                  reason: 'review scope guard refused staged/committed paths',
-                  detail: { findings, offendingPaths: result.outOfScopePaths },
-                  condition: {
-                    head,
-                    expiresOn: ['head', 'operator-event'],
-                  },
-                },
-              );
-            }
-          } catch (error) {
-            console.warn(`Warning: Failed to write scope stop marker: ${error}`);
-          }
+          throw new Error(
+            'Review scope guard refused the diff but could not resolve the task feature directory '
+            + 'for the scope-stop marker; pass --state-dir or --feature-dir so the mill can route '
+            + 'the task back to coding.',
+          );
+        }
+
+        const head = (execShellCommand('git rev-parse HEAD', { cwd: repoDir, encoding: 'utf-8' }) as string).trim();
+        const findings: ReviewGateFinding[] = result.findings
+          .filter(f => f.severity === 'blocker' && f.kind === 'violation' && f.category === 'review-scope')
+          .map(finding => ({
+            category: 'scope-violation',
+            offendingPath: finding.path,
+            message: finding.message,
+          }));
+
+        if (findings.length > 0) {
+          writeMarker(
+            { path: join(featureDir, '.review-scope-stop.json'), kind: 'review-scope-stop' },
+            {
+              headSha: head,
+              reason: 'review scope guard refused staged/committed paths',
+              detail: { findings, offendingPaths: result.outOfScopePaths },
+              condition: {
+                head,
+                expiresOn: ['head', 'operator-event'],
+              },
+            },
+          );
         }
       }
 

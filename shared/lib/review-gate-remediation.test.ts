@@ -126,7 +126,7 @@ test('review-gate artifact signals: verdict=error + reviewToolError → retryabl
   assert.strictEqual(dispositionFromReviewArtifactSignals(artifact), 'retryable');
 });
 
-test('review-gate remediation: scope violation → code-failure with revert suggestion', () => {
+test('review-gate remediation: scope violation → code-failure delivers the typed finding to the agent', () => {
   const evidence: ReviewGateEvidence = {
     stage: 'review',
     stateDir: '/tmp/test-state',
@@ -148,8 +148,10 @@ test('review-gate remediation: scope violation → code-failure with revert sugg
   assert.strictEqual(decision.disposition, 'code-failure');
   assert.strictEqual(decision.deliverTo, 'agent');
   assert(decision.deliveryPayload);
-  assert(
-    decision.deliveryPayload.suggestions.some((s) => s.action === 'revert'),
+  assert.strictEqual(decision.deliveryPayload.finding.category, 'scope-violation');
+  assert.strictEqual(
+    decision.deliveryPayload.finding.offendingPath,
+    'src/other-module.ts',
   );
 });
 
@@ -194,43 +196,3 @@ test('review-gate remediation: config error → terminal', () => {
   assert.strictEqual(decision.deliverTo, 'operator');
 });
 
-test('review-gate remediation: scope in plan allowlist → refresh-baseline suggestion', () => {
-  const evidence: ReviewGateEvidence = {
-    stage: 'review',
-    stateDir: '/tmp/test-state',
-    headSha: 'abc1234',
-    findings: [
-      {
-        category: 'scope-violation',
-        offendingPath: '.github/workflows/ci.yml',
-        message: 'File is outside declared scope but plan allows it',
-      },
-    ],
-    artifact: { kind: 'review-result', identity: 'review-1' },
-    planScopeAllowlist: [
-      {
-        path: '.github/workflows/ci.yml',
-        reason: 'Journey registration required',
-        source: 'plan.md',
-      },
-    ],
-  };
-
-  const decision = decideReviewGateRemediation(evidence);
-
-  assert.strictEqual(decision.disposition, 'code-failure');
-  assert.strictEqual(decision.deliverTo, 'agent');
-  assert(decision.deliveryPayload);
-  assert(
-    decision.deliveryPayload.suggestions.some(
-      (s) => s.action === 'refresh-baseline',
-    ),
-  );
-  assert(
-    decision.deliveryPayload.suggestions.some(
-      (s) =>
-        s.path === '.github/workflows/ci.yml' &&
-        s.reason.includes('plan'),
-    ),
-  );
-});
