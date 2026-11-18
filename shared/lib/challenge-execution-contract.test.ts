@@ -1093,9 +1093,17 @@ test('sealChallengeDecision extracts the immutable selection for a plan-stage in
   assert.equal(sealed!.challengerVariedAgent, 'native-openrouter');
 });
 
-test('sealChallengeDecision returns undefined for a one-sided or malformed intent', () => {
+test('sealChallengeDecision returns a single decision for a one-sided intent with a reason', () => {
+  const single = sealChallengeDecision(makeSealedPlanIntent({ challenger: undefined, noChallengeReason: 'roll_not_selected' }));
+  assert.ok(single);
+  assert.equal(single!.kind, 'single');
+  assert.equal(single!.pairId, 'HOK-3065');
+  assert.equal((single as { noChallengeReason: string }).noChallengeReason, 'roll_not_selected');
+});
+
+test('sealChallengeDecision returns undefined for a malformed intent', () => {
   assert.equal(sealChallengeDecision(undefined), undefined);
-  assert.equal(sealChallengeDecision(makeSealedPlanIntent({ challenger: undefined })), undefined);
+  assert.equal(sealChallengeDecision({ pairId: '' } as unknown as ChallengeExecutionIntent), undefined);
 });
 
 test('resolveSealedDecisionAgainstExpandedRoute enriches non-varied fields and preserves the challenger', () => {
@@ -1154,6 +1162,34 @@ test('resolveSealedDecisionAgainstExpandedRoute never rerolls the sealed choice 
   const a = resolveSealedDecisionAgainstExpandedRoute({ sealed: makeSealedPlanIntent(), expandedRoute: EXPANDED_PLAN_ROUTE });
   const b = resolveSealedDecisionAgainstExpandedRoute({ sealed: makeSealedPlanIntent(), expandedRoute: EXPANDED_PLAN_ROUTE });
   assert.deepEqual(a, b);
+});
+
+test('resolveSealedDecisionAgainstExpandedRoute keeps a sealed single single', () => {
+  const singleIntent: ChallengeExecutionIntent = {
+    schemaVersion: 1,
+    pairId: 'HOK-3506',
+    issueId: 'HOK-3506',
+    createdAt: '2026-09-23T00:00:00Z',
+    selectedStage: 'plan',
+    challengeStage: 'plan',
+    decisionSource: 'bootstrap',
+    selectionPath: 'random-roll',
+    noChallengeReason: 'roll_not_selected',
+    primary: {
+      key: 'HOK-3506',
+      role: 'primary',
+      planner: { model: 'bootstrap-planner', agent: 'claude' },
+      coder: { model: 'bootstrap-coder', agent: 'claude' },
+      reviewer: { model: 'bootstrap-reviewer', agent: 'claude' },
+    },
+  };
+  const result = resolveSealedDecisionAgainstExpandedRoute({
+    sealed: singleIntent,
+    expandedRoute: EXPANDED_PLAN_ROUTE,
+  });
+  assert.equal(result.status, 'single');
+  if (result.status !== 'single') return;
+  assert.equal(result.reason, 'roll_not_selected');
 });
 
 test('sealedSelectionViolations reports a changed challenger, stage, or pair', () => {

@@ -1459,30 +1459,17 @@ finalize_challenge_execution_intent_before_coding() {
   [[ "$challenge_role_meta" != "challenger" ]] || return 0
   [[ -f "$feature_dir/.post-expansion-route.json" ]] || return 0
 
-  # A challenge has already chosen its experimental arm before either side is
-  # expanded.  The expanded route is useful for filling in the shared route,
-  # but it must never resample that arm: doing so lets Hokusai replace the
-  # challenger and turns an exploration run into another incumbent route.
-  # apply_expanded_route_if_present preserves the selected-stage fields from
-  # this intent while applying every non-varied field from the expanded route.
-  local existing_intent pinned_stage=""
+  # The launch lottery already decided challenge-vs-single (HOK-3506).
+  # Finalization only resolves that sealed decision against the now-available
+  # expanded route; it never reruns the lottery and never substitutes a
+  # sealed challenger. Covered by tests/journeys/planner-expanded-route-comparison.journey.sh
+  # and tests/fixtures/lifecycle/sealed_single_stays_single_through_plan_to_code.sh.
+  local existing_intent
   # allow-task-field: legacy challengeIntent fallback for pre-challengeExecutionIntent state files
   existing_intent=$(read_state_value "" --arg i "$issue" '(.tasks[$i].challengeExecutionIntent // .tasks[$i].challengeIntent) // empty' 2>/dev/null || true)
-  if [[ -n "$existing_intent" ]]; then
-    pinned_stage=$(echo "$existing_intent" | jq -r '(.selectedStage // .challengeStage // "")' 2>/dev/null || true)
-  fi
-  # Fall back to the stage recorded directly on the task; either way the stage
-  # is decided once, at selection, and is never re-sampled below.
-  [[ -n "$pinned_stage" && "$pinned_stage" != "null" ]] || pinned_stage="$challenge_stage_meta"
+  [[ -n "$existing_intent" ]] || return 0
 
-  # HOK-3065: a plan-stage arm sealed at launch in awaiting_expanded_route
-  # materialises here — this is the plan→code handoff, the first point the
-  # expanded route exists. Resolve the sealed decision against the expanded
-  # route and fork the challenger at t=0. The selection is never re-sampled; an
-  # ineligible sealed challenger collapses to single rather than being
-  # substituted. Restart-safe and idempotent (checked-and-set + bounded retry).
-  # This must run *before* the existing-intent preservation short-circuit,
-  # because the sealed intent always has pairId/primary/challenger fields.
+  # HOK-3065: plan-stage challenger sealed pre-expansion materialises at t=0.
   local expanded_route_arm_count
   expanded_route_arm_count=$(challenge_arms_list_awaiting_expanded_route "$issue" | jq -r 'length' 2>/dev/null || echo "0")
   [[ "$expanded_route_arm_count" =~ ^[0-9]+$ ]] || expanded_route_arm_count=0
@@ -1492,202 +1479,136 @@ finalize_challenge_execution_intent_before_coding() {
     return 0
   fi
 
-  if [[ -n "$existing_intent" ]] \
-    && echo "$existing_intent" | jq -e '(.pairId // "") != "" and (.primary // null) != null and (.challenger // null) != null' >/dev/null 2>&1; then
-    log "status" "  $issue: Preserving selected challenge arm through expanded routing"
-    return 0
-  fi
+  local resolution status
+  resolution=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "resolve-challenge-task.ts"     --resolve-sealed     --sealed-intent "$existing_intent"     --feature-dir "$feature_dir"     --repo-dir "$REPO_DIR" 2>/dev/null || echo "")
+  status="$(echo "$resolution" | jq -r '.status // "collapse"' 2>/dev/null || echo "collapse")"
 
-  # HOK-2813: a primary carrying nested challengeArms[] records is in the
-  # deferred-materialisation flow. Its challenger selection is sealed in the
-  # arm record itself; re-running resolve-challenge-task here could resample
-  # the pair while no challenger task exists yet — the historic `_c` pairing
-  # drift. With no arm running before the fork, there is nothing to preserve
-  # through an expanded route: keep the immutable intent and stop.
-  local nested_arm_count
-  nested_arm_count=$(read_state_value "0" --arg i "$issue" '((.tasks[$i].challengeArms // []) | length)')
-  if [[ "$nested_arm_count" =~ ^[0-9]+$ ]] && (( nested_arm_count > 0 )); then
-    log "status" "  $issue: Deferred challenger arm holds the sealed selection; skipping expanded challenge refinalization"
-    return 0
-  fi
+  case "$status" in
+    single)
+      # Sealed as single at launch — keep it single, do not create a phantom pair.
+      return 0
+      ;;
+    collapse)
+      local collapse_reason collapse_detail collapsed_intent
+      collapse_reason="$(echo "$resolution" | jq -r '.reason // "sealed_intent_incomplete"' 2>/dev/null || echo "sealed_intent_incomplete")"
+      collapse_detail="$(echo "$resolution" | jq -r '.detail // empty' 2>/dev/null || echo "")"
+      collapsed_intent=$(echo "$existing_intent" | jq -c         --arg reason "$collapse_reason"         --arg detail "$collapse_detail"         'del(.challenger)
+         | .noChallengeReason = $reason
+         | .challengeCollapseReason = $reason
+         | .challengeCollapseDetail = $detail' 2>/dev/null || echo "$existing_intent")
+      local challenger_key
+      challenger_key="$(task_identity_challenger_key "$issue" 2>/dev/null || echo "")"
+      challenge_cancel_challenger_arm "$issue" "$slug" "$challenger_key" "$feature_dir" "" "" "$collapse_reason" "$collapse_detail" || true
+      persist_challenge_execution_intent "$issue" "" "$feature_dir" "$collapsed_intent"
+      log_warn "$issue → sealed challenge collapsed ($collapse_reason)"
+      FINALIZED_CHALLENGE_CODER=""
+      FINALIZED_CHALLENGE_STAGE=""
+      return 0
+      ;;
+    materialize)
+      local enriched_intent stage
+      enriched_intent=$(echo "$resolution" | jq -c '.intent // empty' 2>/dev/null || true)
+      [[ -n "$enriched_intent" ]] || { log_warn "$issue → resolve-sealed returned materialize but no intent"; return 0; }
+      stage=$(echo "$enriched_intent" | jq -r '.selectedStage // .challengeStage // "implementation"' 2>/dev/null || echo "implementation")
 
-  local refresh_title issue_json packet_arg refreshed_plan refreshed_source refreshed_mode refreshed_reason
-  local pinned_stage_arg=()
-  if [[ -n "$pinned_stage" && "$pinned_stage" != "null" ]]; then
-    # Without this the refresh rolls a fresh stage from challenge.stageWeights,
-    # which is how an already-selected implementation-stage arm (a Qwen or Kimi
-    # coder) became an unrelated plan-stage pair on the way to coding.
-    pinned_stage_arg=(--pinned-stage "$pinned_stage")
-  fi
-  refresh_title=$(pass_task_field "$issue" title)
-  if [[ -z "$refresh_title" ]]; then
-    issue_json=$(cat "/tmp/${SESSION}-${issue}-issue.json" 2>/dev/null || echo "{}")
-    refresh_title=$(echo "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")
-  fi
+      # Depths/mode are not part of the sealed envelope; read them from the
+      # expanded route that is now available.
+      local expanded_route_json plan_depth code_depth review_mode
+      expanded_route_json=$(cat "$feature_dir/.post-expansion-route.json" 2>/dev/null || echo "{}")
+      plan_depth=$(echo "$expanded_route_json" | jq -r '.planDepth // "light"' 2>/dev/null || echo "light")
+      code_depth=$(echo "$expanded_route_json" | jq -r '.codeDepth // "medium"' 2>/dev/null || echo "medium")
+      review_mode=$(echo "$expanded_route_json" | jq -r '.reviewMode // "static"' 2>/dev/null || echo "static")
 
-  packet_arg=()
-  if [[ -f "$feature_dir/task-packet.md" ]]; then
-    packet_arg=(--file "$feature_dir/task-packet.md")
-  elif [[ -f "/tmp/${SESSION}-${issue}-taskpacket.md" ]]; then
-    packet_arg=(--file "/tmp/${SESSION}-${issue}-taskpacket.md")
-  fi
+      # Primary arm route from the enriched intent.
+      local primary_planner primary_planner_agent primary_coder_model primary_coder_agent primary_reviewer primary_reviewer_agent
+      primary_planner=$(echo "$enriched_intent" | jq -r '.primary.planner.model // empty' 2>/dev/null)
+      primary_planner_agent=$(echo "$enriched_intent" | jq -r '.primary.planner.agent // empty' 2>/dev/null)
+      primary_coder_model=$(echo "$enriched_intent" | jq -r '.primary.coder.model // empty' 2>/dev/null)
+      primary_coder_agent=$(echo "$enriched_intent" | jq -r '.primary.coder.agent // empty' 2>/dev/null)
+      primary_reviewer=$(echo "$enriched_intent" | jq -r '.primary.reviewer.model // empty' 2>/dev/null)
+      primary_reviewer_agent=$(echo "$enriched_intent" | jq -r '.primary.reviewer.agent // empty' 2>/dev/null)
 
-  refreshed_plan=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "resolve-challenge-task.ts" \
-    --issue "$issue" \
-    --slug "$slug" \
-    --title "$refresh_title" \
-    --repo-dir "$REPO_DIR" \
-    --remaining-slots 2 \
-    --primary-model "$primary_coder" \
-    --feature-dir "$feature_dir" \
-    "${pinned_stage_arg[@]}" \
-    "${packet_arg[@]}" 2>/dev/null || echo "")
-  refreshed_source=$(echo "$refreshed_plan" | jq -r '.decisionSource // "bootstrap"' 2>/dev/null || echo "bootstrap")
-  refreshed_mode=$(echo "$refreshed_plan" | jq -r '.mode // "single"' 2>/dev/null || echo "single")
-  refreshed_reason=$(echo "$refreshed_plan" | jq -r '.reason // empty' 2>/dev/null || echo "")
+      local primary_varied challenger_varied
+      primary_varied=$(challenge_selection_health_varied_model "$stage" "$primary_planner" "$primary_coder_model" "$primary_reviewer")
 
-  if [[ "$refreshed_source" != "expanded" && "$refreshed_source" != "preserved" ]]; then
-    log_warn "$issue → expanded challenge finalization did not use expanded/preserved route (source=$refreshed_source); keeping current challenge state"
-    return 0
-  fi
+      # Challenger arm route from the enriched intent.
+      local challenger_key challenger_planner challenger_planner_agent challenger_coder_model challenger_coder_agent challenger_reviewer challenger_reviewer_agent
+      challenger_key=$(echo "$enriched_intent" | jq -r '.challenger.key // empty' 2>/dev/null)
+      [[ -n "$challenger_key" ]] || challenger_key="$(task_identity_challenger_key "$issue" 2>/dev/null || echo "")"
+      challenger_planner=$(echo "$enriched_intent" | jq -r '.challenger.planner.model // empty' 2>/dev/null)
+      challenger_planner_agent=$(echo "$enriched_intent" | jq -r '.challenger.planner.agent // empty' 2>/dev/null)
+      challenger_coder_model=$(echo "$enriched_intent" | jq -r '.challenger.coder.model // empty' 2>/dev/null)
+      challenger_coder_agent=$(echo "$enriched_intent" | jq -r '.challenger.coder.agent // empty' 2>/dev/null)
+      challenger_reviewer=$(echo "$enriched_intent" | jq -r '.challenger.reviewer.model // empty' 2>/dev/null)
+      challenger_reviewer_agent=$(echo "$enriched_intent" | jq -r '.challenger.reviewer.agent // empty' 2>/dev/null)
 
-  local intent_json
-  intent_json=$(echo "$refreshed_plan" | jq -c '.challengeExecutionIntent // empty' 2>/dev/null || true)
+      challenger_varied=$(challenge_selection_health_varied_model "$stage" "$challenger_planner" "$challenger_coder_model" "$challenger_reviewer")
 
-  if [[ "$refreshed_mode" != "challenge" ]]; then
-    if [[ -n "$refreshed_reason" ]]; then
-      state_mutate "$STATE_FILE" \
-        '.tasks[$issue].challengeCollapseReason = $reason
-         | .tasks[$issue].challengeCollapseDetail = $detail
-         | .tasks[$issue].updated = (now | todate)' \
-        --arg issue "$issue" \
-        --arg reason "$refreshed_reason" \
-        --arg detail "Challenge finalization produced no challenge: $refreshed_reason" >/dev/null 2>&1 || true
-    fi
-    persist_challenge_execution_intent "$issue" "" "$feature_dir" "$intent_json"
-    [[ -n "$refreshed_reason" ]] && log_warn "$issue → challenge finalization produced no challenge ($refreshed_reason)"
-    return 0
-  fi
+      if [[ -n "$primary_varied" && "$primary_varied" == "$challenger_varied" ]]         && ! echo "$enriched_intent" | jq -e '.intentionallyIdentical == true' >/dev/null 2>&1; then
+        local collapse_reason collapse_detail collapsed_intent
+        collapse_reason="identical-at-varied-stage"
+        collapse_detail="Challenge finalization collapsed to identical ${stage} model ${primary_varied}"
+        collapsed_intent=$(echo "$enriched_intent" | jq -c           --arg reason "$collapse_reason"           --arg detail "$collapse_detail"           'del(.challenger)
+           | .noChallengeReason = $reason
+           | .challengeCollapseReason = $reason
+           | .challengeCollapseDetail = $detail' 2>/dev/null || echo "$enriched_intent")
+        challenge_cancel_challenger_arm "$issue" "$slug" "$challenger_key" "$feature_dir" "$stage" "$primary_varied" "$collapse_reason" "$collapse_detail"
+        persist_challenge_execution_intent "$issue" "" "$feature_dir" "$collapsed_intent"
+        log_warn "$issue → challenge finalization cancelled challenger ($collapse_reason)"
+        FINALIZED_CHALLENGE_CODER=""
+        FINALIZED_CHALLENGE_STAGE=""
+        return 0
+      fi
 
-  local new_primary new_primary_planner new_primary_reviewer new_primary_plan_depth new_primary_code_depth new_primary_review_mode
-  local new_challenge_stage new_challenger_key new_challenger_model new_challenger_planner new_challenger_reviewer
-  local new_challenger_plan_depth new_challenger_code_depth new_challenger_review_mode
-  new_primary=$(echo "$refreshed_plan" | jq -r '.entries[0].model // empty' 2>/dev/null)
-  new_primary_planner=$(echo "$refreshed_plan" | jq -r '.entries[0].planner // empty' 2>/dev/null)
-  new_primary_reviewer=$(echo "$refreshed_plan" | jq -r '.entries[0].reviewer // empty' 2>/dev/null)
-  new_primary_plan_depth=$(echo "$refreshed_plan" | jq -r '.entries[0].planDepth // empty' 2>/dev/null)
-  new_primary_code_depth=$(echo "$refreshed_plan" | jq -r '.entries[0].codeDepth // empty' 2>/dev/null)
-  new_primary_review_mode=$(echo "$refreshed_plan" | jq -r '.entries[0].reviewMode // empty' 2>/dev/null)
-  new_challenge_stage=$(echo "$refreshed_plan" | jq -r '.challengeStage // "implementation"' 2>/dev/null || echo "implementation")
-  new_challenger_key=$(echo "$refreshed_plan" | jq -r '.entries[1].key // empty' 2>/dev/null)
-  new_challenger_model=$(echo "$refreshed_plan" | jq -r '.entries[1].model // empty' 2>/dev/null)
-  new_challenger_planner=$(echo "$refreshed_plan" | jq -r '.entries[1].planner // empty' 2>/dev/null)
-  new_challenger_reviewer=$(echo "$refreshed_plan" | jq -r '.entries[1].reviewer // empty' 2>/dev/null)
-  new_challenger_plan_depth=$(echo "$refreshed_plan" | jq -r '.entries[1].planDepth // empty' 2>/dev/null)
-  new_challenger_code_depth=$(echo "$refreshed_plan" | jq -r '.entries[1].codeDepth // empty' 2>/dev/null)
-  new_challenger_review_mode=$(echo "$refreshed_plan" | jq -r '.entries[1].reviewMode // empty' 2>/dev/null)
+      local challenger_slug challenger_branch challenger_worktree challenger_pr challenger_status challenger_agent challenger_linear_issue
+      challenger_slug=$(pass_task_field "$challenger_key" slug 2>/dev/null || true)
+      challenger_branch=$(pass_task_field "$challenger_key" branch 2>/dev/null || true)
+      challenger_worktree=$(pass_task_field "$challenger_key" worktree 2>/dev/null || true)
+      if [[ -n "$challenger_slug" && -n "$challenger_branch" && -n "$challenger_worktree" ]]; then
+        # Stamp the primary as paired only once the challenger is confirmed
+        # to exist; stamping it unconditionally re-creates a phantom pair.
+        local current_pr current_status current_agent current_linear_issue
+        current_pr=$(pass_task_field "$issue" pr)
+        current_status=$(pass_task_field "$issue" status)
+        current_agent=$(pass_task_field "$issue" agent)
+        current_linear_issue=$(pass_task_field "$issue" linearIssueId)
+        save_task_state "$issue" "$slug" "$branch" "$wt_dir" "$current_pr" "$current_status" "$current_agent" "$current_linear_issue"           "true" "$issue" "primary" "$primary_varied" "$primary_planner" "$primary_coder_model" "$primary_reviewer" "$plan_depth" "$code_depth" "$review_mode" "$stage"
 
-  if [[ -z "$new_primary" || -z "$new_challenger_key" || -z "$new_challenger_model" ]]; then
-    log_warn "$issue → expanded challenge finalization returned incomplete pair; keeping current challenge state"
-    return 0
-  fi
+        challenger_pr=$(pass_task_field "$challenger_key" pr)
+        challenger_status=$(pass_task_field "$challenger_key" status)
+        challenger_agent=$(pass_task_field "$challenger_key" agent)
+        challenger_linear_issue=$(pass_task_field "$challenger_key" linearIssueId)
+        save_task_state "$challenger_key" "$challenger_slug" "$challenger_branch" "$challenger_worktree" "$challenger_pr" "$challenger_status" "$challenger_agent" "$challenger_linear_issue"           "true" "$issue" "challenger" "$challenger_varied" "$challenger_planner" "$challenger_coder_model" "$challenger_reviewer" "$plan_depth" "$code_depth" "$review_mode" "$stage"
+        state_mutate "$STATE_FILE"           '.tasks[$issue].challengerLaunched = true
+           | .tasks[$issue].updated = (now | todate)'           --arg issue "$issue" >/dev/null 2>&1 || true
 
-  # Finalization must not manufacture phantom pairs (a pair where no challenger arm was launched).
-  # This happens when finalization re-ran resolve-challenge-task after a single-model launch
-  # and got mode=challenge, but the ${issue}_c task doesn't exist.
-  # Check: (1) challenger already exists in state, OR (2) challenge was already selected at launch.
-  local challenger_exists was_challenge_at_launch
-  challenger_exists="false"
-  was_challenge_at_launch="false"
+        persist_challenge_execution_intent "$issue" "$challenger_key" "$feature_dir" "$enriched_intent"
+        FINALIZED_CHALLENGE_CODER="$primary_coder_model"
+        FINALIZED_CHALLENGE_STAGE="$stage"
 
-  local existing_challenger_slug existing_challenger_branch existing_challenger_worktree
-  existing_challenger_slug=$(pass_task_field "$new_challenger_key" slug 2>/dev/null || true)
-  existing_challenger_branch=$(pass_task_field "$new_challenger_key" branch 2>/dev/null || true)
-  existing_challenger_worktree=$(pass_task_field "$new_challenger_key" worktree 2>/dev/null || true)
-  [[ -n "$existing_challenger_slug" && -n "$existing_challenger_branch" && -n "$existing_challenger_worktree" ]] && challenger_exists="true"
-
-  local existing_challenge_flag existing_pair_id
-  existing_challenge_flag=$(get_task_meta "$issue" challenge 2>/dev/null || true)
-  existing_pair_id=$(get_task_meta "$issue" challengePairId 2>/dev/null || true)
-  [[ "$existing_challenge_flag" == "true" || -n "$existing_pair_id" ]] && was_challenge_at_launch="true"
-
-  if [[ "$challenger_exists" != "true" && "$was_challenge_at_launch" != "true" ]]; then
-    # Finalization may refine an existing pair; it must never create one.
-    local no_challenge_intent
-    no_challenge_intent=$(echo "$intent_json" | jq -c \
-      'del(.challenger) | .noChallengeReason = "challenger_never_launched" | .challengeCollapseReason = "challenger_never_launched"' 2>/dev/null || echo "$intent_json")
-    persist_challenge_execution_intent "$issue" "" "$feature_dir" "$no_challenge_intent"
-    state_mutate "$STATE_FILE" \
-      '.tasks[$issue].challengeCollapseReason = "challenger_never_launched"
-       | .tasks[$issue].challengeCollapseDetail = "Finalization selected a pair but no challenger arm was launched; staying single-model"
-       | .tasks[$issue].challenge = false
-       | .tasks[$issue] |= del(.challengePairId, .role)
-       | .tasks[$issue].updated = (now | todate)' \
-      --arg issue "$issue" >/dev/null 2>&1 || true
-    log_route_lifecycle "challenge_not_formed" "issue=$issue" "stage=$new_challenge_stage" "model=$new_primary" "reason=challenger_never_launched"
-    log_warn "$issue → challenge finalization selected a pair but no challenger arm exists; staying single-model"
-    FINALIZED_CHALLENGE_CODER=""
-    FINALIZED_CHALLENGE_STAGE=""
-    return 0
-  fi
-
-  # Compare the varied-stage models, not the coders. Plan/review challenges
-  # intentionally share the coder on both sides.
-  local new_primary_varied new_challenger_varied
-  new_primary_varied=$(echo "$refreshed_plan" | jq -r '.entries[0].variedModel // .entries[0].model // empty' 2>/dev/null)
-  new_challenger_varied=$(echo "$refreshed_plan" | jq -r '.entries[1].variedModel // .entries[1].model // empty' 2>/dev/null)
-  if [[ -n "$new_primary_varied" && "$new_primary_varied" == "$new_challenger_varied" ]] \
-    && ! echo "$intent_json" | jq -e '.intentionallyIdentical == true' >/dev/null 2>&1; then
-    local collapse_reason collapse_detail collapsed_intent
-    collapse_reason="identical-at-varied-stage"
-    collapse_detail="Challenge finalization collapsed to identical ${new_challenge_stage} model ${new_primary_varied}"
-    collapsed_intent=$(echo "$intent_json" | jq -c \
-      --arg reason "$collapse_reason" \
-      --arg detail "$collapse_detail" \
-      'del(.challenger)
-       | .noChallengeReason = $reason
-       | .challengeCollapseReason = $reason
-       | .challengeCollapseDetail = $detail' 2>/dev/null || echo "$intent_json")
-    challenge_cancel_challenger_arm "$issue" "$slug" "$new_challenger_key" "$feature_dir" "$new_challenge_stage" "$new_primary_varied" "$collapse_reason" "$collapse_detail"
-    persist_challenge_execution_intent "$issue" "" "$feature_dir" "$collapsed_intent"
-    log_warn "$issue → challenge finalization cancelled challenger ($collapse_reason)"
-    FINALIZED_CHALLENGE_CODER=""
-    FINALIZED_CHALLENGE_STAGE=""
-    return 0
-  fi
-
-  local current_pr current_status current_agent current_linear_issue
-  current_pr=$(pass_task_field "$issue" pr)
-  current_status=$(pass_task_field "$issue" status)
-  current_agent=$(pass_task_field "$issue" agent)
-  current_linear_issue=$(pass_task_field "$issue" linearIssueId)
-  save_task_state "$issue" "$slug" "$branch" "$wt_dir" "$current_pr" "$current_status" "$current_agent" "$current_linear_issue" \
-    "true" "$issue" "primary" "$new_primary" "$new_primary_planner" "$new_primary" "$new_primary_reviewer" "$new_primary_plan_depth" "$new_primary_code_depth" "$new_primary_review_mode" "$new_challenge_stage"
-
-  local challenger_slug challenger_branch challenger_worktree challenger_pr challenger_status challenger_agent challenger_linear_issue
-  challenger_slug=$(pass_task_field "$new_challenger_key" slug)
-  challenger_branch=$(pass_task_field "$new_challenger_key" branch)
-  challenger_worktree=$(pass_task_field "$new_challenger_key" worktree)
-  challenger_pr=$(pass_task_field "$new_challenger_key" pr)
-  challenger_status=$(pass_task_field "$new_challenger_key" status)
-  challenger_agent=$(pass_task_field "$new_challenger_key" agent)
-  challenger_linear_issue=$(pass_task_field "$new_challenger_key" linearIssueId)
-  if [[ -n "$challenger_slug" && -n "$challenger_branch" && -n "$challenger_worktree" ]]; then
-    save_task_state "$new_challenger_key" "$challenger_slug" "$challenger_branch" "$challenger_worktree" "$challenger_pr" "$challenger_status" "$challenger_agent" "$challenger_linear_issue" \
-      "true" "$issue" "challenger" "$new_challenger_model" "$new_challenger_planner" "$new_challenger_model" "$new_challenger_reviewer" "$new_challenger_plan_depth" "$new_challenger_code_depth" "$new_challenger_review_mode" "$new_challenge_stage"
-    # Mark that the challenger was successfully launched (P0.6, HOK-2798)
-    state_mutate "$STATE_FILE" \
-      '.tasks[$issue].challengerLaunched = true
-       | .tasks[$issue].updated = (now | todate)' \
-      --arg issue "$issue" >/dev/null 2>&1 || true
-  fi
-
-  persist_challenge_execution_intent "$issue" "$new_challenger_key" "$feature_dir" "$intent_json"
-  FINALIZED_CHALLENGE_CODER="$new_primary"
-  FINALIZED_CHALLENGE_STAGE="$new_challenge_stage"
-
-  log "status" "  $issue: Challenge intent finalized ($refreshed_source route, stage=$new_challenge_stage): $new_primary_varied vs $new_challenger_varied"
-  challenge_assert_arms_diverge "$issue" "$new_challenge_stage" "$new_primary_varied" "$new_challenger_varied" "$intent_json"
+        log "status" "  $issue: Challenge intent finalized (sealed route, stage=$stage): $primary_varied vs $challenger_varied"
+        challenge_assert_arms_diverge "$issue" "$stage" "$primary_varied" "$challenger_varied" "$enriched_intent"
+      else
+        # The sealed decision resolved to a pair, but the challenger task
+        # never actually exists in state (a launch-time race/failure between
+        # sealing the pair and spawning its second task). Persisting a paired
+        # intent here would stamp a phantom pair under this PR's own target
+        # bug class, just via a different trigger than the deleted
+        # challenger_never_launched guard caught. Collapse to single instead.
+        local collapse_reason collapse_detail collapsed_intent
+        collapse_reason="challenger_task_missing"
+        collapse_detail="Sealed pair resolved to materialize, but no challenger task exists in state"
+        collapsed_intent=$(echo "$enriched_intent" | jq -c           --arg reason "$collapse_reason"           --arg detail "$collapse_detail"           'del(.challenger)
+           | .noChallengeReason = $reason
+           | .challengeCollapseReason = $reason
+           | .challengeCollapseDetail = $detail' 2>/dev/null || echo "$enriched_intent")
+        persist_challenge_execution_intent "$issue" "" "$feature_dir" "$collapsed_intent"
+        log_warn "$issue → sealed challenge collapsed ($collapse_reason)"
+        FINALIZED_CHALLENGE_CODER=""
+        FINALIZED_CHALLENGE_STAGE=""
+      fi
+      ;;
+  esac
 }
 
 challenge_cancel_challenger_arm() {
@@ -3129,8 +3050,9 @@ challenge_materialize_expanded_route_arm() {
   fi
 
   local resolution status
-  resolution=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "resolve-challenge-task.ts" \
-    --resolve-sealed --sealed-intent "$sealed_intent" --executed-stages "$executed_stages" \
+  # HOK-3065: --resolve-sealed must share the resolve-challenge-task.ts line so the guard sees it.
+  resolution=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "resolve-challenge-task.ts" --resolve-sealed --sealed-intent "$sealed_intent" \
+    --executed-stages "$executed_stages" \
     --feature-dir "$primary_feature_dir" --repo-dir "$REPO_DIR" 2>/dev/null || echo "")
   status="$(echo "$resolution" | jq -r '.status // "collapse"' 2>/dev/null || echo "collapse")"
   if [[ "$status" != "materialize" ]]; then
@@ -19203,6 +19125,7 @@ EOF
       if [[ -d "${WORKTREE_ROOT}/${slug}/features/${slug}" ]]; then
         challenge_args+=(--feature-dir "${WORKTREE_ROOT}/${slug}/features/${slug}")
       fi
+      # allow-challenge-selection-site: launch lottery decides challenge-vs-single
       challenge_plan=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "resolve-challenge-task.ts" "${challenge_args[@]}" 2>/dev/null || echo "")
       challenge_mode=$(echo "$challenge_plan" | jq -r '.mode // "single"' 2>/dev/null || echo "single")
       challenge_reason=$(echo "$challenge_plan" | jq -r '.reason // empty' 2>/dev/null || echo "")
@@ -19295,8 +19218,15 @@ EOF
         log "status" "  Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger is extra pane]"
       fi
       challenge_assert_arms_diverge "$issue" "$challenge_stage" "$primary_varied" "$challenger_varied" "$challenge_execution_intent"
-    elif [[ -n "$challenge_reason" ]] && [[ "$challenge_reason" != "challenge_disabled" ]] && [[ "$challenge_reason" != "roll_not_selected" ]]; then
-      log "debug" "  Challenge skipped ($challenge_reason), launching single-model run"
+    else
+      local single_execution_intent=""
+      single_execution_intent=$(echo "$challenge_plan" | jq -c '.challengeExecutionIntent // empty' 2>/dev/null || true)
+      if challenge_intent_json_is_canonical "$single_execution_intent"; then
+        persist_challenge_execution_intent "$issue" "" "$feature_dir" "$single_execution_intent"
+      fi
+      if [[ -n "$challenge_reason" ]] && [[ "$challenge_reason" != "challenge_disabled" ]] && [[ "$challenge_reason" != "roll_not_selected" ]]; then
+        log "debug" "  $issue: Challenge skipped ($challenge_reason), launching single-model run"
+      fi
     fi
   fi
 
