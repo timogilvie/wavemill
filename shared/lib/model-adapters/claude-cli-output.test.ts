@@ -167,6 +167,26 @@ describe('ReportFindings validation', () => {
     assert.equal(out.toolReport, undefined);
   });
 
+  it('accepts the dismissal fields the review prompts define', () => {
+    const out = parseClaudeCliOutput(makeStdout(buildReport({
+      severity: 'blocker',
+      dismissed: true,
+      dismissalJustification: 'the guard already covers this path',
+      dismissalEvidence: 'npx tsx tools/check-x.ts: ok',
+    })));
+    assert.equal(out.toolReportError, undefined);
+    const finding = out.toolReport?.findings[0];
+    assert.equal(finding?.dismissed, true);
+    assert.equal(finding?.dismissalJustification, 'the guard already covers this path');
+    assert.equal(finding?.dismissalEvidence, 'npx tsx tools/check-x.ts: ok');
+  });
+
+  it('rejects a non-boolean dismissed flag', () => {
+    const out = parseClaudeCliOutput(makeStdout(buildReport({ dismissed: 'yes' })));
+    assert.match(out.toolReportError ?? '', /dismissed must be a boolean/);
+    assert.equal(out.toolReport, undefined);
+  });
+
   it('rejects outcome in a finding', () => {
     const out = parseClaudeCliOutput(makeStdout(buildReport({ outcome: 'fixed' })));
     assert.match(out.toolReportError ?? '', /outcome is not allowed/);
