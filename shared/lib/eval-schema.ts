@@ -2276,16 +2276,16 @@ export interface EvalRecord {
   prUrl?: string;
 
   /** Task run identity (HOK-3476) */
-  runId?: string;
+  runId?: string | null;
 
   /** Stage attempt identity (HOK-3476) */
-  stageAttemptId?: string;
+  stageAttemptId?: string | null;
 
   /** Parent run identity for retries (HOK-3476) */
-  parentRunId?: string;
+  parentRunId?: string | null;
 
   /** Previous attempt this replaces (HOK-3476) */
-  retryOf?: string;
+  retryOf?: string | null;
 
   /**
    * Immutable PR head SHA that was evaluated when this row was produced.
