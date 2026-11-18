@@ -84,6 +84,26 @@ describe('resolveTaskSpendRemainder', () => {
     assert.equal(spend.remainingUsd, 5);
   });
 
+  it('takes spend from the one meter over all owned rows, never a second sum', async () => {
+    const repoDir = makeRepo({ mill: { defaultMaxCostUsd: 25 } });
+    const rows = [
+      { sessionRef: 'a', harness: 'native', kind: 'planning', model: 'm', launchedAt: '2026-11-15T12:00:00.000Z', attemptId: 'planning@abc#1' },
+      { sessionRef: 'b', harness: 'native', kind: 'native-arm', stage: 'coding', model: 'm', launchedAt: '2026-11-15T13:00:00.000Z', attemptId: 'coding@abc#2' },
+    ] as const;
+    let seenOwnership = 0;
+    const spend = await resolveTaskSpendRemainder({
+      repoDir,
+      featureDir: featureDir(repoDir),
+      ownership: rows,
+      meter: async (input) => {
+        seenOwnership = input.ownership?.length ?? 0;
+        return metered(12);
+      },
+    });
+    assert.equal(seenOwnership, 2, 'both owned launch rows reach the one meter');
+    assert.equal(spend?.remainingUsd, 13);
+  });
+
   it('floors an overspent task at zero remaining rather than going negative', async () => {
     const repoDir = makeRepo({ mill: { defaultMaxCostUsd: 25 } });
     const spend = await resolveTaskSpendRemainder({
