@@ -1459,30 +1459,17 @@ finalize_challenge_execution_intent_before_coding() {
   [[ "$challenge_role_meta" != "challenger" ]] || return 0
   [[ -f "$feature_dir/.post-expansion-route.json" ]] || return 0
 
-  # A challenge has already chosen its experimental arm before either side is
-  # expanded.  The expanded route is useful for filling in the shared route,
-  # but it must never resample that arm: doing so lets Hokusai replace the
-  # challenger and turns an exploration run into another incumbent route.
-  # apply_expanded_route_if_present preserves the selected-stage fields from
-  # this intent while applying every non-varied field from the expanded route.
-  local existing_intent pinned_stage=""
+  # The launch lottery already decided challenge-vs-single (HOK-3506).
+  # Finalization only resolves that sealed decision against the now-available
+  # expanded route; it never reruns the lottery and never substitutes a
+  # sealed challenger. Covered by tests/journeys/planner-expanded-route-comparison.journey.sh
+  # and tests/fixtures/lifecycle/sealed_single_stays_single_through_plan_to_code.sh.
+  local existing_intent
   # allow-task-field: legacy challengeIntent fallback for pre-challengeExecutionIntent state files
   existing_intent=$(read_state_value "" --arg i "$issue" '(.tasks[$i].challengeExecutionIntent // .tasks[$i].challengeIntent) // empty' 2>/dev/null || true)
-  if [[ -n "$existing_intent" ]]; then
-    pinned_stage=$(echo "$existing_intent" | jq -r '(.selectedStage // .challengeStage // "")' 2>/dev/null || true)
-  fi
-  # Fall back to the stage recorded directly on the task; either way the stage
-  # is decided once, at selection, and is never re-sampled below.
-  [[ -n "$pinned_stage" && "$pinned_stage" != "null" ]] || pinned_stage="$challenge_stage_meta"
+  [[ -n "$existing_intent" ]] || return 0
 
-  # HOK-3065: a plan-stage arm sealed at launch in awaiting_expanded_route
-  # materialises here — this is the plan→code handoff, the first point the
-  # expanded route exists. Resolve the sealed decision against the expanded
-  # route and fork the challenger at t=0. The selection is never re-sampled; an
-  # ineligible sealed challenger collapses to single rather than being
-  # substituted. Restart-safe and idempotent (checked-and-set + bounded retry).
-  # This must run *before* the existing-intent preservation short-circuit,
-  # because the sealed intent always has pairId/primary/challenger fields.
+  # HOK-3065: plan-stage challenger sealed pre-expansion materialises at t=0.
   local expanded_route_arm_count
   expanded_route_arm_count=$(challenge_arms_list_awaiting_expanded_route "$issue" | jq -r 'length' 2>/dev/null || echo "0")
   [[ "$expanded_route_arm_count" =~ ^[0-9]+$ ]] || expanded_route_arm_count=0
@@ -1492,202 +1479,136 @@ finalize_challenge_execution_intent_before_coding() {
     return 0
   fi
 
-  if [[ -n "$existing_intent" ]] \
-    && echo "$existing_intent" | jq -e '(.pairId // "") != "" and (.primary // null) != null and (.challenger // null) != null' >/dev/null 2>&1; then
-    log "status" "  $issue: Preserving selected challenge arm through expanded routing"
-    return 0
-  fi
+  local resolution status
+  resolution=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "resolve-challenge-task.ts"     --resolve-sealed     --sealed-intent "$existing_intent"     --feature-dir "$feature_dir"     --repo-dir "$REPO_DIR" 2>/dev/null || echo "")
+  status="$(echo "$resolution" | jq -r '.status // "collapse"' 2>/dev/null || echo "collapse")"
 
-  # HOK-2813: a primary carrying nested challengeArms[] records is in the
-  # deferred-materialisation flow. Its challenger selection is sealed in the
-  # arm record itself; re-running resolve-challenge-task here could resample
-  # the pair while no challenger task exists yet — the historic `_c` pairing
-  # drift. With no arm running before the fork, there is nothing to preserve
-  # through an expanded route: keep the immutable intent and stop.
-  local nested_arm_count
-  nested_arm_count=$(read_state_value "0" --arg i "$issue" '((.tasks[$i].challengeArms // []) | length)')
-  if [[ "$nested_arm_count" =~ ^[0-9]+$ ]] && (( nested_arm_count > 0 )); then
-    log "status" "  $issue: Deferred challenger arm holds the sealed selection; skipping expanded challenge refinalization"
-    return 0
-  fi
+  case "$status" in
+    single)
+      # Sealed as single at launch — keep it single, do not create a phantom pair.
+      return 0
+      ;;
+    collapse)
+      local collapse_reason collapse_detail collapsed_intent
+      collapse_reason="$(echo "$resolution" | jq -r '.reason // "sealed_intent_incomplete"' 2>/dev/null || echo "sealed_intent_incomplete")"
+      collapse_detail="$(echo "$resolution" | jq -r '.detail // empty' 2>/dev/null || echo "")"
+      collapsed_intent=$(echo "$existing_intent" | jq -c         --arg reason "$collapse_reason"         --arg detail "$collapse_detail"         'del(.challenger)
+         | .noChallengeReason = $reason
+         | .challengeCollapseReason = $reason
+         | .challengeCollapseDetail = $detail' 2>/dev/null || echo "$existing_intent")
+      local challenger_key
+      challenger_key="$(task_identity_challenger_key "$issue" 2>/dev/null || echo "")"
+      challenge_cancel_challenger_arm "$issue" "$slug" "$challenger_key" "$feature_dir" "" "" "$collapse_reason" "$collapse_detail" || true
+      persist_challenge_execution_intent "$issue" "" "$feature_dir" "$collapsed_intent"
+      log_warn "$issue → sealed challenge collapsed ($collapse_reason)"
+      FINALIZED_CHALLENGE_CODER=""
+      FINALIZED_CHALLENGE_STAGE=""
+      return 0
+      ;;
+    materialize)
+      local enriched_intent stage
+      enriched_intent=$(echo "$resolution" | jq -c '.intent // empty' 2>/dev/null || true)
+      [[ -n "$enriched_intent" ]] || { log_warn "$issue → resolve-sealed returned materialize but no intent"; return 0; }
+      stage=$(echo "$enriched_intent" | jq -r '.selectedStage // .challengeStage // "implementation"' 2>/dev/null || echo "implementation")
 
-  local refresh_title issue_json packet_arg refreshed_plan refreshed_source refreshed_mode refreshed_reason
-  local pinned_stage_arg=()
-  if [[ -n "$pinned_stage" && "$pinned_stage" != "null" ]]; then
-    # Without this the refresh rolls a fresh stage from challenge.stageWeights,
-    # which is how an already-selected implementation-stage arm (a Qwen or Kimi
-    # coder) became an unrelated plan-stage pair on the way to coding.
-    pinned_stage_arg=(--pinned-stage "$pinned_stage")
-  fi
-  refresh_title=$(pass_task_field "$issue" title)
-  if [[ -z "$refresh_title" ]]; then
-    issue_json=$(cat "/tmp/${SESSION}-${issue}-issue.json" 2>/dev/null || echo "{}")
-    refresh_title=$(echo "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")
-  fi
+      # Depths/mode are not part of the sealed envelope; read them from the
+      # expanded route that is now available.
+      local expanded_route_json plan_depth code_depth review_mode
+      expanded_route_json=$(cat "$feature_dir/.post-expansion-route.json" 2>/dev/null || echo "{}")
+      plan_depth=$(echo "$expanded_route_json" | jq -r '.planDepth // "light"' 2>/dev/null || echo "light")
+      code_depth=$(echo "$expanded_route_json" | jq -r '.codeDepth // "medium"' 2>/dev/null || echo "medium")
+      review_mode=$(echo "$expanded_route_json" | jq -r '.reviewMode // "static"' 2>/dev/null || echo "static")
 
-  packet_arg=()
-  if [[ -f "$feature_dir/task-packet.md" ]]; then
-    packet_arg=(--file "$feature_dir/task-packet.md")
-  elif [[ -f "/tmp/${SESSION}-${issue}-taskpacket.md" ]]; then
-    packet_arg=(--file "/tmp/${SESSION}-${issue}-taskpacket.md")
-  fi
+      # Primary arm route from the enriched intent.
+      local primary_planner primary_planner_agent primary_coder_model primary_coder_agent primary_reviewer primary_reviewer_agent
+      primary_planner=$(echo "$enriched_intent" | jq -r '.primary.planner.model // empty' 2>/dev/null)
+      primary_planner_agent=$(echo "$enriched_intent" | jq -r '.primary.planner.agent // empty' 2>/dev/null)
+      primary_coder_model=$(echo "$enriched_intent" | jq -r '.primary.coder.model // empty' 2>/dev/null)
+      primary_coder_agent=$(echo "$enriched_intent" | jq -r '.primary.coder.agent // empty' 2>/dev/null)
+      primary_reviewer=$(echo "$enriched_intent" | jq -r '.primary.reviewer.model // empty' 2>/dev/null)
+      primary_reviewer_agent=$(echo "$enriched_intent" | jq -r '.primary.reviewer.agent // empty' 2>/dev/null)
 
-  refreshed_plan=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "resolve-challenge-task.ts" \
-    --issue "$issue" \
-    --slug "$slug" \
-    --title "$refresh_title" \
-    --repo-dir "$REPO_DIR" \
-    --remaining-slots 2 \
-    --primary-model "$primary_coder" \
-    --feature-dir "$feature_dir" \
-    "${pinned_stage_arg[@]}" \
-    "${packet_arg[@]}" 2>/dev/null || echo "")
-  refreshed_source=$(echo "$refreshed_plan" | jq -r '.decisionSource // "bootstrap"' 2>/dev/null || echo "bootstrap")
-  refreshed_mode=$(echo "$refreshed_plan" | jq -r '.mode // "single"' 2>/dev/null || echo "single")
-  refreshed_reason=$(echo "$refreshed_plan" | jq -r '.reason // empty' 2>/dev/null || echo "")
+      local primary_varied challenger_varied
+      primary_varied=$(challenge_selection_health_varied_model "$stage" "$primary_planner" "$primary_coder_model" "$primary_reviewer")
 
-  if [[ "$refreshed_source" != "expanded" && "$refreshed_source" != "preserved" ]]; then
-    log_warn "$issue → expanded challenge finalization did not use expanded/preserved route (source=$refreshed_source); keeping current challenge state"
-    return 0
-  fi
+      # Challenger arm route from the enriched intent.
+      local challenger_key challenger_planner challenger_planner_agent challenger_coder_model challenger_coder_agent challenger_reviewer challenger_reviewer_agent
+      challenger_key=$(echo "$enriched_intent" | jq -r '.challenger.key // empty' 2>/dev/null)
+      [[ -n "$challenger_key" ]] || challenger_key="$(task_identity_challenger_key "$issue" 2>/dev/null || echo "")"
+      challenger_planner=$(echo "$enriched_intent" | jq -r '.challenger.planner.model // empty' 2>/dev/null)
+      challenger_planner_agent=$(echo "$enriched_intent" | jq -r '.challenger.planner.agent // empty' 2>/dev/null)
+      challenger_coder_model=$(echo "$enriched_intent" | jq -r '.challenger.coder.model // empty' 2>/dev/null)
+      challenger_coder_agent=$(echo "$enriched_intent" | jq -r '.challenger.coder.agent // empty' 2>/dev/null)
+      challenger_reviewer=$(echo "$enriched_intent" | jq -r '.challenger.reviewer.model // empty' 2>/dev/null)
+      challenger_reviewer_agent=$(echo "$enriched_intent" | jq -r '.challenger.reviewer.agent // empty' 2>/dev/null)
 
-  local intent_json
-  intent_json=$(echo "$refreshed_plan" | jq -c '.challengeExecutionIntent // empty' 2>/dev/null || true)
+      challenger_varied=$(challenge_selection_health_varied_model "$stage" "$challenger_planner" "$challenger_coder_model" "$challenger_reviewer")
 
-  if [[ "$refreshed_mode" != "challenge" ]]; then
-    if [[ -n "$refreshed_reason" ]]; then
-      state_mutate "$STATE_FILE" \
-        '.tasks[$issue].challengeCollapseReason = $reason
-         | .tasks[$issue].challengeCollapseDetail = $detail
-         | .tasks[$issue].updated = (now | todate)' \
-        --arg issue "$issue" \
-        --arg reason "$refreshed_reason" \
-        --arg detail "Challenge finalization produced no challenge: $refreshed_reason" >/dev/null 2>&1 || true
-    fi
-    persist_challenge_execution_intent "$issue" "" "$feature_dir" "$intent_json"
-    [[ -n "$refreshed_reason" ]] && log_warn "$issue → challenge finalization produced no challenge ($refreshed_reason)"
-    return 0
-  fi
+      if [[ -n "$primary_varied" && "$primary_varied" == "$challenger_varied" ]]         && ! echo "$enriched_intent" | jq -e '.intentionallyIdentical == true' >/dev/null 2>&1; then
+        local collapse_reason collapse_detail collapsed_intent
+        collapse_reason="identical-at-varied-stage"
+        collapse_detail="Challenge finalization collapsed to identical ${stage} model ${primary_varied}"
+        collapsed_intent=$(echo "$enriched_intent" | jq -c           --arg reason "$collapse_reason"           --arg detail "$collapse_detail"           'del(.challenger)
+           | .noChallengeReason = $reason
+           | .challengeCollapseReason = $reason
+           | .challengeCollapseDetail = $detail' 2>/dev/null || echo "$enriched_intent")
+        challenge_cancel_challenger_arm "$issue" "$slug" "$challenger_key" "$feature_dir" "$stage" "$primary_varied" "$collapse_reason" "$collapse_detail"
+        persist_challenge_execution_intent "$issue" "" "$feature_dir" "$collapsed_intent"
+        log_warn "$issue → challenge finalization cancelled challenger ($collapse_reason)"
+        FINALIZED_CHALLENGE_CODER=""
+        FINALIZED_CHALLENGE_STAGE=""
+        return 0
+      fi
 
-  local new_primary new_primary_planner new_primary_reviewer new_primary_plan_depth new_primary_code_depth new_primary_review_mode
-  local new_challenge_stage new_challenger_key new_challenger_model new_challenger_planner new_challenger_reviewer
-  local new_challenger_plan_depth new_challenger_code_depth new_challenger_review_mode
-  new_primary=$(echo "$refreshed_plan" | jq -r '.entries[0].model // empty' 2>/dev/null)
-  new_primary_planner=$(echo "$refreshed_plan" | jq -r '.entries[0].planner // empty' 2>/dev/null)
-  new_primary_reviewer=$(echo "$refreshed_plan" | jq -r '.entries[0].reviewer // empty' 2>/dev/null)
-  new_primary_plan_depth=$(echo "$refreshed_plan" | jq -r '.entries[0].planDepth // empty' 2>/dev/null)
-  new_primary_code_depth=$(echo "$refreshed_plan" | jq -r '.entries[0].codeDepth // empty' 2>/dev/null)
-  new_primary_review_mode=$(echo "$refreshed_plan" | jq -r '.entries[0].reviewMode // empty' 2>/dev/null)
-  new_challenge_stage=$(echo "$refreshed_plan" | jq -r '.challengeStage // "implementation"' 2>/dev/null || echo "implementation")
-  new_challenger_key=$(echo "$refreshed_plan" | jq -r '.entries[1].key // empty' 2>/dev/null)
-  new_challenger_model=$(echo "$refreshed_plan" | jq -r '.entries[1].model // empty' 2>/dev/null)
-  new_challenger_planner=$(echo "$refreshed_plan" | jq -r '.entries[1].planner // empty' 2>/dev/null)
-  new_challenger_reviewer=$(echo "$refreshed_plan" | jq -r '.entries[1].reviewer // empty' 2>/dev/null)
-  new_challenger_plan_depth=$(echo "$refreshed_plan" | jq -r '.entries[1].planDepth // empty' 2>/dev/null)
-  new_challenger_code_depth=$(echo "$refreshed_plan" | jq -r '.entries[1].codeDepth // empty' 2>/dev/null)
-  new_challenger_review_mode=$(echo "$refreshed_plan" | jq -r '.entries[1].reviewMode // empty' 2>/dev/null)
+      local challenger_slug challenger_branch challenger_worktree challenger_pr challenger_status challenger_agent challenger_linear_issue
+      challenger_slug=$(pass_task_field "$challenger_key" slug 2>/dev/null || true)
+      challenger_branch=$(pass_task_field "$challenger_key" branch 2>/dev/null || true)
+      challenger_worktree=$(pass_task_field "$challenger_key" worktree 2>/dev/null || true)
+      if [[ -n "$challenger_slug" && -n "$challenger_branch" && -n "$challenger_worktree" ]]; then
+        # Stamp the primary as paired only once the challenger is confirmed
+        # to exist; stamping it unconditionally re-creates a phantom pair.
+        local current_pr current_status current_agent current_linear_issue
+        current_pr=$(pass_task_field "$issue" pr)
+        current_status=$(pass_task_field "$issue" status)
+        current_agent=$(pass_task_field "$issue" agent)
+        current_linear_issue=$(pass_task_field "$issue" linearIssueId)
+        save_task_state "$issue" "$slug" "$branch" "$wt_dir" "$current_pr" "$current_status" "$current_agent" "$current_linear_issue"           "true" "$issue" "primary" "$primary_varied" "$primary_planner" "$primary_coder_model" "$primary_reviewer" "$plan_depth" "$code_depth" "$review_mode" "$stage"
 
-  if [[ -z "$new_primary" || -z "$new_challenger_key" || -z "$new_challenger_model" ]]; then
-    log_warn "$issue → expanded challenge finalization returned incomplete pair; keeping current challenge state"
-    return 0
-  fi
+        challenger_pr=$(pass_task_field "$challenger_key" pr)
+        challenger_status=$(pass_task_field "$challenger_key" status)
+        challenger_agent=$(pass_task_field "$challenger_key" agent)
+        challenger_linear_issue=$(pass_task_field "$challenger_key" linearIssueId)
+        save_task_state "$challenger_key" "$challenger_slug" "$challenger_branch" "$challenger_worktree" "$challenger_pr" "$challenger_status" "$challenger_agent" "$challenger_linear_issue"           "true" "$issue" "challenger" "$challenger_varied" "$challenger_planner" "$challenger_coder_model" "$challenger_reviewer" "$plan_depth" "$code_depth" "$review_mode" "$stage"
+        state_mutate "$STATE_FILE"           '.tasks[$issue].challengerLaunched = true
+           | .tasks[$issue].updated = (now | todate)'           --arg issue "$issue" >/dev/null 2>&1 || true
 
-  # Finalization must not manufacture phantom pairs (a pair where no challenger arm was launched).
-  # This happens when finalization re-ran resolve-challenge-task after a single-model launch
-  # and got mode=challenge, but the ${issue}_c task doesn't exist.
-  # Check: (1) challenger already exists in state, OR (2) challenge was already selected at launch.
-  local challenger_exists was_challenge_at_launch
-  challenger_exists="false"
-  was_challenge_at_launch="false"
+        persist_challenge_execution_intent "$issue" "$challenger_key" "$feature_dir" "$enriched_intent"
+        FINALIZED_CHALLENGE_CODER="$primary_coder_model"
+        FINALIZED_CHALLENGE_STAGE="$stage"
 
-  local existing_challenger_slug existing_challenger_branch existing_challenger_worktree
-  existing_challenger_slug=$(pass_task_field "$new_challenger_key" slug 2>/dev/null || true)
-  existing_challenger_branch=$(pass_task_field "$new_challenger_key" branch 2>/dev/null || true)
-  existing_challenger_worktree=$(pass_task_field "$new_challenger_key" worktree 2>/dev/null || true)
-  [[ -n "$existing_challenger_slug" && -n "$existing_challenger_branch" && -n "$existing_challenger_worktree" ]] && challenger_exists="true"
-
-  local existing_challenge_flag existing_pair_id
-  existing_challenge_flag=$(get_task_meta "$issue" challenge 2>/dev/null || true)
-  existing_pair_id=$(get_task_meta "$issue" challengePairId 2>/dev/null || true)
-  [[ "$existing_challenge_flag" == "true" || -n "$existing_pair_id" ]] && was_challenge_at_launch="true"
-
-  if [[ "$challenger_exists" != "true" && "$was_challenge_at_launch" != "true" ]]; then
-    # Finalization may refine an existing pair; it must never create one.
-    local no_challenge_intent
-    no_challenge_intent=$(echo "$intent_json" | jq -c \
-      'del(.challenger) | .noChallengeReason = "challenger_never_launched" | .challengeCollapseReason = "challenger_never_launched"' 2>/dev/null || echo "$intent_json")
-    persist_challenge_execution_intent "$issue" "" "$feature_dir" "$no_challenge_intent"
-    state_mutate "$STATE_FILE" \
-      '.tasks[$issue].challengeCollapseReason = "challenger_never_launched"
-       | .tasks[$issue].challengeCollapseDetail = "Finalization selected a pair but no challenger arm was launched; staying single-model"
-       | .tasks[$issue].challenge = false
-       | .tasks[$issue] |= del(.challengePairId, .role)
-       | .tasks[$issue].updated = (now | todate)' \
-      --arg issue "$issue" >/dev/null 2>&1 || true
-    log_route_lifecycle "challenge_not_formed" "issue=$issue" "stage=$new_challenge_stage" "model=$new_primary" "reason=challenger_never_launched"
-    log_warn "$issue → challenge finalization selected a pair but no challenger arm exists; staying single-model"
-    FINALIZED_CHALLENGE_CODER=""
-    FINALIZED_CHALLENGE_STAGE=""
-    return 0
-  fi
-
-  # Compare the varied-stage models, not the coders. Plan/review challenges
-  # intentionally share the coder on both sides.
-  local new_primary_varied new_challenger_varied
-  new_primary_varied=$(echo "$refreshed_plan" | jq -r '.entries[0].variedModel // .entries[0].model // empty' 2>/dev/null)
-  new_challenger_varied=$(echo "$refreshed_plan" | jq -r '.entries[1].variedModel // .entries[1].model // empty' 2>/dev/null)
-  if [[ -n "$new_primary_varied" && "$new_primary_varied" == "$new_challenger_varied" ]] \
-    && ! echo "$intent_json" | jq -e '.intentionallyIdentical == true' >/dev/null 2>&1; then
-    local collapse_reason collapse_detail collapsed_intent
-    collapse_reason="identical-at-varied-stage"
-    collapse_detail="Challenge finalization collapsed to identical ${new_challenge_stage} model ${new_primary_varied}"
-    collapsed_intent=$(echo "$intent_json" | jq -c \
-      --arg reason "$collapse_reason" \
-      --arg detail "$collapse_detail" \
-      'del(.challenger)
-       | .noChallengeReason = $reason
-       | .challengeCollapseReason = $reason
-       | .challengeCollapseDetail = $detail' 2>/dev/null || echo "$intent_json")
-    challenge_cancel_challenger_arm "$issue" "$slug" "$new_challenger_key" "$feature_dir" "$new_challenge_stage" "$new_primary_varied" "$collapse_reason" "$collapse_detail"
-    persist_challenge_execution_intent "$issue" "" "$feature_dir" "$collapsed_intent"
-    log_warn "$issue → challenge finalization cancelled challenger ($collapse_reason)"
-    FINALIZED_CHALLENGE_CODER=""
-    FINALIZED_CHALLENGE_STAGE=""
-    return 0
-  fi
-
-  local current_pr current_status current_agent current_linear_issue
-  current_pr=$(pass_task_field "$issue" pr)
-  current_status=$(pass_task_field "$issue" status)
-  current_agent=$(pass_task_field "$issue" agent)
-  current_linear_issue=$(pass_task_field "$issue" linearIssueId)
-  save_task_state "$issue" "$slug" "$branch" "$wt_dir" "$current_pr" "$current_status" "$current_agent" "$current_linear_issue" \
-    "true" "$issue" "primary" "$new_primary" "$new_primary_planner" "$new_primary" "$new_primary_reviewer" "$new_primary_plan_depth" "$new_primary_code_depth" "$new_primary_review_mode" "$new_challenge_stage"
-
-  local challenger_slug challenger_branch challenger_worktree challenger_pr challenger_status challenger_agent challenger_linear_issue
-  challenger_slug=$(pass_task_field "$new_challenger_key" slug)
-  challenger_branch=$(pass_task_field "$new_challenger_key" branch)
-  challenger_worktree=$(pass_task_field "$new_challenger_key" worktree)
-  challenger_pr=$(pass_task_field "$new_challenger_key" pr)
-  challenger_status=$(pass_task_field "$new_challenger_key" status)
-  challenger_agent=$(pass_task_field "$new_challenger_key" agent)
-  challenger_linear_issue=$(pass_task_field "$new_challenger_key" linearIssueId)
-  if [[ -n "$challenger_slug" && -n "$challenger_branch" && -n "$challenger_worktree" ]]; then
-    save_task_state "$new_challenger_key" "$challenger_slug" "$challenger_branch" "$challenger_worktree" "$challenger_pr" "$challenger_status" "$challenger_agent" "$challenger_linear_issue" \
-      "true" "$issue" "challenger" "$new_challenger_model" "$new_challenger_planner" "$new_challenger_model" "$new_challenger_reviewer" "$new_challenger_plan_depth" "$new_challenger_code_depth" "$new_challenger_review_mode" "$new_challenge_stage"
-    # Mark that the challenger was successfully launched (P0.6, HOK-2798)
-    state_mutate "$STATE_FILE" \
-      '.tasks[$issue].challengerLaunched = true
-       | .tasks[$issue].updated = (now | todate)' \
-      --arg issue "$issue" >/dev/null 2>&1 || true
-  fi
-
-  persist_challenge_execution_intent "$issue" "$new_challenger_key" "$feature_dir" "$intent_json"
-  FINALIZED_CHALLENGE_CODER="$new_primary"
-  FINALIZED_CHALLENGE_STAGE="$new_challenge_stage"
-
-  log "status" "  $issue: Challenge intent finalized ($refreshed_source route, stage=$new_challenge_stage): $new_primary_varied vs $new_challenger_varied"
-  challenge_assert_arms_diverge "$issue" "$new_challenge_stage" "$new_primary_varied" "$new_challenger_varied" "$intent_json"
+        log "status" "  $issue: Challenge intent finalized (sealed route, stage=$stage): $primary_varied vs $challenger_varied"
+        challenge_assert_arms_diverge "$issue" "$stage" "$primary_varied" "$challenger_varied" "$enriched_intent"
+      else
+        # The sealed decision resolved to a pair, but the challenger task
+        # never actually exists in state (a launch-time race/failure between
+        # sealing the pair and spawning its second task). Persisting a paired
+        # intent here would stamp a phantom pair under this PR's own target
+        # bug class, just via a different trigger than the deleted
+        # challenger_never_launched guard caught. Collapse to single instead.
+        local collapse_reason collapse_detail collapsed_intent
+        collapse_reason="challenger_task_missing"
+        collapse_detail="Sealed pair resolved to materialize, but no challenger task exists in state"
+        collapsed_intent=$(echo "$enriched_intent" | jq -c           --arg reason "$collapse_reason"           --arg detail "$collapse_detail"           'del(.challenger)
+           | .noChallengeReason = $reason
+           | .challengeCollapseReason = $reason
+           | .challengeCollapseDetail = $detail' 2>/dev/null || echo "$enriched_intent")
+        persist_challenge_execution_intent "$issue" "" "$feature_dir" "$collapsed_intent"
+        log_warn "$issue → sealed challenge collapsed ($collapse_reason)"
+        FINALIZED_CHALLENGE_CODER=""
+        FINALIZED_CHALLENGE_STAGE=""
+      fi
+      ;;
+  esac
 }
 
 challenge_cancel_challenger_arm() {
@@ -3129,8 +3050,9 @@ challenge_materialize_expanded_route_arm() {
   fi
 
   local resolution status
-  resolution=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "resolve-challenge-task.ts" \
-    --resolve-sealed --sealed-intent "$sealed_intent" --executed-stages "$executed_stages" \
+  # HOK-3065: --resolve-sealed must share the resolve-challenge-task.ts line so the guard sees it.
+  resolution=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "resolve-challenge-task.ts" --resolve-sealed --sealed-intent "$sealed_intent" \
+    --executed-stages "$executed_stages" \
     --feature-dir "$primary_feature_dir" --repo-dir "$REPO_DIR" 2>/dev/null || echo "")
   status="$(echo "$resolution" | jq -r '.status // "collapse"' 2>/dev/null || echo "collapse")"
   if [[ "$status" != "materialize" ]]; then
@@ -4406,34 +4328,11 @@ conflict_remediation_exhausted_hold() {
   bounded_retry_is_exhausted "$state_dir" "conflict-remediation-relaunch"
 }
 
-# Tend merge-attempt fact (HOK-3316). Tend records a failed merge attempt as
-# one condition-keyed marker, .tend-attempt-result.json, keyed on (PR head,
-# integration base); deriveMergeLabel renders it as wm:blocked. GitHub's 3-way
-# mergeability can be clean while tend's per-commit rebase conflicts, so a
-# rebase failure is also a merge conflict for this task: Ready's
-# merge-conflict check reads the same fact and reports CONFLICTED, which
-# launches the one-per-(head, base) conflict resolver above.
-tend_attempt_fact_path() {
-  printf '%s\n' "$1/.tend-attempt-result.json"
-}
-
-# tend_attempt_conflict_needs_ready <state_dir> <pr_number> <base_sha>
-# True when tend recorded a rebase failure for the PR's current head against
-# <base_sha> after the last Ready run finished, so Ready has not yet seen it.
-# Each fact therefore re-runs Ready once; Ready's own result then carries the
-# conflict (and the resolver it launched), never this marker.
-tend_attempt_conflict_needs_ready() {
-  local state_dir="$1" pr_number="$2" base_sha="$3" fact pr_head written_at ready_at
-  fact="$(tend_attempt_fact_path "$state_dir")"
-  [[ -f "$fact" && -n "$base_sha" && -n "$pr_number" ]] || return 1
-  [[ "$(jq -r '.detail.phase // empty' "$fact" 2>/dev/null || echo "")" == "rebase" ]] || return 1
-  [[ "$(jq -r '.detail.baseSha // empty' "$fact" 2>/dev/null || echo "")" == "$base_sha" ]] || return 1
-  pr_head=$(wavemill_pr_cache_row_by_pr "$pr_number" 2>/dev/null | jq -r '.headRefOid // empty' 2>/dev/null || echo "")
-  [[ -n "$pr_head" && "$(jq -r '.headSha // empty' "$fact" 2>/dev/null || echo "")" == "$pr_head" ]] || return 1
-  written_at=$(jq -r '.writtenAt // empty' "$fact" 2>/dev/null || echo "")
-  ready_at=$(jq -r '.finishedAt // .startedAt // empty' "$state_dir/.ready-result.json" 2>/dev/null || echo "")
-  [[ -n "$written_at" && ( -z "$ready_at" || "$written_at" > "$ready_at" ) ]]
-}
+# HOK-3513: the tend merge-attempt fact is no longer read here. A rebase
+# conflict after Ready passed is one cause of
+# `readyVerdictInvalidation` (shared/lib/merge-queue.ts), filled by
+# merge-queue-select from the same `.tend-attempt-result.json`, so the fact
+# re-runs Ready through the one invalidation instead of a private shell gate.
 
 # HOK-3385: the rebase-alternative resolver note (tend_attempt_conflict_prompt_note)
 # is deleted. One strategy brings a task branch up to date with its base:
@@ -8273,6 +8172,23 @@ native_terminal_failure_next_action() {
   failure_policy_next_action "${1:-}"
 }
 
+# The task's remaining spend, from the one seam (HOK-3492). Prints an empty
+# line when the seam cannot answer (no recorded budget, unavailable install,
+# unknown metering) — an absent number never parks a stage by itself.
+task_spend_remaining_usd() {
+  local issue="$1" feature_dir="$2"
+  local repo_dir wt_dir slug out
+  repo_dir="${WAVEMILL_MILLED_REPO_DIR:-${REPO_DIR:-}}"
+  [[ -n "$repo_dir" && -d "$feature_dir" ]] || return 0
+  wt_dir="$(cd "$feature_dir/../.." 2>/dev/null && pwd)" || return 0
+  slug="$(basename "$feature_dir")"
+  out="$(cd "$repo_dir" && wavemill_run_tool task-spend-cli.ts \
+    --repo-dir "$repo_dir" --worktree "$wt_dir" --feature-dir "$feature_dir" \
+    --issue "$issue" --slug "$slug" 2>/dev/null)" || return 0
+  # The CLI keeps its JSON on stdout; take the last JSON line defensively.
+  jq -r '.remainingUsd // empty' <<<"$(printf '%s\n' "$out" | grep '^{' | tail -1)" 2>/dev/null || true
+}
+
 # Resolve and classify a native stage failure once (HOK-3176). Evidence
 # precedence: the agent's terminal hook detail, else the stage notes; a typed
 # stage-failure envelope (HOK-3064) supplies the kind and canonical model; the
@@ -8286,7 +8202,7 @@ native_terminal_failure_next_action() {
 stage_failure_decision() {
   local issue="$1" feature_dir="$2" stage="$3"
   local detail envelope_json="" failure_kind="" envelope_cause="" envelope_model="" handoff_reason=""
-  local budget_exhausted=""
+  local budget_exhausted="" budget_kind="" remaining_usd=""
   local is_challenge cache fingerprint cached decision
 
   if [[ "$stage" == "ready" ]]; then
@@ -8303,6 +8219,36 @@ stage_failure_decision() {
   fingerprint="$(printf '%s|%s|%s|%s' "$detail" "$is_challenge" \
     "$(cat "$feature_dir/.${stage}-failure-envelope.json" 2>/dev/null || true)" \
     "$(cat "$feature_dir/.coding-failure-handoff.json" 2>/dev/null || true)" | cksum | awk '{print $1}')"
+
+  # Review-specific early branch for scope stop classification
+  if [[ "$stage" == "review" ]]; then
+    local scope_stop_file="$feature_dir/.review-scope-stop.json"
+    if [[ -f "$scope_stop_file" ]]; then
+      # Read the marker and check if it's valid. An empty current head would
+      # pass "" to marker_is_stale; fall through to generic classification in
+      # that case rather than compare against a blank.
+      local marker_json head_sha findings offending_paths code_failure_excerpt marker_detail scope_fp current_head
+      current_head="$(git rev-parse HEAD 2>/dev/null || true)"
+      if [[ -n "$current_head" ]] && marker_json="$(marker_read "$scope_stop_file" 2>/dev/null)" && [[ -n "$marker_json" ]]; then
+        if ! marker_is_stale "$scope_stop_file" "$current_head"; then
+          # Valid scope stop marker found, synthesize code-failure decision.
+          head_sha="$(jq -r '.headSha // empty' <<<"$marker_json" 2>/dev/null || echo "")"
+          findings="$(jq -c '.detail.findings // []' <<<"$marker_json" 2>/dev/null || echo "[]")"
+          offending_paths="$(jq -c '.detail.offendingPaths // []' <<<"$marker_json" 2>/dev/null || echo "[]")"
+          code_failure_excerpt="$(jq -r '[.detail.findings[]? | [(.offendingPath // empty), (.message // empty)] | map(select(length>0)) | join(": ") | select(length>0)] | join("; ")' <<<"$marker_json" 2>/dev/null || echo "")"
+          [[ -n "$code_failure_excerpt" ]] || code_failure_excerpt="review scope violation"
+          marker_detail="$(jq -r '.detail.reason // .reason // "review scope violation"' <<<"$marker_json" 2>/dev/null || echo "review scope violation")"
+          scope_fp="$(printf '%s|%s|%s' "$head_sha" "$findings" "$offending_paths" | cksum | awk '{print $1}')"
+          jq -nc \
+            --arg excerpt "$code_failure_excerpt" \
+            --arg detail "$marker_detail" \
+            --arg fingerprint "$scope_fp" \
+            '{class:"code-failure",failureKind:"review-scope-stop",codeFailureExcerpt:$excerpt,rationale:"review scope guard refused staged/committed paths",nextAction:"coding stage must either narrow the diff to the declared scope or widen the plan Scope In",attribution:"unattributed",detail:$detail,handoffReason:"",envelopeCause:"",envelopeModel:"",fingerprint:$fingerprint}'
+          return 0
+        fi
+      fi
+    fi
+  fi
   if cached="$(jq -ce --arg f "$fingerprint" 'select(.fingerprint == $f)' "$cache" 2>/dev/null)"; then
     printf '%s\n' "$cached"
     return 0
@@ -8314,12 +8260,21 @@ stage_failure_decision() {
     envelope_cause="$(jq -r '.cause // empty' <<<"$envelope_json" 2>/dev/null || true)"
     envelope_model="$(jq -r '.model // empty' <<<"$envelope_json" 2>/dev/null || true)"
     budget_exhausted="$(jq -c '.budgetExhausted // empty' <<<"$envelope_json" 2>/dev/null || true)"
+    budget_kind="$(jq -r '.budgetExhausted.kind // empty' <<<"$envelope_json" 2>/dev/null || true)"
   fi
   if [[ -z "$failure_kind" && "$stage" == "coding" ]]; then
     handoff_reason="$(native_coding_failure_handoff_reason "$feature_dir" 2>/dev/null || true)"
   fi
+  # HOK-3492: a stage that failed after the task's one spend budget was spent
+  # must not consume a bounded-retry attempt. The seam answers "can this task
+  # still spend?"; `cost` is the typed form the policy already treats as
+  # terminal, so the parking decision still lives in failure-policy.ts.
+  if [[ -z "$budget_kind" ]]; then
+    remaining_usd="$(task_spend_remaining_usd "$issue" "$feature_dir" 2>/dev/null || true)"
+    [[ "$remaining_usd" != "0" ]] || budget_kind="cost"
+  fi
 
-  decision="$(failure_policy_decide "$stage" "$failure_kind" "$detail" "$handoff_reason" "$is_challenge" \
+  decision="$(failure_policy_decide "$stage" "$failure_kind" "$detail" "$handoff_reason" "$is_challenge" "$budget_kind" \
     | jq -c --arg detail "$detail" --arg handoffReason "$handoff_reason" --arg envelopeCause "$envelope_cause" \
         --arg envelopeModel "$envelope_model" --arg fingerprint "$fingerprint" \
         --arg budgetExhausted "$budget_exhausted" \
@@ -8501,6 +8456,35 @@ stage_failure_owned_by_bucket() {
 # head or an operator event expires it: escalation never latches.
 #
 # Coding retries replay the persisted execution contract directly, retaining
+# Archive the current review scope baseline and clear it for regeneration.
+# Called when returning to coding from a scope stop so the fresh review runs
+# against a baseline rebuilt from the new coding head. The previous baseline is
+# appended to .review-scope-baseline.history.jsonl before removal. All JSON is
+# built via jq so quotes/newlines in `reason` cannot corrupt the history file.
+archive_review_scope_baseline() {
+  local feature_dir="$1" reason="${2:-scope stop remediation}"
+  local baseline_path="$feature_dir/.review-scope-baseline.json"
+  local history_path="$feature_dir/.review-scope-baseline.history.jsonl"
+  local timestamp baseline_content entry
+  [[ -f "$baseline_path" ]] || { log "No review-scope baseline to archive at $baseline_path"; return 0; }
+  baseline_content="$(cat "$baseline_path" 2>/dev/null || true)"
+  [[ -n "$baseline_content" ]] || { log "Empty review-scope baseline at $baseline_path — nothing to archive"; rm -f "$baseline_path" 2>/dev/null || true; return 0; }
+  timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  if ! entry="$(printf '%s' "$baseline_content" | jq -c \
+    --arg replacedAt "$timestamp" --arg reason "$reason" \
+    '{replacedAt:$replacedAt,reason:$reason,baseline:.}' 2>/dev/null)"; then
+    log_warn "archive_review_scope_baseline: could not encode baseline at $baseline_path — leaving file in place"
+    return 1
+  fi
+  printf '%s\n' "$entry" >>"$history_path" || {
+    log_warn "archive_review_scope_baseline: could not append to $history_path"
+    return 1
+  }
+  rm -f "$baseline_path" 2>/dev/null || true
+  log "Archived review-scope baseline to history and removed $baseline_path"
+  return 0
+}
+
 # the approved plan and implementation. An unavailable contract stays failed
 # under this same bounded budget. Other stages use their existing phase handoff.
 #
@@ -8562,9 +8546,36 @@ _dispatch_failed_stage_recovery() {
   [[ "$action" == "remediate" || "$stage" == "coding" || "$stage" == "ready" ]] || clear_stage_result "$feature_dir" "$stage"
 
   if [[ "$action" == "remediate" && "$stage" != "ready" ]]; then
+    # Check for review scope stop marker and customize remediation message
+    local remediation_message="$detail"
+    if [[ "$stage" == "review" ]]; then
+      local scope_stop_file="$feature_dir/.review-scope-stop.json"
+      if [[ -f "$scope_stop_file" ]]; then
+        local marker_json
+        if marker_json="$(marker_read "$scope_stop_file" 2>/dev/null)" && [[ -n "$marker_json" ]]; then
+          if ! marker_is_stale "$scope_stop_file" "$(git rev-parse HEAD 2>/dev/null || echo "")"; then
+            # Valid scope stop marker found, use custom message
+            local offending_paths reason
+            offending_paths="$(jq -r '.detail.offendingPaths | join(", ") // "unknown paths"' <<<"$marker_json" 2>/dev/null || echo "unknown paths")"
+            reason="$(jq -r '.reason // "review scope violation"' <<<"$marker_json" 2>/dev/null || echo "review scope violation")"
+            remediation_message="The reviewer refused the current head on scope: $offending_paths. Either narrow coding's diff to the declared scope, or extend the plan's Scope In / Files to Modify. Reason: $reason"
+          fi
+        fi
+      fi
+    fi
+    
+    # Archive the review scope baseline only AFTER the coding relaunch
+    # succeeds — a transient launch failure must not discard the previously
+    # approved baseline.
     if _stage_failure_coding_relaunch "$issue" "$feature_dir" "$win" "$failure_kind" "$failure_class" "$attempts" "$limit" " (code remediation)"; then
+      if [[ "$stage" == "review" && "$action" == "remediate" ]]; then
+        local scope_stop_file="$feature_dir/.review-scope-stop.json"
+        if [[ -f "$scope_stop_file" ]]; then
+          archive_review_scope_baseline "$feature_dir" "scope stop remediation"
+        fi
+      fi
       agent_remediation_deliver "$feature_dir" "$issue" "$feature_dir/.${stage}-result.json" \
-        "Repair the recorded ${stage} code failure: $detail" "${stage}:${head}:${attempts}" --expires-on head,operator-event || true
+        "Repair the recorded ${stage} code failure: $remediation_message" "${stage}:${head}:${attempts}" --expires-on head,operator-event || true
       return 0
     fi
     return 2
@@ -11124,20 +11135,78 @@ ci_summary_from_json() {
   ' 2>/dev/null || echo "unknown"
 }
 
-invalidate_ready_for_ci() {
-  local issue="$1" state_dir="$2" ci_json="$3"
-  local now failing_names reason existing_artifacts artifacts_json pr_number
+# invalidate_ready_verdict <issue> <state_dir> <ci_json> <cause>
+#
+# The ONE write of "a passed Ready verdict no longer holds" (HOK-3513). The
+# decision is readyVerdictInvalidation (shared/lib/merge-queue.ts) over the
+# queue pass's live PR input; this function only records it. Whatever consumed
+# the pass then relaunches Ready through the normal failed-Ready disposition,
+# whose CONFLICTED branch is the only conflict resolver.
+#
+# Idempotent by construction: a no-op unless the current result is a completed
+# pass/warn, so a running, failed or already-relaunched Ready is never
+# clobbered by a second monitor pass.
+#
+# The invalidation deliberately does NOT stamp `mergeConflict` (HOK-3513
+# finding 2): a CONFLICT* mergeConflict artifact reads as base drift to
+# ready_failure_base_drift, which routes to the update-base path and pages at
+# once on a real conflict. The pass's own mergeConflict (normally CLEAN) is
+# kept; the live read lands in liveMergeable / liveMergeStateStatus.
+invalidate_ready_verdict() {
+  local issue="$1" state_dir="$2" ci_json="${3:-}" cause="${4:-}"
+  local result_file="$state_dir/.ready-result.json"
+  local now status verdict agent model pr_number reason failing_names mergeable merge_state
+  local existing_artifacts artifacts_json
+
+  [[ -f "$result_file" ]] || return 0
+  status=$(jq -r '.status // empty' "$result_file" 2>/dev/null || echo "")
+  verdict=$(jq -r '.artifacts.verdict // empty' "$result_file" 2>/dev/null || echo "")
+  if [[ "$status" != "completed" ]] || [[ "$verdict" != "pass" && "$verdict" != "warn" ]]; then
+    return 0
+  fi
+
+  [[ -n "$ci_json" ]] || ci_json='{}'
+  if ! jq -e 'type == "object"' <<<"$ci_json" >/dev/null 2>&1; then
+    ci_json='{}'
+  fi
+
   now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  pr_number=$(jq -r '.artifacts.prNumber // empty' "$result_file" 2>/dev/null || echo "")
+  # Carry the completed run's identity forward (HOK-3513 finding 1): the
+  # failed-Ready recovery refuses a result with no agent ("a monitor
+  # terminalization, never an agent run that could be retried"), so without
+  # this the invalidation could never relaunch Ready.
+  agent=$(jq -r '.agent // empty' "$result_file" 2>/dev/null || echo "")
+  model=$(jq -r '.model // empty' "$result_file" 2>/dev/null || echo "")
+  mergeable=$(printf '%s' "$ci_json" | jq -r '.mergeable // empty' 2>/dev/null || echo "")
+  merge_state=$(printf '%s' "$ci_json" | jq -r '.mergeStateStatus // empty' 2>/dev/null || echo "")
   failing_names=$(printf '%s' "$ci_json" | jq -r '(.failing // []) | join(", ")' 2>/dev/null || echo "")
   [[ -n "$failing_names" ]] || failing_names="required CI checks"
-  reason="CI regressed after ready pass: $failing_names"
-  pr_number=$(jq -r '.artifacts.prNumber // empty' "$state_dir/.ready-result.json" 2>/dev/null || echo "")
-  existing_artifacts=$(jq -c '.artifacts // {"type":"ready"}' "$state_dir/.ready-result.json" 2>/dev/null || echo '{"type":"ready"}')
+
+  case "$cause" in
+    conflict)
+      reason="PR #${pr_number:-?} conflicts with $BASE_BRANCH after Ready passed (mergeable=${mergeable:-unknown}, mergeStateStatus=${merge_state:-unknown})"
+      ;;
+    tend-rebase-conflict)
+      reason="tend could not rebase PR #${pr_number:-?} onto $BASE_BRANCH after Ready passed"
+      ;;
+    *)
+      # `ci-failing` is the only other declared cause; an absent cause (an
+      # older selection file) keeps the historical CI wording.
+      cause="ci-failing"
+      reason="CI regressed after ready pass: $failing_names"
+      ;;
+  esac
+
+  existing_artifacts=$(jq -c '.artifacts // {"type":"ready"}' "$result_file" 2>/dev/null || echo '{"type":"ready"}')
   artifacts_json=$(jq -cn \
     --argjson existing "$existing_artifacts" \
     --argjson ci "$ci_json" \
     --arg now "$now" \
-    --arg reason "$reason" '
+    --arg reason "$reason" \
+    --arg cause "$cause" \
+    --arg mergeable "$mergeable" \
+    --arg merge_state "$merge_state" '
       $existing
       + {
           type: "ready",
@@ -11146,18 +11215,21 @@ invalidate_ready_for_ci() {
           candidatePromotedAt: null,
           candidateLastProgressAt: null,
           mergeRetryInProgressUntil: null,
-          ciInvalidatedAt: $now,
-          ciInvalidationReason: $reason,
+          verdictInvalidatedAt: $now,
+          verdictInvalidationReason: $reason,
+          verdictInvalidationCause: $cause,
+          liveMergeable: (if $mergeable == "" then null else $mergeable end),
+          liveMergeStateStatus: (if $merge_state == "" then null else $merge_state end),
           ciFailingChecks: ($ci.failing // []),
           lastCiConclusion: ($ci.conclusion // "unknown"),
           lastCiHeadSha: ($ci.headSha // ""),
           lastCiObservedAt: $now,
-          lastCiSummary: ($reason)
+          lastCiSummary: $reason
         }
       | with_entries(select(.value != null))
     ')
-  write_stage_result "$state_dir" "ready" "failed" "" "" "$reason" "$artifacts_json"
-  log "status" "✗ $issue → PR ${pr_number:+#$pr_number }live CI failing ($failing_names); ready verdict invalidated"
+  write_stage_result "$state_dir" "ready" "failed" "$agent" "$model" "$reason" "$artifacts_json"
+  log "status" "✗ $issue → PR ${pr_number:+#$pr_number }${reason}; ready verdict invalidated (${cause})"
 }
 
 ready_candidate_selected() {
@@ -11242,11 +11314,12 @@ refresh_ready_merge_queue_tick() {
   local now input_file output_file input_json output_json config_json
   local issue phase slug pr state_dir ready_status ready_verdict stored_base current_main queue_state wt_dir workflow_status pr_state_val
   local ci_json ci_conclusion ci_head ci_summary stored_head lane_progress_patch labels_json
+  local ready_lane_owned invalidation invalidation_issue invalidation_cause
   local ready_prs='[]'
 
   : > "$MERGE_QUEUE_SELECTION_FILE"
   if ! merge_queue_enabled; then
-    printf '{"selectedIssues":[],"stuckIssues":[],"ciBlockedIssues":[],"excludedIssues":[]}\n' > "$MERGE_QUEUE_SELECTION_FILE"
+    printf '{"selectedIssues":[],"stuckIssues":[],"invalidatedIssues":[],"excludedIssues":[]}\n' > "$MERGE_QUEUE_SELECTION_FILE"
     return 0
   fi
 
@@ -11281,44 +11354,63 @@ refresh_ready_merge_queue_tick() {
     pr_state_val=$(printf '%s' "$ci_json" | jq -r '.state // empty' 2>/dev/null || echo "")
     [[ -n "$pr_state_val" ]] || pr_state_val="$(pr_state "$pr")"
 
-    write_ready_queue_artifacts "$state_dir" "$(jq -cn \
-      --arg conclusion "$ci_conclusion" \
-      --arg head "$ci_head" \
-      --arg now "$now" \
-      --arg summary "$ci_summary" \
-      '{
-        lastCiConclusion: $conclusion,
-        lastCiHeadSha: $head,
-        lastCiObservedAt: $now,
-        lastCiSummary: $summary
-      }')"
+    # HOK-3513: the queue pass only writes to a result that is a saved verdict
+    # the lane owns. A Ready that is running or failed (a first pass, a
+    # relaunch after an invalidation, a remediation) is the launcher's record:
+    # this pass used to merge `lastCi*` onto it unconditionally, and the
+    # read-modify-write could land after the launcher's own write and restore
+    # the stale artifacts (observed: a guard-deferred relaunch's `pending`
+    # verdict resurrected as `fail`, so the pending re-check never re-armed
+    # and the task parked silently).
+    ready_lane_owned=""
+    if [[ "$ready_status" == "completed" && ( "$ready_verdict" == "pass" || "$ready_verdict" == "warn" ) ]] \
+      || [[ "$queue_state" == "merge-candidate" || "$queue_state" == "ready-stale" ]]; then
+      ready_lane_owned=1
+      write_ready_queue_artifacts "$state_dir" "$(jq -cn \
+        --arg conclusion "$ci_conclusion" \
+        --arg head "$ci_head" \
+        --arg now "$now" \
+        --arg summary "$ci_summary" \
+        '{
+          lastCiConclusion: $conclusion,
+          lastCiHeadSha: $head,
+          lastCiObservedAt: $now,
+          lastCiSummary: $summary
+        }')"
 
-    # Mirror tend's lane-progress telemetry (rebase/CI-restart counts, hold
-    # time) into the queue artifacts so both subsystems explain residence from
-    # the same numbers (HOK-2919).
-    lane_progress_patch="$(lane_progress_patch_json "$pr")"
-    if [[ -n "$lane_progress_patch" && "$lane_progress_patch" != "{}" ]]; then
-      write_ready_queue_artifacts "$state_dir" "$lane_progress_patch"
+      # Mirror tend's lane-progress telemetry (rebase/CI-restart counts, hold
+      # time) into the queue artifacts so both subsystems explain residence from
+      # the same numbers (HOK-2919).
+      lane_progress_patch="$(lane_progress_patch_json "$pr")"
+      if [[ -n "$lane_progress_patch" && "$lane_progress_patch" != "{}" ]]; then
+        write_ready_queue_artifacts "$state_dir" "$lane_progress_patch"
+      fi
     fi
 
+    # A base (or head) move on a still-mergeable PR is only stale, not
+    # invalidated: tend refreshes the lane and the pass stands. A conflicted PR
+    # also lands here, but its stale mark is superseded in this same pass by the
+    # planner's `invalidatedIssues` (HOK-3513), which rewrites the verdict and
+    # clears queueState — so `ready-stale` is never a conflicted PR's end state.
+    # The stale mark is left unconditional on purpose: gating it here would add
+    # a second conflict predicate in shell, which is exactly what the one
+    # invalidation removes.
     if [[ "$ready_status" == "completed" && ( "$ready_verdict" == "pass" || "$ready_verdict" == "warn" ) && -n "$current_main" && "$stored_base" != "$current_main" && "$queue_state" != "merge-candidate" ]]; then
       mark_ready_stale "$issue" "$state_dir" "$stored_base" "$current_main"
       queue_state="ready-stale"
     fi
 
     stored_head=$(ready_queue_field "$state_dir" "readyHeadSha")
-    if [[ "$ready_status" == "completed" && ( "$ready_verdict" == "pass" || "$ready_verdict" == "warn" ) && "$ci_conclusion" == "fail" ]]; then
-      invalidate_ready_for_ci "$issue" "$state_dir" "$ci_json"
-      continue
-    fi
     if [[ "$ready_status" == "completed" && ( "$ready_verdict" == "pass" || "$ready_verdict" == "warn" ) && -n "$stored_head" && -n "$ci_head" && "$stored_head" != "$ci_head" && "$queue_state" != "merge-candidate" ]]; then
       mark_ready_stale_head "$issue" "$state_dir" "$stored_head" "$ci_head"
       queue_state="ready-stale"
     fi
 
-    if [[ "$ready_status" == "completed" && ( "$ready_verdict" == "pass" || "$ready_verdict" == "warn" ) ]] || [[ "$queue_state" == "merge-candidate" || "$queue_state" == "ready-stale" ]]; then
+    if [[ -n "$ready_lane_owned" ]]; then
       # HOK-3111: authoritative live labels; the planner fails closed when
       # this returns "null" so we never promote based on stale/unknown state.
+      # HOK-3513: stateDir + integrationBaseSha let merge-queue-select fill
+      # tendRebaseConflictAt from the task's tend attempt fact before planning.
       labels_json="$(pr_live_labels_json "$wt_dir" "$pr")"
       ready_prs=$(jq -cn \
         --argjson prs "$ready_prs" \
@@ -11327,6 +11419,8 @@ refresh_ready_merge_queue_tick() {
         --arg branch "${BRANCH_BY_ISSUE[$issue]}" \
         --argjson pr_number "$pr" \
         --arg ready_base_sha "$stored_base" \
+        --arg state_dir "$state_dir" \
+        --arg integration_base_sha "$current_main" \
         --arg queue_state "$queue_state" \
         --arg workflow_status "$workflow_status" \
         --arg pr_state "$pr_state_val" \
@@ -11346,6 +11440,8 @@ refresh_ready_merge_queue_tick() {
             prNumber: $pr_number,
             branch: $branch,
             readyBaseSha: $ready_base_sha,
+            stateDir: $state_dir,
+            integrationBaseSha: (if $integration_base_sha == "" then null else $integration_base_sha end),
             queueState: (if $queue_state == "" then null else $queue_state end),
             changedFiles: $changed_files,
             readyAt: (if $ready_at == "" then null else $ready_at end),
@@ -11361,6 +11457,7 @@ refresh_ready_merge_queue_tick() {
             ci: {
               conclusion: ($ci.conclusion // "unknown"),
               headSha: ($ci.headSha // null),
+              mergeable: ($ci.mergeable // null),
               mergeStateStatus: ($ci.mergeStateStatus // null),
               observedAt: $now,
               failing: ($ci.failing // []),
@@ -11396,7 +11493,7 @@ refresh_ready_merge_queue_tick() {
   jq -cn --arg now "$now" --argjson prs "$ready_prs" --argjson config "$config_json" '{readyPrs:$prs, now:$now, config:$config}' > "$input_file"
   if ! wavemill_run_tsx_tool "$TOOLS_DIR/merge-queue-select.ts" --input "$input_file" > "$output_file" 2>/dev/null; then
     rm -f "$input_file" "$output_file"
-    printf '{"selectedIssues":[],"stuckIssues":[],"ciBlockedIssues":[],"excludedIssues":[]}\n' > "$MERGE_QUEUE_SELECTION_FILE"
+    printf '{"selectedIssues":[],"stuckIssues":[],"invalidatedIssues":[],"excludedIssues":[]}\n' > "$MERGE_QUEUE_SELECTION_FILE"
     return 0
   fi
   mv "$output_file" "$MERGE_QUEUE_SELECTION_FILE"
@@ -11424,15 +11521,20 @@ refresh_ready_merge_queue_tick() {
     fi
   done
 
-  jq -r '.ciBlockedIssues[]?' "$MERGE_QUEUE_SELECTION_FILE" 2>/dev/null | while IFS= read -r issue; do
-    [[ -n "$issue" ]] || continue
-    slug="${SLUG_BY_ISSUE[$issue]}"
+  # HOK-3513: the planner withdrew these passed Ready verdicts (red CI, a
+  # GitHub conflict, or a tend rebase conflict at the live head/base). One
+  # write site: invalidate_ready_verdict. The next tick's failed-Ready
+  # disposition relaunches Ready; its CONFLICTED branch is the only resolver.
+  jq -c '.invalidatedIssues[]? // empty' "$MERGE_QUEUE_SELECTION_FILE" 2>/dev/null | while IFS= read -r invalidation; do
+    [[ -n "$invalidation" ]] || continue
+    invalidation_issue=$(printf '%s' "$invalidation" | jq -r '.issue // empty' 2>/dev/null || echo "")
+    invalidation_cause=$(printf '%s' "$invalidation" | jq -r '.cause // empty' 2>/dev/null || echo "")
+    [[ -n "$invalidation_issue" ]] || continue
+    slug="${SLUG_BY_ISSUE[$invalidation_issue]}"
     wt_dir="${WORKTREE_ROOT}/${slug}"
     state_dir="$(ready_state_dir "$wt_dir" "$slug")"
-    pr="${PR_BY_ISSUE[$issue]:-}"
-    ci_json="$(ready_ci_json_cached "$wt_dir" "$pr" "$BASE_BRANCH" "$issue" "$state_dir")"
-    demote_merge_candidate "$issue" "$state_dir" "live CI failing"
-    invalidate_ready_for_ci "$issue" "$state_dir" "$ci_json"
+    ci_json="$(ready_ci_json_cached "$wt_dir" "${PR_BY_ISSUE[$invalidation_issue]:-}" "$BASE_BRANCH" "$invalidation_issue" "$state_dir")"
+    invalidate_ready_verdict "$invalidation_issue" "$state_dir" "$ci_json" "$invalidation_cause"
   done
 
   jq -r '.stuckIssues[]?' "$MERGE_QUEUE_SELECTION_FILE" 2>/dev/null | while IFS= read -r issue; do
@@ -19135,6 +19237,7 @@ EOF
       if [[ -d "${WORKTREE_ROOT}/${slug}/features/${slug}" ]]; then
         challenge_args+=(--feature-dir "${WORKTREE_ROOT}/${slug}/features/${slug}")
       fi
+      # allow-challenge-selection-site: launch lottery decides challenge-vs-single
       challenge_plan=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "resolve-challenge-task.ts" "${challenge_args[@]}" 2>/dev/null || echo "")
       challenge_mode=$(echo "$challenge_plan" | jq -r '.mode // "single"' 2>/dev/null || echo "single")
       challenge_reason=$(echo "$challenge_plan" | jq -r '.reason // empty' 2>/dev/null || echo "")
@@ -19227,8 +19330,15 @@ EOF
         log "status" "  Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger is extra pane]"
       fi
       challenge_assert_arms_diverge "$issue" "$challenge_stage" "$primary_varied" "$challenger_varied" "$challenge_execution_intent"
-    elif [[ -n "$challenge_reason" ]] && [[ "$challenge_reason" != "challenge_disabled" ]] && [[ "$challenge_reason" != "roll_not_selected" ]]; then
-      log "debug" "  Challenge skipped ($challenge_reason), launching single-model run"
+    else
+      local single_execution_intent=""
+      single_execution_intent=$(echo "$challenge_plan" | jq -c '.challengeExecutionIntent // empty' 2>/dev/null || true)
+      if challenge_intent_json_is_canonical "$single_execution_intent"; then
+        persist_challenge_execution_intent "$issue" "" "$feature_dir" "$single_execution_intent"
+      fi
+      if [[ -n "$challenge_reason" ]] && [[ "$challenge_reason" != "challenge_disabled" ]] && [[ "$challenge_reason" != "roll_not_selected" ]]; then
+        log "debug" "  $issue: Challenge skipped ($challenge_reason), launching single-model run"
+      fi
     fi
   fi
 
@@ -22922,35 +23032,11 @@ monitor_issue_state() {
         fi
       fi
 
-      # HOK-3316: tend's rebase onto the current base conflicted although
-      # GitHub reports the PR mergeable. Re-run Ready once for that fact: its
-      # merge-conflict check reads the fact and launches the conflict
-      # resolver (one per (head, base)); the label stays wm:blocked meanwhile.
-      if tend_attempt_conflict_needs_ready "$ready_state_dir_path" "$PR" "$current_main_sha" \
-        && ! conflict_remediation_exhausted_hold "$ready_state_dir_path" "${WORKTREE_ROOT}/${SLUG}" "$BASE_BRANCH" "$current_head"; then
-        log "status" "⚠ $ISSUE → tend could not rebase PR #$PR onto $BASE_BRANCH; re-running Ready to request conflict remediation"
-        title=$(pass_task_field "$ISSUE" title)
-        [[ -n "$title" ]] || title="Task"
-        if launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$PR"; then
-          launch_rc=0
-        else
-          launch_rc=$?
-        fi
-        if [[ "$launch_rc" -eq 2 ]] && check_stage_aborted "$FEATURE_DIR"; then
-          log_task "status" "$ISSUE" "⛔ $ISSUE → Workflow aborted during tend-conflict re-check"
-          set_task_phase "$ISSUE" "aborted"
-          set_window_attention_state "$WIN" "needs-user"
-          return 0
-        fi
-        if [[ "$launch_rc" -eq 0 || "$launch_rc" -eq 3 || "$launch_rc" -eq 4 || "$launch_rc" -eq 5 || "$launch_rc" -eq 6 ]]; then
-          set_window_attention_state "$WIN" "clear"
-          active_count=$((active_count + 1))
-          return 0
-        fi
-        log "status" "⚠ $ISSUE → conflict remediation for tend's rebase failure could not launch (PR #$PR, rc=$launch_rc)"
-        set_window_attention_state "$WIN" "needs-user"
-        return 0
-      fi
+      # HOK-3316 / HOK-3513: tend's rebase onto the current base conflicting
+      # although GitHub reports the PR mergeable is one cause of
+      # readyVerdictInvalidation (merge-queue.ts), decided in the merge-queue
+      # tick. It withdraws the verdict there and re-runs Ready through the
+      # failed-Ready disposition; this handler no longer re-runs it privately.
 
       if [[ -n "$rerun_for_tend" ]] || [[ -n "$current_main_sha" && "$stored_base_sha" != "$current_main_sha" ]]; then
         if merge_queue_enabled; then
@@ -23065,16 +23151,26 @@ monitor_issue_state() {
       active_count=$((active_count + 1))
       return 0
     fi
-    if [[ "$remediation_disposition" == "settled" ]]; then
-      log "info" "$ISSUE → Ready remediation settled at ${current_head:0:7} ($remediation_disposition_reason); re-running Ready"
+    # HOK-3447: one publication path for a finished remediation. A settled
+    # agent at the launch head and one that advanced the worktree head are the
+    # same handoff to the controller: publish whatever the agent committed
+    # through the one seam and then run Ready's own check. The settled-only
+    # branch left an advanced repair's commit unpublished whenever Ready's own
+    # sync path could not carry it.
+    if [[ "$remediation_disposition" == "settled" || "$remediation_disposition" == "advanced" ]]; then
+      if [[ "$remediation_disposition" == "settled" ]]; then
+        log "info" "$ISSUE → Ready remediation settled at ${current_head:0:7} ($remediation_disposition_reason); re-running Ready"
+      else
+        log "info" "$ISSUE → Ready remediation advanced the worktree head to ${current_head:0:7} ($remediation_disposition_reason); re-running Ready after publication"
+      fi
       # HOK-3370: publish the remediation agent's commits through the one
       # seam before the controller re-runs Ready (HOK-3361 touch #1: the
       # remediation commit was never pushed, so Ready re-checked the same
       # red head until exhausted). A failure defers to Ready's own
       # sync-path publication and the HOK-3371 disposition.
-      local settled_publish_kind="remediation"
-      [[ -f "$ready_state_dir_path/.conflict-remediation.json" ]] && settled_publish_kind="conflict"
-      publish_stage_head "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$ready_state_dir_path" "$ISSUE" "ready" "$settled_publish_kind" \
+      local remediation_publish_kind="remediation"
+      [[ -f "$ready_state_dir_path/.conflict-remediation.json" ]] && remediation_publish_kind="conflict"
+      publish_stage_head "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$ready_state_dir_path" "$ISSUE" "ready" "$remediation_publish_kind" \
         || log_warn "$ISSUE → remediation head publication deferred to Ready: ${PUBLISH_STAGE_HEAD_DETAIL:-no detail}"
     fi
 

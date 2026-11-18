@@ -26,7 +26,7 @@ tests/challenge-fork-restart.test.sh                        1  # legacy source-t
 tests/cleanup-branch.test.sh                                7  # legacy source-text assertion (HOK-3237)
 tests/coding-launch-refusal.test.sh                         2  # legacy source-text assertion (HOK-3237)
 tests/completed-task-cleanup.test.sh                        1  # legacy source-text assertion (HOK-3237)
-tests/condition-reconciler.test.sh                          2  # legacy source-text assertion (HOK-3237)
+tests/condition-reconciler.test.sh                          1  # legacy source-text assertion (HOK-3237)
 tests/config-false-booleans.test.sh                         1  # legacy source-text assertion (HOK-3237)
 tests/config-version-prompt.test.sh                         1  # legacy source-text assertion (HOK-3237)
 tests/error-recovery.test.sh                                1  # legacy source-text assertion (HOK-3237)

@@ -1,0 +1,12 @@
+# shellcheck shell=bash
+# Fixture provenance: hand-authored HOK-3513 golden-journey adapter, derived
+# from the 2026-11-15/16 HOK-3493/HOK-3382 post-Ready conflict incidents.
+# Fake coder for the post-Ready base conflict journey (HOK-3513).
+#
+# The first coding launch implements the task. Any later coding launch is the
+# Ready conflict resolver, which is exactly the mid-flight journey's resolver
+# (HOK-3273 / HOK-3385): the mill has already opened the base merge through
+# updateBranchWithBase (retain-conflict), so the resolver only edits, stages
+# and commits. Shared rather than copied so the two journeys cannot drift.
+# shellcheck source=../../hok-3273/fake-agent/coding
+source "$(dirname "${BASH_SOURCE[0]}")/../../hok-3273/fake-agent/coding"

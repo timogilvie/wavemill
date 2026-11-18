@@ -6,3 +6,8 @@ shared/lib/bounded-retry.sh # legacy failed-ready-recheck file-name mapping so i
 shared/lib/condition-reconciler.sh # legacy .failed-ready-recheck-exhausted sentinel expiry (HOK-3172 reconciler)
 shared/lib/retry-sentinel-guard.ts # legacy bucket file-name shape in the sentinel-name guard regex
 tools/state-invariants.ts # legacy sentinel enumeration for the state-invariants audit
+
+# HOK-3513 conflict-park ratchet. These two sites predate the single Ready
+# verdict invalidation; each needs its own evidence pass before it can move.
+shared/lib/ready-watchdog.ts 1 # the auto-update behind-branch conflict result parks as needs-user; follow-up: route through the monitor's one invalidation
+shared/lib/wavemill-monitor.sh 2 # _ready_failure_update_base conflict:* pages the stage-failure-ready bucket directly; follow-up: base drift through readyVerdictInvalidation

@@ -73,7 +73,19 @@ export class IncidentStore {
     this.now = options.now ?? (() => new Date());
   }
 
-  computeFingerprint(incident: Pick<IncidentRecord, 'category' | 'rootCauseClass' | 'taskId' | 'evidence'>): string {
+  computeFingerprint(incident: Pick<IncidentRecord, 'category' | 'rootCauseClass' | 'taskId' | 'evidence' | 'metadata'>): string {
+    // HOK-3509: a fleet record is keyed on its cause key alone so the
+    // fingerprint stays stable as the attempts evidence list grows.
+    const fleet = extractFleetCauseKey(incident.metadata);
+    if (fleet) {
+      const input = [
+        incident.category,
+        canonicalizeRootCauseClass(incident.rootCauseClass),
+        'fleet',
+        fleet,
+      ].join('::');
+      return createHash('sha256').update(input).digest('hex');
+    }
     const evidenceKeys = incident.evidence
       .map((evidence) => evidence.key ?? `${evidence.type}:${evidence.source}`)
       .sort();
@@ -91,14 +103,17 @@ export class IncidentStore {
    * unchanged event (same evidence sources/keys/timestamps) yields the same
    * key, so it is counted once regardless of observer cadence.
    */
-  computeEventKey(incident: Pick<IncidentRecord, 'category' | 'rootCauseClass' | 'taskId' | 'evidence'>): string {
+  computeEventKey(incident: Pick<IncidentRecord, 'category' | 'rootCauseClass' | 'taskId' | 'evidence' | 'metadata'>): string {
     const evidenceIdentity = incident.evidence
       .map((evidence) => `${evidence.type}:${evidence.source}:${evidence.key ?? ''}:${evidence.timestamp}`)
       .sort();
+    const fleet = extractFleetCauseKey(incident.metadata);
     const input = [
       incident.category,
       canonicalizeRootCauseClass(incident.rootCauseClass),
-      incident.taskId ?? '',
+      // HOK-3509: a fleet record's event key still carries the evidence
+      // identity so each new attempt set produces a fresh distinct event.
+      fleet ?? incident.taskId ?? '',
       JSON.stringify(evidenceIdentity),
     ].join('::');
     return createHash('sha256').update(input).digest('hex');
@@ -578,11 +593,20 @@ export class IncidentStore {
   }
 
   private sameCanonicalIncident(
-    stored: Pick<IncidentRecord, 'category' | 'rootCauseClass' | 'evidence'>,
-    candidate: Pick<IncidentRecord, 'category' | 'rootCauseClass' | 'evidence'>,
+    stored: Pick<IncidentRecord, 'category' | 'rootCauseClass' | 'evidence' | 'metadata'>,
+    candidate: Pick<IncidentRecord, 'category' | 'rootCauseClass' | 'evidence' | 'metadata'>,
     storedTaskId: string | null | undefined,
     candidateTaskId: string | null | undefined,
   ): boolean {
+    // HOK-3509: a fleet record and a task record must never collapse into
+    // the same canonical identity. One or the other carrying a `fleet` key
+    // is enough to prevent legacy consolidation — the fleet fingerprint is
+    // computed from the cause key alone and lives in its own namespace.
+    const storedFleet = extractFleetCauseKey(stored.metadata);
+    const candidateFleet = extractFleetCauseKey(candidate.metadata);
+    if (Boolean(storedFleet) !== Boolean(candidateFleet)) return false;
+    if (storedFleet && candidateFleet && storedFleet !== candidateFleet) return false;
+
     // Base canonical match: same category, root cause, and evidence identity
     const baseMatch = stored.category === candidate.category
       && canonicalizeRootCauseClass(stored.rootCauseClass) === canonicalizeRootCauseClass(candidate.rootCauseClass)
@@ -787,6 +811,19 @@ function isSweepObject(value: unknown): value is { fresh: Iterable<string>; obse
     && typeof (value as Record<string, unknown>)[Symbol.iterator as unknown as string] !== 'function'
     && 'fresh' in (value as Record<string, unknown>)
     && 'observed' in (value as Record<string, unknown>);
+}
+
+/**
+ * HOK-3509: pull the fleet cause key out of an incident's metadata, or return
+ * null when the record is not a fleet record. Defined here (not in the model)
+ * so the store module stays self-contained; the type lives on IncidentMetadata.
+ */
+// allow-incident-currentness: reader of the cause key the correlator wrote, not a second derivation
+function extractFleetCauseKey(metadata: IncidentRecord['metadata'] | undefined): string | null {
+  const fleet = metadata?.fleet;
+  if (!fleet || typeof fleet !== 'object') return null;
+  const causeKey = (fleet as { causeKey?: unknown }).causeKey;
+  return typeof causeKey === 'string' && causeKey.length > 0 ? causeKey : null;
 }
 
 function laterIso(a: unknown, b: unknown): string | undefined {

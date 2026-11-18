@@ -142,6 +142,10 @@ interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  /** Cache-read tokens, when the judge transport reported them (HOK-3409). */
+  cacheReadTokens?: number;
+  /** Cache-write tokens, when the judge transport reported them (HOK-3409). */
+  cacheWriteTokens?: number;
 }
 
 /**
@@ -429,12 +433,11 @@ function computeCost(
   const pricing = pricingTable[modelId];
   if (!pricing) return undefined;
 
-  // Judge calls report no cache usage; @hokusai/costs prices them as zero.
   return priceUsageUsd(pricing, {
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
-    cacheCreationTokens: 0,
-    cacheReadTokens: 0,
+    cacheCreationTokens: usage.cacheWriteTokens ?? 0,
+    cacheReadTokens: usage.cacheReadTokens ?? 0,
   }) ?? undefined;
 }
 
@@ -752,11 +755,23 @@ function combineTokenUsage(
     return undefined;
   }
 
+  // Cache buckets are optional: only a response that reported one contributes
+  // to it, and the field is emitted only when at least one did, so records
+  // from transports that never report cache stay byte-identical.
+  const sawCacheRead = withUsage.some((response) => response.usage?.cacheReadTokens !== undefined);
+  const sawCacheWrite = withUsage.some((response) => response.usage?.cacheWriteTokens !== undefined);
+
   return withUsage.reduce<TokenUsage>(
     (acc, response) => ({
       inputTokens: acc.inputTokens + (response.usage?.inputTokens || 0),
       outputTokens: acc.outputTokens + (response.usage?.outputTokens || 0),
       totalTokens: acc.totalTokens + (response.usage?.totalTokens || 0),
+      ...(sawCacheRead
+        ? { cacheReadTokens: (acc.cacheReadTokens ?? 0) + (response.usage?.cacheReadTokens || 0) }
+        : {}),
+      ...(sawCacheWrite
+        ? { cacheWriteTokens: (acc.cacheWriteTokens ?? 0) + (response.usage?.cacheWriteTokens || 0) }
+        : {}),
     }),
     { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
   );

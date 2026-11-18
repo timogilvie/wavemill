@@ -26,6 +26,53 @@ const MAX_BRANCH_LINES = 60;
 
 const POLICY_CALL = /failure_policy_decide|classifyFailure|ready_failure_classify_and_act/;
 
+/**
+ * HOK-3513: a conflict after Ready passed has ONE disposition. The mill
+ * withdraws the verdict through `readyVerdictInvalidation` /
+ * `invalidate_ready_verdict`, and repair happens only in `launch_ready_phase`'s
+ * CONFLICTED branch (mill-side base merge + one resolver per (head, base)).
+ *
+ * A site that reads conflict mergeability and then PARKS the PR — needs-user,
+ * an escalation, a bounded-retry exhaustion, a stale mark, a candidate
+ * demotion — is a second conflict disposition: it leaves the conflict
+ * unrepaired until a person touches it. That is the incident this invariant
+ * exists to prevent.
+ */
+/**
+ * A read that names a merge conflict: GitHub's `CONFLICTING` mergeable /
+ * `DIRTY` mergeStateStatus, Ready's `CONFLICTED` artifact, shell's
+ * `conflict:*` result shape, or a typed `'conflict'` status comparison.
+ * Deliberately not the bare word (a resolver may pass it as a publication kind).
+ */
+const CONFLICT_SIGNAL = /\bCONFLICTING\b|\bCONFLICTED\b|['"`]DIRTY['"`]|\bconflict:|(?:===|!==|==|!=)\s*['"`]conflict['"`]/;
+
+/** Lines that mean "the PR is parked" when they follow a conflict signal. */
+const PARK_SIGNAL = /needs-user|escalate_operator_attention|escalateReadyWatchdogAttention|bounded_retry_mark_exhausted|mark_ready_stale|demote_merge_candidate/;
+
+/** How far below a conflict signal a park still counts as that signal's outcome. */
+const MAX_PARK_LINES = 8;
+
+/** A comment line in either language: prose never parks anything. */
+function isCommentLineEither(line: string): boolean {
+  const trimmed = line.trimStart();
+  return trimmed.startsWith('#') || trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*');
+}
+
+/**
+ * The body of `launch_ready_phase` — the one place allowed to read conflict
+ * mergeability and act on it — as 0-indexed inclusive line spans.
+ */
+function launchReadyPhaseSpans(lines: readonly string[]): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!/^launch_ready_phase\(\) \{/.test(lines[i])) continue;
+    let end = i;
+    while (end + 1 < lines.length && !/^\}/.test(lines[end + 1])) end += 1;
+    spans.push([i, end]);
+  }
+  return spans;
+}
+
 export const READY_FAILURE_POLICY_GUARD: GuardSpec = {
   name: 'ready-failure-policy',
   invariantDocs: ['docs/invariants/failure-policy.md'],
@@ -62,6 +109,36 @@ export const READY_FAILURE_POLICY_GUARD: GuardSpec = {
         const end = Math.min(lines.length, i + MAX_BRANCH_LINES);
         if (!POLICY_CALL.test(lines.slice(i, end).join('\n'))) {
           findings.push({ line: i + 1, detail: `anchor matched line ${i + 1}` });
+        }
+      }
+      return findings;
+    },
+  }, {
+    name: 'conflict-park-outside-ready-launcher',
+    description: 'a conflict park outside launch_ready_phase; a passed Ready verdict is invalidated by live PR state only through readyVerdictInvalidation / invalidate_ready_verdict, and conflict repair runs only in launch_ready_phase CONFLICTED',
+    paths: [
+      'shared/lib/ready-watchdog.ts',
+      'shared/lib/merge-queue.ts',
+      'shared/lib/wavemill-monitor.sh',
+      'shared/lib/tend-controller.ts',
+      'shared/lib/merge-labels.ts',
+    ],
+    find(source) {
+      const lines = source.split('\n');
+      const exempt = new Set<number>();
+      for (const [start, end] of launchReadyPhaseSpans(lines)) {
+        for (let i = start; i <= end; i += 1) exempt.add(i);
+      }
+      const findings: StructuralMatch[] = [];
+      for (let i = 0; i < lines.length; i += 1) {
+        if (exempt.has(i) || isCommentLineEither(lines[i])) continue;
+        if (!CONFLICT_SIGNAL.test(lines[i])) continue;
+        const end = Math.min(lines.length, i + 1 + MAX_PARK_LINES);
+        for (let j = i + 1; j < end; j += 1) {
+          if (exempt.has(j) || isCommentLineEither(lines[j])) continue;
+          if (!PARK_SIGNAL.test(lines[j])) continue;
+          findings.push({ line: i + 1, detail: `the park is at line ${j + 1}` });
+          break;
         }
       }
       return findings;

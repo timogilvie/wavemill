@@ -221,6 +221,18 @@ export type ReviewScopeBaselineProvenance =
 
 const BASELINE_FILE = '.review-scope-baseline.json';
 const BASELINE_HISTORY_FILE = '.review-scope-baseline.history.jsonl';
+
+/**
+ * Append a baseline entry to the history file.
+ * Used by both refreshLaunchBaseBaseline and archive_review_scope_baseline.
+ */
+export function appendBaselineHistory(baselinePath: string, entry: any): void {
+  appendFileSync(
+    join(dirname(baselinePath), BASELINE_HISTORY_FILE),
+    `${JSON.stringify(entry)}\n`,
+    'utf-8',
+  );
+}
 const DEFAULT_DELETION_RATIO = 3;
 const DEFAULT_DELETION_FLOOR = 50;
 
@@ -1400,11 +1412,7 @@ function refreshLaunchBaseBaseline(input: {
     provenance: 'remote-merge-base',
     baseRef: resolvedRef.ref,
   };
-  appendFileSync(
-    join(dirname(input.baselinePath), BASELINE_HISTORY_FILE),
-    `${JSON.stringify({ replacedAt: baseline.createdAt, baseline: existing })}\n`,
-    'utf-8',
-  );
+  appendBaselineHistory(input.baselinePath, { replacedAt: baseline.createdAt, baseline: existing });
   writeFileSync(input.baselinePath, `${JSON.stringify(baseline, null, 2)}\n`, 'utf-8');
   return baseline;
 }

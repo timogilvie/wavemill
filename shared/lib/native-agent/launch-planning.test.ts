@@ -1405,14 +1405,17 @@ describe('native planning terminal synthesis (HOK-3465)', () => {
       try {
         registerScriptedPiProvider({ api, turns: (ctx) => {
           requests.push(ctx);
+          // HOK-3498: a real provider echoes a response id on every turn; the
+          // one executed-model resolver needs it to prove the model ran.
+          const responseId = `gen-synthesis-${boundary}-${requests.length}`;
           if (requests.length < 3) return {
             content: [{ type: 'tool_call', id: `read-${requests.length}`, name: 'read_file', arguments: { path: replay.researchPaths[requests.length - 1] } }],
-            stopReason: 'tool_calls', usage: { input: 10, output: 5 },
+            stopReason: 'tool_calls', usage: { input: 10, output: 5 }, responseId,
           };
           assert.equal((ctx.rawContext as { tools?: unknown[] }).tools?.length ?? 0, 0);
           assert.match(JSON.stringify(ctx.messages), /reserved terminal synthesis/);
           assert.ok(JSON.stringify(ctx.messages).includes(replay.evidence));
-          return { content: [{ type: 'text', text: validPlan('Synthesized Plan') }], stopReason: 'stop', usage: { input: 20, output: 10 } };
+          return { content: [{ type: 'text', text: validPlan('Synthesized Plan') }], stopReason: 'stop', usage: { input: 20, output: 10 }, responseId };
         } });
         const result = await launchNativePlanning({ session: `synthesis-${boundary}`, issue: 'HOK-3465', slug: 'demo', wtDir, repoDir: wtDir, loopModelOverride: scriptedModel(api), runTsxCommand: stubRunTsxCommand() });
         assert.equal(result.stopReason, 'stop');
@@ -1426,9 +1429,17 @@ describe('native planning terminal synthesis (HOK-3465)', () => {
         assert.equal(stage.artifacts.usage.toolCallsExecuted, 2);
         assert.equal(stage.artifacts.usage.totalOutputTokens, 20);
         assert.equal(stage.executedModel, `scripted:${api}`);
+        // HOK-3498: the success exit records the one resolver's direct
+        // provider-response evidence, not a launcher-local derivation.
+        assert.equal(stage.executionEvidence.status, 'direct');
+        assert.equal(stage.executionEvidence.source, 'provider-response');
         const ownership = readFileSync(join(featureDir, '.session-ownership.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
-        assert.equal(ownership.filter(row => row.harness === 'native' && row.stage === 'planning').length, 1);
-        const events = readFileSync(join(resolveSessionEventsDir(wtDir), `synthesis-${boundary}-planning-HOK-3465.jsonl`), 'utf8');
+        const planningRows = ownership.filter(row => row.harness === 'native' && row.stage === 'planning');
+        assert.equal(planningRows.length, 1);
+        // HOK-3447: the stream is named by the launch's own runtime ref, which
+        // is unique per launch (never the deterministic session-phase-issue id).
+        assert.match(planningRows[0].sessionRef, new RegExp(`^synthesis-${boundary}-[0-9a-f-]{36}-planning-HOK-3465$`));
+        const events = readFileSync(join(resolveSessionEventsDir(wtDir), `${planningRows[0].sessionRef}.jsonl`), 'utf8');
         assert.match(events, /provider_tools/);
         assert.match(events, /"toolCount":0/);
       } finally { cleanup(wtDir); }
@@ -1448,6 +1459,59 @@ describe('native planning terminal synthesis (HOK-3465)', () => {
       assert.equal(calls, 2);
       assert.equal(existsSync(join(featureDir, 'plan.md')), false);
       assert.equal(existsSync(join(featureDir, '.plan-approved')), false);
+    } finally { cleanup(wtDir); }
+  });
+});
+
+// protects: HOK-3498 / HOK-3406 — a planning validation failure records the
+// resolver's executed model with direct evidence instead of hard-coding
+// `executedModel: null` / `contradicted`, so the failure can be attributed.
+describe('native planning failure evidence (HOK-3498)', () => {
+  it('records direct provider-response evidence when the final artifact fails validation', async () => {
+    const { wtDir, featureDir } = setupWorktree();
+    const api = uniqueApi('validation-failure');
+    // A complete-looking plan with no Release Readiness block: the exact
+    // shape class of HOK-3406's `missing_release_readiness_*` rejection.
+    const planWithoutReleaseReadiness = validPlan().split('\n## Release Readiness')[0] ?? validPlan();
+    let calls = 0;
+    try {
+      registerScriptedPiProvider({ api, turns: () => {
+        calls += 1;
+        return {
+          content: [{ type: 'text', text: planWithoutReleaseReadiness }],
+          stopReason: 'stop',
+          usage: { input: 30, output: 20 },
+          responseId: `gen-validation-failure-${calls}`,
+        };
+      } });
+      await assert.rejects(
+        () => launchNativePlanning({
+          session: 'validation-failure',
+          issue: 'HOK-3498',
+          slug: 'demo',
+          wtDir,
+          repoDir: wtDir,
+          loopModelOverride: scriptedModel(api),
+          runTsxCommand: stubRunTsxCommand(),
+        }),
+        /missing_release_readiness/,
+      );
+      // The one bounded repair turn ran before the exit.
+      assert.equal(calls, 2);
+      const stage = JSON.parse(readFileSync(join(featureDir, '.planning-result.json'), 'utf8'));
+      assert.equal(stage.status, 'failed');
+      assert.equal(stage.executedModel, `scripted:${api}`);
+      assert.equal(stage.executionEvidence.status, 'direct');
+      assert.equal(stage.executionEvidence.source, 'provider-response');
+      assert.equal(stage.executionEvidence.identityVerdict, 'match');
+      assert.equal(stage.modelAttributionEligible, false);
+      assert.equal(stage.modelAttributionIneligibleReason, 'stage_not_completed');
+      assert.equal(stage.failureReason, 'invalid_final_plan');
+      assert.equal(stage.artifacts.repairAttempted, true);
+      assert.ok(
+        !JSON.stringify(stage).includes('execution_contradicted'),
+        'a failed validation must not be recorded as a contradicted execution',
+      );
     } finally { cleanup(wtDir); }
   });
 });

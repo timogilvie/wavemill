@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import {
   selectMergeCandidates,
   isCandidateStuck,
+  isCiGreen,
+  readyVerdictInvalidation,
+  withTendRebaseConflictFacts,
   MERGE_QUEUE_STATES,
   isMergeQueueState,
   mergeLanePosition,
@@ -13,6 +16,7 @@ import {
   classifyMergeQueueConsumability,
   type MergeQueueConfigResolved,
   type MergeQueuePr,
+  type MergeQueueSelectPr,
 } from './merge-queue.ts';
 
 const config: MergeQueueConfigResolved = {
@@ -160,7 +164,7 @@ test('tick planner demotes stuck candidate and promotes disjoint replacement', (
   });
   assert.deepEqual(plan.stuckIssues, ['HOK-1']);
   assert.deepEqual(plan.selectedIssues, ['HOK-2']);
-  assert.deepEqual(plan.ciBlockedIssues, []);
+  assert.deepEqual(plan.invalidatedIssues, []);
 });
 
 test('active transient merge retry candidates are not demoted as stuck', () => {
@@ -187,7 +191,7 @@ test('active transient merge retry candidates are not demoted as stuck', () => {
   });
   assert.deepEqual(plan.stuckIssues, []);
   assert.deepEqual(plan.selectedIssues, ['HOK-1', 'HOK-2']);
-  assert.deepEqual(plan.ciBlockedIssues, []);
+  assert.deepEqual(plan.invalidatedIssues, []);
 });
 
 test('expired transient merge retry candidates can still be demoted as stuck', () => {
@@ -207,7 +211,7 @@ test('expired transient merge retry candidates can still be demoted as stuck', (
   });
   assert.deepEqual(plan.stuckIssues, ['HOK-1']);
   assert.deepEqual(plan.selectedIssues, []);
-  assert.deepEqual(plan.ciBlockedIssues, []);
+  assert.deepEqual(plan.invalidatedIssues, []);
 });
 
 // --- Terminal workflow status predicate tests ---
@@ -323,7 +327,7 @@ test('planMergeQueueTick excludes terminal candidates from selectedIssues', () =
   });
   assert.deepEqual(plan.selectedIssues, ['HOK-3']);
   assert.deepEqual(plan.stuckIssues, []);
-  assert.deepEqual(plan.ciBlockedIssues, []);
+  assert.deepEqual(plan.invalidatedIssues, []);
 });
 
 test('terminal stale active candidates do not appear in stuckIssues', () => {
@@ -342,7 +346,7 @@ test('terminal stale active candidates do not appear in stuckIssues', () => {
   });
   assert.deepEqual(plan.stuckIssues, []);
   assert.deepEqual(plan.selectedIssues, []);
-  assert.deepEqual(plan.ciBlockedIssues, []);
+  assert.deepEqual(plan.invalidatedIssues, []);
 });
 
 test('closed unmerged active candidates are excluded from selectedIssues and stuckIssues', () => {
@@ -362,7 +366,7 @@ test('closed unmerged active candidates are excluded from selectedIssues and stu
   });
   assert.deepEqual(plan.stuckIssues, []);
   assert.deepEqual(plan.selectedIssues, []);
-  assert.deepEqual(plan.ciBlockedIssues, []);
+  assert.deepEqual(plan.invalidatedIssues, []);
 });
 
 test('closed unmerged candidate does not block open clean ready PR selection', () => {
@@ -390,7 +394,7 @@ test('closed unmerged candidate does not block open clean ready PR selection', (
   });
   assert.deepEqual(plan.stuckIssues, []);
   assert.deepEqual(plan.selectedIssues, ['HOK-OPEN']);
-  assert.deepEqual(plan.ciBlockedIssues, []);
+  assert.deepEqual(plan.invalidatedIssues, []);
 });
 
 test('closed prState is excluded case-insensitively', () => {
@@ -418,7 +422,7 @@ test('closed prState is excluded case-insensitively', () => {
   });
   assert.deepEqual(plan.stuckIssues, []);
   assert.deepEqual(plan.selectedIssues, ['HOK-OPEN']);
-  assert.deepEqual(plan.ciBlockedIssues, []);
+  assert.deepEqual(plan.invalidatedIssues, []);
 });
 
 test('HOK-2850: partial live CI is not selected', () => {
@@ -446,7 +450,7 @@ test('missing live CI is not selected', () => {
   assert.deepEqual(selected.map((item) => item.issue), []);
 });
 
-test('failing active candidate is ciBlocked and green replacement can be selected', () => {
+test('failing active candidate is invalidated and a green replacement can be selected', () => {
   const plan = planMergeQueueTick({
     readyPrs: [
       pr({
@@ -466,7 +470,7 @@ test('failing active candidate is ciBlocked and green replacement can be selecte
     now: '2026-05-06T12:30:00.000Z',
     config: { ...config, maxConcurrentCandidates: 1 },
   });
-  assert.deepEqual(plan.ciBlockedIssues, ['HOK-RED']);
+  assert.deepEqual(plan.invalidatedIssues.map((item) => [item.issue, item.cause]), [['HOK-RED', 'ci-failing']]);
   assert.deepEqual(plan.selectedIssues, ['HOK-GREEN']);
   assert.deepEqual(plan.stuckIssues, []);
 });
@@ -599,7 +603,7 @@ test('wm:blocked green PR is excluded, not promoted, not selected', () => {
   });
   assert.deepEqual(plan.selectedIssues, ['HOK-OK']);
   assert.deepEqual(plan.stuckIssues, []);
-  assert.deepEqual(plan.ciBlockedIssues, []);
+  assert.deepEqual(plan.invalidatedIssues, []);
   assert.equal(plan.excludedIssues.length, 1);
   assert.equal(plan.excludedIssues[0].issue, 'HOK-3106');
   assert.equal(plan.excludedIssues[0].blockingLabel, 'wm:blocked');
@@ -623,7 +627,7 @@ test('wm:blocked candidate does not enter stuckIssues after timeout', () => {
   });
   assert.deepEqual(plan.stuckIssues, []);
   assert.deepEqual(plan.selectedIssues, []);
-  assert.deepEqual(plan.ciBlockedIssues, []);
+  assert.deepEqual(plan.invalidatedIssues, []);
   assert.equal(plan.excludedIssues.length, 1);
   assert.equal(plan.excludedIssues[0].blockingLabel, 'wm:blocked');
 });
@@ -659,4 +663,193 @@ test('isCandidateStuck honors tend lane progress (HOK-2919)', () => {
     candidatePromotedAt: '2026-08-28T11:00:00Z',
     candidateLastProgressAt: '2026-08-28T11:00:00Z',
   }, now, config), true);
+});
+
+// --- HOK-3513: one Ready-verdict invalidation ---
+
+test('readyVerdictInvalidation: red CI withdraws the verdict', () => {
+  assert.equal(readyVerdictInvalidation({ ci: { conclusion: 'fail' } }), 'ci-failing');
+});
+
+test('readyVerdictInvalidation: a GitHub conflict withdraws it whatever CI says', () => {
+  // HOK-3493 shape: CONFLICTING/DIRTY while CI is still pending.
+  for (const ci of [
+    { conclusion: 'pass' as const, mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' },
+    { conclusion: 'pending' as const, mergeStateStatus: 'DIRTY' },
+    { conclusion: 'unknown' as const, mergeable: 'CONFLICTING' },
+    { conclusion: 'pass' as const, mergeStateStatus: 'DIRTY' },
+  ]) {
+    assert.equal(readyVerdictInvalidation({ ci }), 'conflict', JSON.stringify(ci));
+  }
+});
+
+test('readyVerdictInvalidation: only a positive mergeability read invalidates', () => {
+  for (const ci of [
+    { conclusion: 'pass' as const, mergeStateStatus: 'UNKNOWN', mergeable: 'UNKNOWN' },
+    { conclusion: 'pass' as const },
+    { conclusion: 'pending' as const, mergeStateStatus: 'BLOCKED' },
+    { conclusion: 'pass' as const, mergeStateStatus: 'UNSTABLE' },
+    { conclusion: 'pass' as const, mergeStateStatus: 'CLEAN', mergeable: 'MERGEABLE' },
+    undefined,
+  ]) {
+    assert.equal(readyVerdictInvalidation({ ci }), null, JSON.stringify(ci));
+  }
+});
+
+test('readyVerdictInvalidation: red CI is reported before a concurrent conflict', () => {
+  assert.equal(
+    readyVerdictInvalidation({ ci: { conclusion: 'fail', mergeable: 'CONFLICTING' } }),
+    'ci-failing',
+  );
+});
+
+test('readyVerdictInvalidation: a tend rebase fact re-runs Ready once, only after the pass', () => {
+  const readyAt = '2026-11-16T18:00:00Z';
+  assert.equal(
+    readyVerdictInvalidation({ ci: { conclusion: 'pass' }, readyAt, tendRebaseConflictAt: '2026-11-16T18:30:00Z' }),
+    'tend-rebase-conflict',
+  );
+  // A fact the pass already saw (written before it finished) is not a re-run.
+  assert.equal(
+    readyVerdictInvalidation({ ci: { conclusion: 'pass' }, readyAt, tendRebaseConflictAt: '2026-11-16T17:59:00Z' }),
+    null,
+  );
+  // No recorded pass time: the fact cannot be proven older, so it applies.
+  assert.equal(
+    readyVerdictInvalidation({ ci: { conclusion: 'pass' }, tendRebaseConflictAt: '2026-11-16T18:30:00Z' }),
+    'tend-rebase-conflict',
+  );
+});
+
+test('isCiGreen reuses the conflict predicate', () => {
+  assert.equal(isCiGreen({ ci: { conclusion: 'pass', mergeable: 'CONFLICTING' } }), false, 'CONFLICTING is not green');
+  assert.equal(isCiGreen({ ci: { conclusion: 'pass', mergeStateStatus: 'DIRTY' } }), false, 'DIRTY is not green');
+  assert.equal(isCiGreen({ ci: { conclusion: 'pass', mergeStateStatus: 'CLEAN' } }), true);
+  // BLOCKED/UNSTABLE are non-green without withdrawing the verdict.
+  assert.equal(isCiGreen({ ci: { conclusion: 'pass', mergeStateStatus: 'BLOCKED' } }), false);
+  assert.equal(readyVerdictInvalidation({ ci: { conclusion: 'pass', mergeStateStatus: 'BLOCKED' } }), null);
+});
+
+test('planMergeQueueTick: a DIRTY wm:blocked PR is invalidated, not excluded', () => {
+  const plan = planMergeQueueTick({
+    readyPrs: [
+      pr({
+        issue: 'HOK-CONFLICT',
+        prNumber: 1865,
+        queueState: 'ready-stale',
+        labels: ['wavemill', 'wm:blocked'],
+        ci: { conclusion: 'pending', headSha: 'aaaaaaa', mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' },
+      }),
+      pr({
+        issue: 'HOK-CLEAN',
+        prNumber: 2,
+        branch: 'task/clean',
+        queueState: 'ready',
+        labels: ['wm:ready'],
+        changedFiles: ['b.ts'],
+        ci: { conclusion: 'pass', mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' },
+      }),
+    ],
+    now: '2026-11-16T18:01:00.000Z',
+    config,
+  });
+  assert.deepEqual(
+    plan.invalidatedIssues.map((item) => [item.issue, item.prNumber, item.headSha, item.cause]),
+    [['HOK-CONFLICT', 1865, 'aaaaaaa', 'conflict']],
+  );
+  assert.deepEqual(plan.excludedIssues, [], 'an invalidated PR is not also reported as excluded');
+  assert.deepEqual(plan.selectedIssues, ['HOK-CLEAN'], 'the clean candidate is still selected');
+});
+
+test('planMergeQueueTick: a DIRTY merge-candidate is neither stuck nor selected', () => {
+  const plan = planMergeQueueTick({
+    readyPrs: [
+      pr({
+        issue: 'HOK-DIRTY-CANDIDATE',
+        queueState: 'merge-candidate',
+        candidatePromotedAt: '2026-11-16T17:00:00.000Z',
+        candidateLastProgressAt: '2026-11-16T17:00:00.000Z',
+        ci: { conclusion: 'pass', mergeStateStatus: 'DIRTY' },
+      }),
+    ],
+    now: '2026-11-16T18:01:00.000Z',
+    config,
+  });
+  assert.deepEqual(plan.invalidatedIssues.map((item) => item.cause), ['conflict']);
+  assert.deepEqual(plan.stuckIssues, []);
+  assert.deepEqual(plan.selectedIssues, []);
+});
+
+test('planMergeQueueTick: an unknown mergeability read does not invalidate', () => {
+  const plan = planMergeQueueTick({
+    readyPrs: [
+      pr({
+        issue: 'HOK-UNKNOWN',
+        queueState: 'ready-stale',
+        ci: { conclusion: 'unknown', mergeStateStatus: 'UNKNOWN', mergeable: 'UNKNOWN' },
+      }),
+    ],
+    now: '2026-11-16T18:01:00.000Z',
+    config,
+  });
+  assert.deepEqual(plan.invalidatedIssues, []);
+});
+
+test('withTendRebaseConflictFacts fills tendRebaseConflictAt only for a valid rebase fact', async (t) => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { writeTendAttemptFact } = await import('./tend-attempt-fact.ts');
+  const head = 'a'.repeat(40);
+  const base = 'b'.repeat(40);
+  const dir = mkdtempSync(join(tmpdir(), 'wavemill-tend-fact-'));
+  try {
+    writeTendAttemptFact(dir, {
+      phase: 'rebase', prNumber: 1865, headSha: head, baseSha: base,
+      excerpt: 'CONFLICT (content): Merge conflict', failureClass: 'code-failure',
+    });
+    const input = (overrides: Record<string, unknown> = {}) => ({
+      ...pr({ issue: 'HOK-1865', prNumber: 1865, ci: { conclusion: 'pass', headSha: head } }),
+      stateDir: dir,
+      integrationBaseSha: base,
+      ...overrides,
+    } as MergeQueueSelectPr);
+
+    const filled = withTendRebaseConflictFacts([input()]);
+    assert.equal(typeof filled[0].tendRebaseConflictAt, 'string');
+    assert.equal('stateDir' in filled[0], false, 'the tool-only fields never reach the planner');
+    assert.equal('integrationBaseSha' in filled[0], false);
+
+    assert.equal(withTendRebaseConflictFacts([input({ integrationBaseSha: 'c'.repeat(40) })])[0].tendRebaseConflictAt, undefined,
+      'a moved base invalidates the fact');
+    assert.equal(withTendRebaseConflictFacts([input({ ci: { conclusion: 'pass', headSha: 'd'.repeat(40) } })])[0].tendRebaseConflictAt, undefined,
+      'a moved head invalidates the fact');
+    assert.equal(withTendRebaseConflictFacts([input({ stateDir: undefined })])[0].tendRebaseConflictAt, undefined,
+      'no state dir means no fact read');
+    assert.equal(withTendRebaseConflictFacts([input({ integrationBaseSha: undefined })])[0].tendRebaseConflictAt, undefined,
+      'without a live base read, an old same-head fact cannot invalidate Ready');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('withTendRebaseConflictFacts ignores non-rebase tend facts', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { writeTendAttemptFact } = await import('./tend-attempt-fact.ts');
+  const head = 'a'.repeat(40);
+  const dir = mkdtempSync(join(tmpdir(), 'wavemill-tend-fact-ci-'));
+  try {
+    writeTendAttemptFact(dir, {
+      phase: 'checks', prNumber: 2, headSha: head, baseSha: '', excerpt: 'red', failureClass: 'code-failure',
+    });
+    const [filled] = withTendRebaseConflictFacts([{
+      ...pr({ issue: 'HOK-2', prNumber: 2, ci: { conclusion: 'pass', headSha: head } }),
+      stateDir: dir,
+    } as MergeQueueSelectPr]);
+    assert.equal(filled.tendRebaseConflictAt, undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

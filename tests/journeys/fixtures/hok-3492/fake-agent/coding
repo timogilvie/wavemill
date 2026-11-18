@@ -1,0 +1,49 @@
+# shellcheck shell=bash
+# Fake coder for the HOK-3492 replay (sourced by tests/fakes/bin/claude).
+#
+# A native coder whose owned sessions crossed the task's one recorded spend
+# budget ($25, repo-config) in the incident HOK-3382_c. The launcher under test
+# never passes that limit to a shell coder, so this fake emulates the stop the
+# native launcher now produces: the typed budget_exhausted fact with kind
+# `cost`, its handoff, the stage-timeout envelope (cause `stage-timeout`) and
+# the failed stage result. The monitor must NOT relaunch the stage under
+# stage-failure-coding: a cost-kind task-budget stop is terminal under
+# failure-policy.ts and escalates once.
+if [[ -f "$FEATURE_DIR/cost-exhaustion-injected" ]]; then
+  default_coding
+  return
+fi
+touch "$FEATURE_DIR/cost-exhaustion-injected"
+
+fact='{"kind":"cost","stopReason":"cost_limit","limit":25,"used":25.4,
+  "progress":{"turnsCompleted":64,"toolCallsExecuted":318,"wallClockMs":2115000,"mutationFailures":0,"providerErrorRetries":0}}'
+detail="native-stage-timeout: native coding exhausted its cost budget (\$25.40 of \$25.00); 64 turn(s), 318 tool call(s)"
+now="$(date -u +%FT%TZ)"
+
+jq -n --argjson fact "$fact" --arg now "$now" '{
+  stage: "coding", reason: "budget_exhausted", stopReason: "cost_limit",
+  mutationFailures: 0, lastToolError: null, recoveryAttempted: false,
+  suggestedAction: "The task spend budget is exhausted; a relaunch cannot change the ceiling. Escalate to the operator.",
+  createdAt: $now, schemaVersion: "1.0", budgetExhausted: $fact
+}' > "$FEATURE_DIR/.coding-failure-handoff.json"
+
+jq -n --argjson fact "$fact" --arg now "$now" --arg detail "$detail" '{
+  schemaVersion: "1.0", stage: "coding", cause: "stage-timeout", stopReason: "cost_limit",
+  budgetExhausted: $fact, provider: "openrouter", model: "kimi-k3", requestedModel: "kimi-k3",
+  agent: "native-openrouter", evidence: {source: "native-runtime", detail: $detail}, createdAt: $now
+}' > "$FEATURE_DIR/.coding-failure-envelope.json"
+
+result="$FEATURE_DIR/.coding-result.json"
+jq --argjson fact "$fact" --arg now "$now" --arg detail "$detail" '
+  .status = "failed" | .finishedAt = $now | .notes = ("Native coding failed: " + $detail)
+  | .failureReason = "budget_exhausted:cost" | .budgetExhausted = $fact
+' "$result" > "$result.tmp"
+mv "$result.tmp" "$result"
+
+jq -n --arg detail "$detail" --argjson ts "$(date +%s)" '{
+  state: "error", event: "process_exit", detail: $detail, agent: "native", timestamp: $ts, writer: "agent",
+  agentRecord: {state: "error", event: "process_exit", detail: $detail, agent: "native", timestamp: $ts}
+}' > "/tmp/wavemill-${WAVEMILL_SESSION}-${WAVEMILL_ISSUE}.hook"
+
+printf '%s\n' "$detail"
+exit 1

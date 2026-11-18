@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { getMaxCostUsd, isDefaultMaxCostUsdExplicitlyConfigured } from './config.ts';
-import { isBudgetSource, resolveCarriedBudget, type BudgetSource, type ResolvedBudget } from './budget-source.ts';
+import { isBudgetSource, resolveCarriedBudget, type BudgetCarrier, type BudgetSource, type ResolvedBudget } from './budget-source.ts';
 import { getEffectiveRegistry, getModel } from './model-registry.ts';
 import type { RoutePrediction } from './eval-schema.ts';
 import { mutateJsonState } from './state-mutex.ts';
@@ -260,6 +260,12 @@ export interface RouteArtifactSnapshot extends NormalizedExpandedRouteArtifact {
   stageRoutes?: StageRoutes;
   /** Hokusai's join key for the routed decision (`inference_log_id`). */
   hokusaiInferenceLogId?: string;
+  /**
+   * The recorded budget the artifact carries (HOK-3492): `constraints.maxCostUsd`
+   * with its provenance, or the legacy top-level `maxCostUsd`. Read here once so
+   * launch sites can feed `resolveCarriedBudget` without a second parser.
+   */
+  carriedBudget?: BudgetCarrier;
 }
 
 export interface RouteArtifactView {
@@ -551,6 +557,29 @@ function readExpectedMetrics(artifact: Record<string, unknown>): Record<string, 
   return Object.keys(metrics).length > 0 ? metrics : undefined;
 }
 
+/**
+ * The budget a raw route artifact carries (HOK-3492). Prefers the recorded
+ * `constraints` block (with its provenance) and falls back to a legacy
+ * top-level `maxCostUsd`; `resolveCarriedBudget` decides which value wins.
+ */
+function readCarriedBudget(artifact: Record<string, unknown>): BudgetCarrier | undefined {
+  const constraints = artifact.constraints && typeof artifact.constraints === 'object' && !Array.isArray(artifact.constraints)
+    ? artifact.constraints as { maxCostUsd?: unknown; budgetSource?: unknown }
+    : undefined;
+  const constraintMaxCostUsd = typeof constraints?.maxCostUsd === 'number' ? constraints.maxCostUsd : undefined;
+  const topLevelMaxCostUsd = typeof artifact.maxCostUsd === 'number' ? artifact.maxCostUsd : undefined;
+  const budgetSource = isBudgetSource(constraints?.budgetSource) ? constraints.budgetSource : undefined;
+  if (constraintMaxCostUsd === undefined && topLevelMaxCostUsd === undefined && budgetSource === undefined) {
+    return undefined;
+  }
+  return {
+    ...(topLevelMaxCostUsd !== undefined ? { maxCostUsd: topLevelMaxCostUsd } : {}),
+    ...(constraintMaxCostUsd !== undefined || budgetSource !== undefined
+      ? { constraints: { ...(constraintMaxCostUsd !== undefined ? { maxCostUsd: constraintMaxCostUsd } : {}), ...(budgetSource ? { budgetSource } : {}) } }
+      : {}),
+  };
+}
+
 function resolveArtifactPath(filePath: string): string {
   const cwd = resolve(process.cwd());
   const absolute = resolve(filePath);
@@ -576,6 +605,7 @@ function parseBootstrapRouteArtifact(
     return null;
   }
 
+  const carriedBudget = readCarriedBudget(artifact);
   return {
     coder,
     codeDepth,
@@ -598,6 +628,7 @@ function parseBootstrapRouteArtifact(
     expectedMetrics: readExpectedMetrics(artifact),
     challengeRecommendation: artifact.challengeRecommendation,
     ...readRouteRecordFields(artifact),
+    ...(carriedBudget ? { carriedBudget } : {}),
   };
 }
 
@@ -647,6 +678,7 @@ function parseExpandedRouteArtifact(
   }
 
   const artifact = value as Record<string, unknown>;
+  const carriedBudget = readCarriedBudget(artifact);
   return {
     ...validation.normalized,
     harnessId: readString(artifact.harnessId),
@@ -666,6 +698,7 @@ function parseExpandedRouteArtifact(
     expectedMetrics: readExpectedMetrics(artifact),
     challengeRecommendation: artifact.challengeRecommendation,
     ...readRouteRecordFields(artifact),
+    ...(carriedBudget ? { carriedBudget } : {}),
   };
 }
 

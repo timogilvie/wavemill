@@ -1055,9 +1055,10 @@ describe('codex provider', () => {
 
     assert.equal(result.text, 'PONG');
     assert.equal(result.provider, 'codex');
-    // input_tokens already includes cached; cached is not double-counted.
-    assert.equal(result.usage?.inputTokens, 16922);
-    // reasoning tokens are billed as output.
+    // Codex input is inclusive: the cached subset moves to its own bucket (HOK-3409).
+    assert.equal(result.usage?.inputTokens, 11930);
+    assert.equal(result.usage?.cacheReadTokens, 4992);
+    // reasoning tokens are a reporting-only subset of output.
     assert.equal(result.usage?.outputTokens, 6);
     assert.equal(result.usage?.totalTokens, 16928);
     assert.equal(result.costUsd, undefined);
@@ -1078,7 +1079,11 @@ describe('codex provider', () => {
     });
 
     assert.equal(result.text, 'first part\nsecond part');
-    assert.equal(result.usage?.outputTokens, 15);
+    // Default mock usage: input 100 (inclusive of 20 cached), output 10, reasoning 5.
+    // Reasoning is a reporting-only subset of output, so output stays 10 (HOK-3409).
+    assert.equal(result.usage?.outputTokens, 10);
+    assert.equal(result.usage?.inputTokens, 80);
+    assert.equal(result.usage?.cacheReadTokens, 20);
   });
 
   it('passes the codex exec/--json/sandbox args and the prompt via stdin', async () => {

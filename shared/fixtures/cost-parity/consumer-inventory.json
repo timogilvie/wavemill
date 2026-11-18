@@ -236,6 +236,34 @@
       "notes": "Measurement entrypoint: mill/monitor \u2192 tools/run-eval-hook.ts; meters through sdk-task-cost/meter.ts (SDK sole engine, HOK-3077)"
     },
     {
+      "file": "shared/lib/task-spend.ts",
+      "symbols": [
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "loadPricingTable",
+          "kind": "value"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "ModelPricing",
+          "kind": "type"
+        },
+        {
+          "module": "shared/lib/pricing/model-pricing.ts",
+          "name": "PricingTable",
+          "kind": "type"
+        },
+        {
+          "module": "shared/lib/workflow-cost.ts",
+          "name": "reportableWorkflowCostUsd",
+          "kind": "value"
+        }
+      ],
+      "class": "pricing_policy",
+      "production": true,
+      "notes": "One task spend limit: hands the native loop its model rates from the one rate table alongside the metered remainder (HOK-3492)"
+    },
+    {
       "file": "shared/lib/reliability-metrics.ts",
       "symbols": [
         {
@@ -455,6 +483,7 @@
   "testOnlyConsumers": [
     "shared/lib/cost-ownership-guard.test.ts",
     "shared/lib/eval-orchestrator.test.ts",
+    "shared/lib/eval.test.js",
     "shared/lib/executed-model-resolver.test.ts",
     "shared/lib/intervention-detector.test.ts",
     "shared/lib/ready-remediation-disposition.test.ts",

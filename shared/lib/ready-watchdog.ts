@@ -1112,9 +1112,22 @@ export function classifyReadyTask(
   }
 
   if (githubTruth.mergeable === 'CONFLICTING' || githubTruth.mergeStateStatus === 'DIRTY') {
+    // HOK-3513: the watchdog only observes. A conflict is a code failure and
+    // the monitor owns the repair: its Ready invalidation withdraws the passed
+    // verdict and re-runs Ready, whose CONFLICTED branch launches the one
+    // conflict resolver (`conflict-remediation-relaunch` pages on exhaustion).
+    // It is deliberately NOT a park: `waiting-on-ci` is the non-paging,
+    // monitor-owned kind, and the watchdog must not page for a delay the mill
+    // is already fixing.
+    const conflict = classifyFailure({
+      stage: 'ready',
+      failureKind: 'rebase-conflict',
+      detail: `PR #${snapshot.prNumber} cannot merge into its base (mergeable=${githubTruth.mergeable ?? 'unknown'}, mergeStateStatus=${githubTruth.mergeStateStatus ?? 'unknown'}).`,
+    });
     return {
-      kind: 'needs-user',
-      detail: `PR #${snapshot.prNumber} has real merge conflicts on GitHub.`,
+      kind: 'waiting-on-ci',
+      detail: `PR #${snapshot.prNumber} conflicts with its base; ${conflict.class} — the monitor's Ready invalidation runs the conflict resolver (conflict-remediation-relaunch pages on exhaustion).`,
+      autoRemediable: false,
     };
   }
 

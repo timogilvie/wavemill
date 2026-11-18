@@ -114,8 +114,13 @@ describe('Claude CLI transport replay (HOK-3460)', () => {
     assert.equal(result.text, 'replayed answer');
     assert.equal(result.provider, 'claude');
     assert.equal(result.model, 'claude-opus-5-5');
-    // input_tokens + cache_read_input_tokens; cache_read is not output.
-    assert.deepEqual(result.usage, { inputTokens: 150, outputTokens: 40, totalTokens: 190 });
+    // Anthropic input excludes cache reads, so the buckets map one-to-one (HOK-3409).
+    assert.deepEqual(result.usage, {
+      inputTokens: 120,
+      outputTokens: 40,
+      cacheReadTokens: 30,
+      totalTokens: 190,
+    });
     assert.equal(result.costUsd, 0.00123);
     assert.equal(result.reportedModel, 'claude-opus-5-5');
     assert.equal(result.rawOutput.length > 0, true);
@@ -221,7 +226,9 @@ describe('Codex CLI transport replay (HOK-3460)', () => {
     }),
   ].join('\n') + '\n';
 
-  // protects: the HOK-3409 seam — one usage mapping, unchanged semantics.
+  // protects: HOK-3409 — the adapter's usage mapping is the SDK's
+  // (`fromCodexUsage`), so inclusive Codex input splits into uncached input
+  // plus a cache-read bucket, and reasoning is never added to output.
   it('replays a codex exec --json stream into the same LLMCallResult', async () => {
     const dir = createRepoDir('codex-stream');
     const featureDir = join(dir, 'features', 'replay');
@@ -239,8 +246,13 @@ describe('Codex CLI transport replay (HOK-3460)', () => {
 
     assert.equal(result.text, 'first part\nsecond part');
     assert.equal(result.provider, 'codex');
-    // input_tokens is inclusive (cache is a subset); reasoning is billed output.
-    assert.deepEqual(result.usage, { inputTokens: 16922, outputTokens: 10, totalTokens: 16932 });
+    // input_tokens is inclusive: 16922 - 4992 cached = 11930 uncached input.
+    assert.deepEqual(result.usage, {
+      inputTokens: 11930,
+      outputTokens: 6,
+      cacheReadTokens: 4992,
+      totalTokens: 16928,
+    });
     assert.equal(result.reportedModel, undefined);
     assert.equal(result.costUsd, undefined);
 

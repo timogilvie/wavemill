@@ -1,0 +1,11 @@
+{
+  "disposition": "code-failure",
+  "deliverTo": "agent",
+  "deliveryPayload": {
+    "finding": {
+      "category": "scope-violation",
+      "offendingPath": "shared/lib/wavemill-monitor.sh",
+      "message": "Unexpected review change outside task scope: shared/lib/wavemill-monitor.sh (M, working-tree)."
+    }
+  }
+}

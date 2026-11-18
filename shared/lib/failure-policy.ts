@@ -29,8 +29,10 @@
  * stays in `arm-failure-taxonomy.ts` — attribution is not a terminal decision.
  */
 import type { ArmFaultClass } from './arm-failure-taxonomy.ts';
+import { classifyArmFault, isModelQualitySignal } from './arm-failure-taxonomy.ts';
 import type { CiFailureCategory } from './ci-failure-classifier.ts';
 import { classifyProviderError } from './native-agent/provider-error-classifier.ts';
+import { classifyGitHubCallFailure } from './github.ts';
 
 export type FailureClass = 'terminal' | 'code-failure' | 'retryable';
 
@@ -97,6 +99,14 @@ export interface FailureEvidence {
   job?: JobEvidence | null;
   /** Proof of which model's output the failure belongs to (HOK-3143 shape). */
   executionEvidence?: ExecutionEvidence | null;
+  /** A current fleet incident that owns this settled attempt (HOK-3509). */
+  fleetCause?: { fleetFaultClass: 'harness-fault' | 'provider-fault' } | null;
+  /**
+   * The recorded native budget fact (HOK-3362), when the stage wrote one. Its
+   * `kind: 'cost'` is the task-budget exhaustion HOK-3492 made terminal —
+   * another run cannot change how much the task may spend.
+   */
+  budgetExhausted?: { kind?: string | null } | null;
 }
 
 export interface FailureDecision {
@@ -177,6 +187,15 @@ export const TERMINAL_ALLOWLIST: readonly TerminalCause[] = Object.freeze([
     reason: 'the HOK-3128 dirty-handoff relaunch budget is already spent; the agent will not commit its own output',
     faultClass: 'model-fault',
     testRef: 'failure-policy.test.ts:terminal:coding-dirty-handoff',
+  },
+  {
+    // HOK-3492: a cost-kind stop is the task's recorded budget being spent
+    // across its owned sessions. Another run cannot change the ceiling, so it
+    // must not spend a bounded-retry attempt.
+    code: 'task-budget-exhausted',
+    reason: "the task's one recorded spend budget is exhausted across its owned sessions; another run cannot change how much it may spend",
+    faultClass: 'model-fault',
+    testRef: 'failure-policy.test.ts:terminal:task-budget-exhausted',
   },
   // Challenge-only: existing pair-resolution semantics. Each is emitted only
   // after its own bounded-retry bucket is exhausted, so the retry already
@@ -438,6 +457,11 @@ export function detectFailureKind(detail: string | null | undefined, handoffReas
   for (const [pattern, kind] of NATIVE_PRE_PROVIDER_SIGNATURES) {
     if (pattern.test(lower)) return kind;
   }
+  // HOK-3509: a GitHub API rate-limit must not read as a model provider rate
+  // limit. Run the shared classifier before the provider classifier.
+  if (classifyGitHubCallFailure(text).category === 'rate_limit') {
+    return 'github-rate-limited';
+  }
   const providerKind = text ? classifyProviderError(text).kind : 'provider-unknown-error';
   if (providerKind !== 'provider-unknown-error' && providerKind !== 'provider-response-incomplete') {
     return providerKind;
@@ -519,6 +543,7 @@ const NEXT_ACTIONS: Readonly<Record<string, string>> = {
   'provider-credit-exhausted': 'top up OpenRouter credits at https://openrouter.ai/credits',
   'provider-transient-error': 'transient upstream failure. Start the phase again',
   'native-stage-timeout': 'the native stage exhausted its wall-clock/turn/tool-call/token/cost budget; the recorded budgetExhausted fact decides the fault class. The stage relaunches under its bounded retry (review relaunches the pinned reviewer with an escalated timeout)',
+  'task-budget-exhausted': "the task's one recorded spend budget is exhausted across its owned sessions; a relaunch cannot change the ceiling. Inspect the spent sessions, or raise the task budget deliberately and start a new attempt",
   'policy-denied': 'a mutation/network policy rejected the run (harness fault, not a model/provider signal). Review the policy decision before relaunching',
   cancelled: 'the run was cancelled by an operator or the orchestrator (not a model/provider signal). Relaunch the phase when ready',
   'empty-model-turn': 'relaunch native coding; the runtime exhausted bounded continuation after empty model turns',
@@ -531,9 +556,10 @@ const NEXT_ACTIONS: Readonly<Record<string, string>> = {
   'review-identity-mismatch': "the review artifact's reviewer identity disagreed with the arm's assignment (or execution evidence was contradicted); the arm was retired as an invalid challenge (no model forfeit) so its green sibling proceeds. Inspect the review-result.json intendedModel/executedModel on the closed PR",
   'review-unattributed': 'Ready was refused by the review gate but the reviewer identity could not be proven; the arm was retired as an invalid challenge (no model forfeit) so its green sibling proceeds. Inspect the review-result.json executionEvidence on the closed PR',
   'coding-dirty-handoff': 'the coding agent exited after writing .coding-complete with uncommitted output and did not repair it when relaunched (completion-protocol failure); the challenger is forfeited so the primary proceeds',
-  'planning-artifact-invalid': 'the plan artifact failed structural validation after one repair turn. Inspect the recorded validationError and relaunch on a stronger planner',
+  'planning-artifact-invalid': 'the plan artifact failed structural validation after one repair turn. Inspect the recorded validationError; the model for the next attempt is Hokusai\'s decision',
   'review-no-output': 'the review model finished without emitting findings or a terminal verdict. Relaunch the review phase on a stronger reviewer',
   'coding-exited-without-result': 'the coding agent settled without recording a terminal result (durable commits preserved) — either it exited, or a harness tool held the loop until the recovery controller settled it. Relaunch coding to resume from the last durable commit',
+  'github-rate-limited': 'the GitHub API rate-limit is exhausted; this is an external dependency fault, not a model/provider signal. The mill retries it with backoff; wait for the window to reset or top up CI minutes',
   'native-unclassified': 'unrecognised failure signature: the mill retries it with backoff and one fresh relaunch before escalating. Inspect the recorded detail if it escalates',
 };
 
@@ -560,20 +586,23 @@ export function retryBucketFor(stage: FailureStage): string {
 export const DEFAULT_RETRY_ATTEMPTS = 3;
 
 /**
- * The one attribution rule (HOK-3255): a failure may be charged to a model
- * only when it is terminal, the allowlisted cause is a `model-fault`, and
- * execution evidence proves which model produced the failing output. Retry
- * counts are not an input, so exhaustion cannot change attribution by
- * construction; absent or contradictory evidence stays unattributed.
+ * The one attribution rule (HOK-3255, extended HOK-3498): a failure is
+ * charged to a model only when execution evidence proves which model
+ * produced the failing output, and `classifyArmFault` names the failure kind
+ * as model quality signal. The policy class (terminal / code-failure /
+ * retryable) is not an input: a retryable `planning-artifact-invalid` with
+ * direct evidence is as much the model's as a terminal one. Retry counts are
+ * not an input either, so exhaustion cannot change attribution by
+ * construction; absent evidence stays unattributed.
  */
 function attributionFor(
-  klass: FailureClass,
-  cause: TerminalCause | undefined,
+  failureKind: string,
+  detail: string | null | undefined,
   executionEvidence: ExecutionEvidence | null | undefined,
+  fleetCause?: FailureEvidence['fleetCause'],
 ): FailureAttribution {
-  return klass === 'terminal' && cause?.faultClass === 'model-fault' && Boolean(executionEvidence?.model.trim())
-    ? 'model'
-    : 'unattributed';
+  if (!executionEvidence?.model.trim()) return 'unattributed';
+  return isModelQualitySignal(classifyArmFault({ failureKind, detail, ...(fleetCause ? { fleetCause } : {}) })) ? 'model' : 'unattributed';
 }
 
 /**
@@ -589,15 +618,22 @@ export function classifyFailure(evidence: FailureEvidence): FailureDecision {
     : job?.reason?.trim() || detectFailureKind(detail, evidence.handoffReason);
   const challengeArm = evidence.challengeArm === true;
 
-  const cause = terminalCauseFor(failureKind, challengeArm);
+  // HOK-3492: a recorded cost-kind budget stop is the task's one spend limit
+  // exhausted, not a per-stage timeout — retrying cannot change the ceiling.
+  const taskBudgetCause = evidence.budgetExhausted?.kind === 'cost'
+    ? terminalCauseFor('task-budget-exhausted', challengeArm)
+    : undefined;
+  const cause = taskBudgetCause ?? terminalCauseFor(failureKind, challengeArm);
   if (cause) {
     return {
       class: 'terminal',
       failureKind,
       cause,
-      rationale: `allowlisted terminal cause ${cause.code}: ${cause.reason}`,
-      nextAction: nextActionFor(failureKind),
-      attribution: attributionFor('terminal', cause, evidence.executionEvidence),
+      rationale: taskBudgetCause
+        ? `recorded task spend budget exhausted (cost budget fact): ${taskBudgetCause.reason}`
+        : `allowlisted terminal cause ${cause.code}: ${cause.reason}`,
+      nextAction: taskBudgetCause ? nextActionFor('task-budget-exhausted') : nextActionFor(failureKind),
+      attribution: attributionFor(failureKind, detail, evidence.executionEvidence, evidence.fleetCause),
     };
   }
 
@@ -617,7 +653,7 @@ export function classifyFailure(evidence: FailureEvidence): FailureDecision {
             ? 'CI classified the failure as locally replayable'
             : `${failureKind} is a recognised code failure`,
         nextAction: 'remediate the failing change from the recorded excerpt, then push a new head',
-        attribution: attributionFor('code-failure', undefined, evidence.executionEvidence),
+        attribution: attributionFor(failureKind, detail, evidence.executionEvidence, evidence.fleetCause),
       };
     }
   }
@@ -632,7 +668,7 @@ export function classifyFailure(evidence: FailureEvidence): FailureDecision {
         ? 'unrecognised failure: retry by default (HOK-3176)'
         : `${failureKind} is not on the terminal allowlist: retry by default (HOK-3176)`,
     nextAction: nextActionFor(failureKind),
-    attribution: attributionFor('retryable', undefined, evidence.executionEvidence),
+    attribution: attributionFor(failureKind, detail, evidence.executionEvidence, evidence.fleetCause),
   };
 }
 

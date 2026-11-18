@@ -24,6 +24,15 @@ import {
 import { evaluateRecoveryPredicate, type RecoveryReaders } from './wavemill-incident-recovery.ts';
 import type { IncidentRecord } from './wavemill-incident-model.ts';
 import type { IncidentStore } from './wavemill-incident-store.ts';
+import {
+  buildFleetIncident,
+  correlateFleetFailures,
+  coveredTaskCandidates,
+  jobFailureFacts,
+  readTaskFailureFacts,
+  type FailureFact,
+  type FleetCorrelation,
+} from './fleet-incident-correlation.ts';
 
 export interface IncidentCycleInput {
   /** The shared store the cycle writes to. */
@@ -46,6 +55,14 @@ export interface IncidentCycleInput {
   canResolveByAbsence?: (record: IncidentRecord) => boolean;
   /** Injectable recovery readers (test seam; defaults match production). */
   recoveryReaders?: Partial<RecoveryReaders>;
+  /**
+   * HOK-3509 — fleet-cause correlation. When present, the cycle reads
+   * per-task failure facts, groups them by cause key, upserts one fleet
+   * incident for each correlation, and drops any candidate covered by one.
+   * Unset: behaviour is unchanged (back-compat for existing replay fixtures).
+   */
+  failureSources?: Array<{ taskId: string; featureDir: string }>;
+  correlation?: { windowMs: number; threshold: number; session?: string | null; now?: Date };
 }
 
 export type IncidentCycleErrorKind = 'store' | 'recovery' | 'sweep';
@@ -67,6 +84,8 @@ export interface IncidentCycleResult {
   recovered: Array<{ fingerprint: string; rootCauseClass: string; reason: string; evidence?: string }>;
   /** Typed errors; the caller may map these to findings. */
   errors: IncidentCycleError[];
+  /** HOK-3509: the fleet correlations the cycle upserted, if any. */
+  fleetIncidents?: FleetCorrelation[];
 }
 
 /**
@@ -86,7 +105,41 @@ export async function reconcileIncidentCycle(
   const observedFingerprints = new Set<string>();
   const recovered: IncidentCycleResult['recovered'] = [];
 
-  for (const candidate of input.candidates) {
+  // HOK-3509 — fleet correlation.
+  // When the caller supplied failure sources and a correlation config, read
+  // per-task facts + job facts, group by cause key, and upsert a fleet
+  // incident per correlation. Covered per-task candidates are dropped so a
+  // fleet record replaces the N task records it stands in for.
+  const correlations: FleetCorrelation[] = [];
+  let effectiveCandidates = input.candidates;
+  if (input.correlation && input.failureSources?.length) {
+    const now = (input.correlation.now ?? new Date()).getTime();
+    const windowMs = input.correlation.windowMs;
+    const facts: FailureFact[] = [];
+    for (const source of input.failureSources) {
+      try {
+        facts.push(...readTaskFailureFacts({ taskId: source.taskId, featureDir: source.featureDir, now, windowMs }));
+      } catch {
+        // Fail-soft: one bad task must not break the cycle.
+      }
+    }
+    const jobs = input.jobs ?? readAuthoritativeWorkflowJobs(input.repoDir);
+    facts.push(...jobFailureFacts(jobs.jobs ?? [], now, windowMs));
+    const grouped = correlateFleetFailures(facts, { windowMs, threshold: input.correlation.threshold });
+    correlations.push(...grouped);
+    if (correlations.length > 0) {
+      const covered = new Set(coveredTaskCandidates(input.candidates, correlations));
+      effectiveCandidates = [
+        ...input.candidates.filter((candidate) => !covered.has(candidate)),
+        ...correlations.map((correlation) => buildFleetIncident(correlation, {
+          session: input.correlation?.session ?? null,
+          now: new Date(now),
+        })),
+      ];
+    }
+  }
+
+  for (const candidate of effectiveCandidates) {
     try {
       const { record: stored, freshEvent } = await input.store.upsertDetailed(candidate);
       if (freshEvent) freshFingerprints.push(stored.fingerprint);
@@ -102,7 +155,7 @@ export async function reconcileIncidentCycle(
   // existing record could otherwise be resolved while its re-observation
   // could not be written.
   if (!input.cycleComplete || errors.some((entry) => entry.kind === 'store')) {
-    return { incidents, fresh: freshFingerprints, observed: [...observedFingerprints], recovered, errors };
+    return { incidents, fresh: freshFingerprints, observed: [...observedFingerprints], recovered, errors, ...(correlations.length > 0 ? { fleetIncidents: correlations } : {}) };
   }
 
   const jobs = input.jobs ?? readAuthoritativeWorkflowJobs(input.repoDir);
@@ -149,7 +202,7 @@ export async function reconcileIncidentCycle(
     errors.push({ kind: 'sweep', error: toError(error) });
   }
 
-  return { incidents, fresh: freshFingerprints, observed: [...observedFingerprints], recovered, errors };
+  return { incidents, fresh: freshFingerprints, observed: [...observedFingerprints], recovered, errors, ...(correlations.length > 0 ? { fleetIncidents: correlations } : {}) };
 }
 
 function toError(value: unknown): Error {

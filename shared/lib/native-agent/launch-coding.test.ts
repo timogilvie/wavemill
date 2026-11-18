@@ -1147,6 +1147,59 @@ describe('launchNativeCoding budget exhaustion (HOK-3362, HOK-3329 replay)', () 
     assert.equal(classifyArmFault({ failureKind: 'native-stage-timeout', budgetExhausted: fact }), 'unknown-fault');
   });
 
+  // HOK-3492: the task's one recorded spend budget is the loop's cost cap.
+  it('records budget_exhausted kind=cost when the task remaining budget caps the run', async () => {
+    const { repoDir, featureDir, slug } = makeRepo();
+    // The route records a tiny task budget; no owned sessions have spent yet,
+    // so the loop's cap is that full recorded amount.
+    writeFileSync(join(featureDir, '.initial-route.json'), JSON.stringify({
+      coder: 'scripted', codeDepth: 'light', reviewer: 'scripted', reviewMode: 'standard',
+      constraints: { maxCostUsd: 0.00005, budgetSource: 'request' },
+    }), 'utf-8');
+    const api = `native-coding-cost-${process.pid}-${Date.now()}`;
+    registerScriptedPiProvider({
+      api,
+      provider: 'scripted',
+      turns: () => toolTurn('cost-1', 'run_slow_check', { n: 1 }),
+    });
+    // Rates from the model config let the launcher price the turn it stops on.
+    const model = { id: `scripted:${api}`, name: `scripted:${api}`, api, provider: 'scripted', cost: { input: 1, output: 1 } };
+
+    await assert.rejects(
+      () => launchNativeCoding({
+        session: 'sess',
+        issue: 'HOK-3492',
+        slug,
+        wtDir: repoDir,
+        repoDir,
+        loopModelOverride: model,
+        loopBudgetOverride: { maxTurns: 10_000, maxToolCalls: 10_000 },
+        extraDescriptors: [createFastCheckTool()],
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof NativeBudgetExhaustedError);
+        assert.equal((error as NativeBudgetExhaustedError).fact.kind, 'cost');
+        assert.equal((error as NativeBudgetExhaustedError).fact.limit, 0.00005);
+        return true;
+      },
+    );
+
+    const handoff = await readCodingFailureHandoff(getCodingFailureHandoffPath(featureDir));
+    assert.equal(handoff.ok, true);
+    if (!handoff.ok) return;
+    assert.equal(handoff.value.reason, 'budget_exhausted');
+    assert.equal(handoff.value.budgetExhausted?.kind, 'cost');
+
+    const envelope = await readStageFailureEnvelope(getStageFailureEnvelopePath(featureDir, 'coding'));
+    assert.equal(envelope.ok, true);
+    if (!envelope.ok) return;
+    assert.equal(envelope.value.budgetExhausted?.kind, 'cost');
+
+    const stageResult = await readStageResult(featureDir, 'coding');
+    assert.equal(stageResult?.failureReason, 'budget_exhausted:cost');
+    assert.equal(stageResult?.budgetExhausted?.kind, 'cost');
+  });
+
   // protects: a coding turn_limit recorded as no_completion_artifact (HOK-3329 attempts 1 and 3)
   it('records budget_exhausted kind=turn with mutation failures instead of no_completion_artifact', async () => {
     const { repoDir, featureDir, slug } = makeRepo();

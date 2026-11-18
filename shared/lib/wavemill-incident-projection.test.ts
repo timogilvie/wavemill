@@ -6,6 +6,7 @@ import {
   incidentChainEvidenceLines,
   projectRemediationProposals,
   supersedeGenericFindings,
+  suppressFleetFindings,
   type SupersedableFinding,
 } from './wavemill-incident-projection.ts';
 
@@ -54,6 +55,21 @@ test('projectRemediationProposals keeps valid open proposals and counts invalid 
   assert.deepEqual(proposals.map((item) => item.incidentFingerprint), ['fp-pair']);
   assert.equal(proposals[0].issue, 'HOK-2934_c');
   assert.equal(errors, 1);
+});
+
+test('suppressFleetFindings removes stale and stalled findings covered by an active fleet incident', () => {
+  const fleet = pairIncident({
+    taskId: null,
+    fingerprint: 'fp-fleet',
+    rootCauseClass: 'fleet_shared_endpoint_failure',
+    metadata: { knownIssueIds: ['HOK-1', 'HOK-2'] },
+  });
+  const findings: SupersedableFinding[] = [
+    { id: 'stale-active-task-live-process-wavemill-HOK-1', issue: 'HOK-1', evidence: [], recommendation: 'old' },
+    { id: 'coding-task-stalled-wavemill-HOK-2', issue: 'HOK-2', evidence: [], recommendation: 'old' },
+    { id: 'stale-active-task-live-process-wavemill-HOK-3', issue: 'HOK-3', evidence: [], recommendation: 'keep' },
+  ];
+  assert.deepEqual(suppressFleetFindings(findings, [fleet]).map((finding) => finding.issue), ['HOK-3']);
 });
 
 test('supersedeGenericFindings groups both pair arms and leaves unrelated findings untouched', () => {

@@ -8,6 +8,7 @@
  * rejection, rate limits) at parse time.
  */
 import { getEffectiveRegistry, getModel } from '../model-registry.ts';
+import { fromCodexUsage } from '@hokusai/costs';
 import { escapeShellArg } from '../shell-utils.ts';
 import {
   appendSessionRefResolution,
@@ -27,6 +28,7 @@ import {
   type AdapterParseResult,
   type AdapterUsage,
   type CliTransportAdapter,
+  taskCostUsageToAdapterUsage,
 } from './transport-adapter.ts';
 import { estimateTokensWithBytesPerToken } from './token-estimator.ts';
 import { estimatePromptTokens, evaluateContextWindow } from '../native-agent/context-window-guard.ts';
@@ -303,12 +305,9 @@ export class CodexCliAdapter implements CliTransportAdapter {
       };
     }
 
-    // Success — parse the JSONL event stream.
-    //
-    // HOK-3409 seam: this is the one Codex usage mapping in the repo. Today
-    // `input_tokens` is inclusive (cached_input_tokens is a subset and is not
-    // added), reasoning tokens are billed as output, and cache buckets are
-    // dropped. HOK-3409 replaces this with `fromCodexUsage`.
+    // Success — parse the JSONL event stream. Usage normalization is the
+    // SDK's (`fromCodexUsage`); this loop only locates the agent message and
+    // the turn's usage event.
     const messages: string[] = [];
     let usage: AdapterUsage | undefined;
     for (const line of stdout.split('\n')) {
@@ -329,17 +328,7 @@ export class CodexCliAdapter implements CliTransportAdapter {
       ) {
         messages.push((event.item as Record<string, unknown>).text as string);
       } else if (event.type === 'turn.completed' && event.usage && typeof event.usage === 'object') {
-        const u = event.usage as Record<string, number | undefined>;
-        // `input_tokens` already includes cached input; `cached_input_tokens` is
-        // a subset, so it is not added again. Reasoning tokens are billed as
-        // output.
-        const inputTokens = u.input_tokens ?? 0;
-        const outputTokens = (u.output_tokens ?? 0) + (u.reasoning_output_tokens ?? 0);
-        usage = {
-          inputTokens,
-          outputTokens,
-          totalTokens: inputTokens + outputTokens,
-        };
+        usage = taskCostUsageToAdapterUsage(fromCodexUsage(event.usage));
       }
     }
     const text = messages.length > 0 ? messages.join('\n').trim() : stdout.trim();

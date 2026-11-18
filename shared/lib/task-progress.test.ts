@@ -1659,6 +1659,22 @@ test('(HOK-3386) readOwnedStageLaunch: native rows are skipped (native-session r
   }
 });
 
+// protects (HOK-3447): a repair launch that reused a legacy sessionRef being
+// collapsed into the launch it repaired, so progress tracked the old attempt.
+test('(HOK-3447) readOwnedStageLaunch: a repair sharing a sessionRef is still the newest launch', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hok3447-ownership-'));
+  try {
+    appendOwnershipRow(dir, { sessionRef: 'legacy-ref', harness: 'claude-code', kind: 'ready-remediation', model: 'm', launchedAt: '2026-11-16T10:00:00.000Z' });
+    appendOwnershipRow(dir, { sessionRef: 'legacy-ref', harness: 'codex', kind: 'ready-remediation', model: 'm', launchedAt: '2026-11-16T10:10:00.000Z' });
+    const launch = readOwnedStageLaunch(dir, 'ready-remediation');
+    assert.ok(launch);
+    assert.equal(launch!.harness, 'codex');
+    assert.equal(launch!.launchedAt, '2026-11-16T10:10:00.000Z');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // protects: deriveTaskProgress missing the owned-session evidence folded into agentIdle.
 test('(HOK-3386) deriveTaskProgress: owned-session events are progress and task_complete is idle', () => {
   const now = new Date('2026-11-02T11:00:00.000Z');

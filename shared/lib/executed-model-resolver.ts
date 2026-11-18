@@ -20,6 +20,8 @@ import { readFileSync } from 'node:fs';
 import type { IngestUsageInput } from '@hokusai/costs';
 import { extractOwnedSessionUsageRows } from './sdk-task-cost/measure.ts';
 import {
+  latestStageLaunch,
+  readLatestStageLaunch,
   readOwnershipRows,
   rowsForStage,
   type OwnershipKind,
@@ -35,7 +37,13 @@ import {
   type ProviderIdentityExpectation,
   type ProviderIdentitySummary,
 } from './native-agent/provider-identity.ts';
-import type { StageExecutionEvidence, StageResult } from './stage-result.ts';
+import {
+  executionTruthFields,
+  type ExecutionTruthFields,
+  type StageExecutionEvidence,
+  type StageResult,
+  type StageStatus,
+} from './stage-result.ts';
 import { resolveClaudeProjectsDirsFor, resolveCodexSessionRoots, nativeSessionFiles } from './session-adapters.ts';
 
 export type ExecutedModelResolverAgent = 'claude' | 'codex';
@@ -276,15 +284,11 @@ function selectHarness(
   stage: OwnershipStage,
   agentHint: string | undefined,
 ): SessionHarness | null {
-  const stageRows = rowsForStage(ownership, stage);
-  if (stageRows.length > 0) {
-    // Any row for this stage decides the harness. Multiple harnesses on one
-    // stage would be a bug upstream; the latest launch wins.
-    const latest = [...stageRows].sort(
-      (a, b) => Date.parse(b.launchedAt) - Date.parse(a.launchedAt),
-    )[0];
-    return latest?.harness ?? null;
-  }
+  // The canonical selector answers "which launch is this?" from lossless
+  // history: a repair that reused a legacy sessionRef is still the newest
+  // attempt, and a helper call that did the stage's work is never the launch.
+  const latest = latestStageLaunch(ownership, stage);
+  if (latest) return latest.harness;
   if (agentHint === 'claude') return 'claude-code';
   if (agentHint === 'codex') return 'codex';
   if (agentHint === 'native' || agentHint === 'native-openrouter') return 'native';
@@ -546,14 +550,13 @@ function resolveNativeExecutedModel(input: ResolveStageExecutedModelInput & {
   // A retry receives a fresh ownership attempt. A prior attempt can still
   // flush stream events after that retry begins, so timestamp filtering alone
   // is not sufficient: only the latest attempt's session refs may contribute
-  // to the current stage record.
+  // to the current stage record. The attempt is named by the one canonical
+  // selector (HOK-3447), over the full (never sessionRef-deduplicated) rows.
   const launchMs = (row: typeof ownedRows[number]) => {
     const ms = Date.parse(row.launchedAt);
     return Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY;
   };
-  const latestLaunch = ownedRows.reduce((latest, row) => (
-    launchMs(row) > launchMs(latest) ? row : latest
-  ));
+  const latestLaunch = latestStageLaunch(ownedRows, input.stage) ?? ownedRows[ownedRows.length - 1];
   const latestAttemptRows = ownedRows.filter((row) => row.attemptId === latestLaunch.attemptId);
   const ownedRefs = new Set(latestAttemptRows.map((row) => row.sessionRef));
   const latestLaunchMs = Math.max(...latestAttemptRows.map(launchMs));
@@ -728,6 +731,145 @@ function resolveNativeExecutedModel(input: ResolveStageExecutedModelInput & {
       ...(firstSegment.sessionStartedProvider ? { transportProvider: firstSegment.sessionStartedProvider } : {}),
       ...(summary.lastResponseId ? { responseId: summary.lastResponseId } : {}),
     },
+  };
+}
+
+// ────────────────────────────────────────────────────────────────
+// HOK-3498: one execution-truth write for every stage exit
+// ────────────────────────────────────────────────────────────────
+
+/** ISO timestamp of a stage's latest launch row, or null when it is not owned. */
+export function latestLaunchAtForStage(
+  featureDir: string,
+  stage: OwnershipStage,
+): string | null {
+  try {
+    // HOK-3447: the canonical selector over lossless history — a repair that
+    // reused a legacy sessionRef is still a newer attempt.
+    return readLatestStageLaunch(featureDir, stage)?.launchedAt ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Input to {@link resolveStageExecutionTruth}: the facts a launcher holds at
+ * any exit — success or failure — plus the stage status the write records.
+ */
+export interface ResolveStageExecutionTruthInput {
+  /** State directory holding `.session-ownership.jsonl` and the stage result. */
+  featureDir: string;
+  stage: OwnershipStage;
+  /** Stage status this write records; drives attribution eligibility. */
+  status: StageStatus;
+  /** Worktree path for the native-stream / external session adapters. */
+  worktreePath: string;
+  branchName?: string | null;
+  repoDir?: string;
+  /** The stage result already on disk, so the merge rule can keep fresh evidence. */
+  existing?: StageResult | null;
+  /** Harness hint (the launchers pass `native`). */
+  agentHint?: string;
+  /** Stage-result flags the caller already holds (e.g. `intended-model`). */
+  flags?: Record<string, string>;
+  /**
+   * Descriptive evidence facts only the launcher can supply — Pi runtime
+   * versions, for example. Never identity: `executedModel` and the evidence
+   * status come from {@link resolveStageExecutedModel} alone.
+   */
+  evidenceFacts?: Partial<StageExecutionEvidence>;
+  now?: string;
+  newAttempt?: boolean;
+}
+
+export interface StageExecutionTruth extends ExecutionTruthFields {
+  /** The resolver's answer, for callers that report it. Null when unverifiable. */
+  resolved: ResolvedStageExecutedModel | null;
+}
+
+/**
+ * Turn one resolver answer into `executionTruthFields` flags. `missing` is
+ * still written explicitly: a launcher records its own attempt's exit, so a
+ * stale prior block must never survive (the caller passes the attempt's
+ * `latestLaunchAt`, which independently blocks the keep rule).
+ */
+function resolverAnswerFlags(
+  flags: Record<string, string>,
+  resolved: ResolvedStageExecutedModel | null,
+): Record<string, string> {
+  if (!resolved || resolved.preservedExisting) return { ...flags };
+  const next: Record<string, string> = { ...flags };
+  if (resolved.executedModel) next['executed-model'] = resolved.executedModel;
+  next['execution-evidence-status'] = resolved.evidenceStatus;
+  next['execution-evidence-source'] = resolved.evidenceSource;
+  if (resolved.evidenceDetail) next['execution-evidence-detail'] = resolved.evidenceDetail;
+  return next;
+}
+
+/** Fill provider-response fields the resolver re-derived into a fresh block. */
+function mergeEvidenceFacts(
+  evidence: StageExecutionEvidence,
+  ...facts: Array<Partial<StageExecutionEvidence> | undefined>
+): StageExecutionEvidence {
+  const merged: Record<string, unknown> = { ...evidence };
+  for (const fact of facts) {
+    if (!fact) continue;
+    for (const [key, value] of Object.entries(fact)) {
+      if (value !== undefined && merged[key] === undefined) merged[key] = value;
+    }
+  }
+  return merged as StageExecutionEvidence;
+}
+
+/**
+ * The one executed-model record for a stage exit (HOK-3498). Every native
+ * launcher exit — success, validation failure, budget stop, provider error —
+ * asks this instead of writing `executedModel` / `executionEvidence` by hand:
+ * the identity comes from {@link resolveStageExecutedModel}, the merge and
+ * eligibility rules from {@link executionTruthFields}. `contradicted` is
+ * reserved for a provider-identity mismatch; a stage that merely failed
+ * records its resolved identity with the failure on `failureReason`.
+ *
+ * Resolver exceptions are caught: a stage transition must never fail on
+ * attribution.
+ */
+export function resolveStageExecutionTruth(
+  input: ResolveStageExecutionTruthInput,
+): StageExecutionTruth {
+  const now = input.now ?? new Date().toISOString();
+  let resolved: ResolvedStageExecutedModel | null = null;
+  try {
+    resolved = resolveStageExecutedModel({
+      featureDir: input.featureDir,
+      stage: input.stage,
+      worktreePath: input.worktreePath,
+      branchName: input.branchName ?? '',
+      ...(input.repoDir !== undefined ? { repoDir: input.repoDir } : {}),
+      existing: input.existing ?? null,
+      ...(input.agentHint !== undefined ? { agentHint: input.agentHint } : {}),
+    });
+  } catch (error) {
+    console.warn(`executed-model resolver failed for stage=${input.stage}: ${(error as Error).message}`);
+    resolved = null;
+  }
+  const flags = resolverAnswerFlags(input.flags ?? {}, resolved);
+  const truth = executionTruthFields({
+    status: input.status,
+    flags,
+    existing: input.existing ?? null,
+    now,
+    latestLaunchAt: latestLaunchAtForStage(input.featureDir, input.stage),
+    ...(input.newAttempt !== undefined ? { newAttempt: input.newAttempt } : {}),
+    ...(input.repoDir !== undefined ? { repoDir: input.repoDir } : {}),
+  });
+  return {
+    ...truth,
+    executionEvidence: mergeEvidenceFacts(
+      truth.executionEvidence,
+      resolved?.providerEvidence,
+      input.evidenceFacts,
+    ),
+    resolved,
   };
 }
 

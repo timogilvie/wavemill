@@ -348,7 +348,13 @@ it('guards native execution against private timestamp/statistics and unbounded c
   assert.equal(check('patch.ts', 'const table = buildLcsTable(before, after);')[0]?.pattern, 'quadratic-patch-statistics');
   assert.equal(check('shared/lib/native-agent/launch-coding.ts', 'runWavemillLoop({ model, convertToLlm: convert });')[0]?.pattern, 'unbounded-native-coding');
   assert.deepEqual(check('stage.sh', 'started_epoch="$(wavemill_iso8601_to_epoch "$started_at")"'), []);
-  assert.deepEqual(check('shared/lib/native-agent/launch-coding.ts', 'runWavemillLoop({ model, budget: limits, convertToLlm: convert });'), []);
+  assert.deepEqual(check('shared/lib/native-agent/launch-coding.ts', 'runWavemillLoop({ model, budget: { maxCostUsd: 5 }, convertToLlm: convert });'), []);
+  // HOK-3492: a production loop launch that never supplies the task spend limit is flagged.
+  assert.equal(
+    check('shared/lib/native-agent/launch-coding.ts', 'runWavemillLoop({ model, budget: limits, convertToLlm: convert });')
+      .find(finding => finding.pattern === 'missing-task-spend-limit')?.pattern,
+    'missing-task-spend-limit',
+  );
 });
 
 it('rejects private job readers and observed-presence recovery bypasses', () => {

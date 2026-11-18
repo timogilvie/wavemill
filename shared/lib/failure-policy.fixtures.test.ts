@@ -92,6 +92,27 @@ const HISTORICAL_FIXTURES: Fixture[] = [
     expectedClass: 'retryable',
     expectedKind: 'provider-transient-error',
   },
+  // HOK-3509: GitHub-shaped rate-limit text classifies as github-rate-limited,
+  // not as a provider rate limit. The failure stays retryable; attribution is
+  // unattributed because the failure is an external dependency.
+  {
+    name: 'HOK-3509: GitHub GraphQL rate limit',
+    evidence: { stage: 'tend', detail: 'gh: GraphQL: API rate limit exceeded for user ID 12345 (createCommit)' },
+    expectedClass: 'retryable',
+    expectedKind: 'github-rate-limited',
+  },
+  {
+    name: 'HOK-3509: GitHub secondary rate limit via gh',
+    evidence: { stage: 'tend', detail: 'gh: HTTP 403: secondary rate limit; x-ratelimit-remaining: 0' },
+    expectedClass: 'retryable',
+    expectedKind: 'github-rate-limited',
+  },
+  {
+    name: 'HOK-3509: provider 429 is unchanged (not GitHub-shaped)',
+    evidence: { stage: 'coding', detail: 'Native coding failed: 429 Too Many Requests from provider' },
+    expectedClass: 'retryable',
+    expectedKind: 'provider-transient-error',
+  },
   {
     name: 'native-provider-error with typed handoff (40× in the mill log)',
     evidence: { stage: 'coding', detail: 'Native coding failed: provider returned an error', handoffReason: 'provider_error', challengeArm: true },
@@ -349,10 +370,31 @@ const HISTORICAL_FIXTURES: Fixture[] = [
     evidence: { stage: 'coding', detail: 'Stage head publication failed: push of task/x to origin failed: fatal: unable to access remote (connection reset)' },
     expectedClass: 'retryable',
   },
+  // ── HOK-3492: one task spend limit ──
   {
-    name: 'HOK-3370: post-push verification failure stays retryable',
-    evidence: { stage: 'review', detail: 'Stage head publication failed: origin/task/x resolved to (absent) after push instead of the published head 4ea98a06' },
+    name: 'HOK-3492: native session crosses the remaining task budget (cost fact) — terminal, not a stage retry',
+    evidence: {
+      stage: 'coding',
+      failureKind: 'native-stage-timeout',
+      handoffReason: 'budget_exhausted',
+      budgetExhausted: { kind: 'cost' },
+      detail: 'native-stage-timeout: native coding exhausted its cost budget ($25.00 of $25.00); 40 turn(s), 120 tool call(s)',
+      challengeArm: true,
+    },
+    expectedClass: 'terminal',
+    expectedKind: 'native-stage-timeout',
+  },
+  {
+    name: 'HOK-3492: a model-time budget stop is still a bounded retry, not a task-budget terminal',
+    evidence: {
+      stage: 'coding',
+      failureKind: 'native-stage-timeout',
+      handoffReason: 'budget_exhausted',
+      budgetExhausted: { kind: 'model_time' },
+      detail: 'native-stage-timeout: native coding exhausted its model time budget (3600s of 3600s)',
+    },
     expectedClass: 'retryable',
+    expectedKind: 'native-stage-timeout',
   },
 ];
 
@@ -446,6 +488,43 @@ test('HOK-3382: a hung harness retries under stage-failure-coding and is never m
   assert.equal(decided.failureKind, 'coding-exited-without-result');
   assert.equal(decided.retryBucket, 'stage-failure-coding');
   assert.equal(decided.attribution, 'unattributed');
+});
+
+// protects: HOK-3498 — a retryable model-fault with direct evidence is
+// attributed to the model. HOK-3406: glm-5.3-flash's plan failed structural
+// validation four times; the policy kept retrying (unchanged) but called the
+// failure unattributed, so Hokusai never saw model evidence.
+test('HOK-3498: a retryable planning-artifact-invalid with direct evidence is model-attributed', () => {
+  const evidence: FailureEvidence = {
+    stage: 'planning',
+    failureKind: 'planning-artifact-invalid:missing_release_readiness_database_change_risk',
+    detail: 'Native planning final artifact rejected: missing_release_readiness_database_change_risk',
+    executionEvidence: { source: 'provider-response', model: 'z-ai/glm-5.3-flash' },
+  };
+  const decided = classifyFailure(evidence);
+  assert.equal(decided.class, 'retryable');
+  assert.equal(decided.retryBucket, 'stage-failure-planning');
+  assert.equal(decided.attribution, 'model');
+  // The retry decision itself is unchanged by attribution.
+  assert.equal(classifyFailure({ ...evidence, executionEvidence: null }).attribution, 'unattributed');
+  // A harness-fault kind stays unattributed even with direct evidence.
+  assert.equal(classifyFailure({
+    stage: 'coding',
+    failureKind: 'provider-credit-exhausted',
+    executionEvidence: { source: 'provider-response', model: 'z-ai/glm-5.3-flash' },
+  }).attribution, 'unattributed');
+});
+
+// protects: a codified terminal cause keeps its classified fault class (the
+// attribution rule reads classifyArmFault, not the policy class).
+test('HOK-3498: terminal model-fault causes keep model attribution with direct evidence', () => {
+  const fault = { stage: 'ready', failureKind: 'ready-exhausted', challengeArm: true } as const;
+  assert.equal(classifyFailure({ ...fault, executionEvidence: { source: 'provider-response', model: 'verified-model' } }).attribution, 'model');
+  assert.equal(classifyFailure({
+    stage: 'coding',
+    failureKind: 'coding-dirty-handoff',
+    executionEvidence: { source: 'provider-response', model: 'verified-model' },
+  }).attribution, 'model');
 });
 
 // protects: missing eval output and empty attribution never become model losses.
