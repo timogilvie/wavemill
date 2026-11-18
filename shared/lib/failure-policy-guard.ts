@@ -111,6 +111,69 @@ export const FAILURE_POLICY_GUARD: GuardSpec = {
         && /(?:buildForfeitComparison|buildDoubleForfeitComparison|write_challenge_pair_record)/.test(lines.slice(index, index + 12).join('\n'))
         ? [{ line: index + 1 }] : []);
     },
+  }, {
+    name: 'tracked-job-exhaustion-unescalated',
+    description: 'every tracked-job exhaustion must escalate or be declared quiet',
+    paths: ['shared/lib/monitor-async-jobs.sh'],
+    find(source) {
+      // Import QUIET_EXHAUSTION_BUCKETS for reference
+      const quietBuckets = new Set([
+        'in-flight-touch-set-job',  // degrades correctly
+        'route-task-job',           // degrades correctly
+      ]);
+      
+      const lines = source.split('\n');
+      const matches: StructuralMatch[] = [];
+      
+      // Find all bounded_retry_mark_exhausted calls
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        
+        // Match bounded_retry_mark_exhausted with a bucket parameter
+        const markMatch = /\bbounded_retry_mark_exhausted\s+\$?\([^,]+\s*,\s*\$?\(?([A-Z_][A-Z0-9_]*_BUCKET|(?:"[^"]+"|'[^']+'))/.exec(line);
+        if (markMatch) {
+          const bucketExpr = markMatch[1];
+          let bucketName = bucketExpr;
+          
+          // Resolve X_JOB_BUCKET="..." assignments to literal bucket names
+          if (bucketExpr.endsWith('_BUCKET')) {
+            const varName = bucketExpr.slice(0, -7); // Remove '_BUCKET'
+            // Look backwards up to 50 lines for the variable assignment
+            for (let j = Math.max(0, i - 50); j < i; j++) {
+              const declMatch = new RegExp(`${varName}_BUCKET\\s*=\\s*("[^"]+"|'[^']+')`).exec(lines[j]);
+              if (declMatch) {
+                bucketName = declMatch[1].slice(1, -1); // Remove quotes
+                break;
+              }
+            }
+          } else if ((bucketExpr.startsWith('"') && bucketExpr.endsWith('"')) || 
+                     (bucketExpr.startsWith("'") && bucketExpr.endsWith("'"))) {
+            bucketName = bucketExpr.slice(1, -1);
+          }
+          
+          // Skip if this bucket is explicitly declared quiet
+          if (quietBuckets.has(bucketName)) {
+            continue;
+          }
+          
+          // Look for escalate_operator_attention call within 6 lines after
+          let foundEscalate = false;
+          for (let j = i + 1; j < Math.min(lines.length, i + 7); j++) {
+            // Match escalate_operator_attention with the same bucket name
+            if (new RegExp(`\\bescalate_operator_attention\\b.*\\bexhausted\\b.*\\b${bucketName.replace(/[.*+?^${}()|[\]\\\\/g, '\\$&')}\\b`).test(lines[j])) {
+              foundEscalate = true;
+              break;
+            }
+          }
+          
+          // Report if no escalate call was found
+          if (!foundEscalate) {
+            matches.push({ line: i + 1 });
+          }
+        }
+      }
+      return matches;
+    },
   }],
   patterns: [
     {

@@ -301,6 +301,44 @@ export const OPERATOR_DECISIONS: readonly OperatorDecision[] = Object.freeze([
   },
 ] satisfies OperatorDecision[]);
 
+/**
+ * Tracked async jobs that are explicitly allowed to degrade quietly rather than
+ * escalate when exhausted. Degrading is the correct outcome; the task continues
+ * without this job's result.
+ */
+export interface QuietExhaustion {
+  /** The bounded-retry bucket identifier. */
+  bucket: string;
+  /** Why degrading is the correct outcome for this bucket. */
+  reason: string;
+  /** Pinned test (`failure-policy.test.ts:quiet-exhaustion:<bucket>`). */
+  testRef: string;
+}
+
+export const QUIET_EXHAUSTION_BUCKETS: readonly QuietExhaustion[] = Object.freeze([
+  {
+    bucket: 'in-flight-touch-set-job',
+    reason: 'picker continues without the touch set; degrading is correct',
+    testRef: 'failure-policy.test.ts:quiet-exhaustion:in-flight-touch-set-job',
+  },
+  {
+    bucket: 'route-task-job',
+    reason: 'coding proceeds on the bootstrap route; degrading is correct',
+    testRef: 'failure-policy.test.ts:quiet-exhaustion:route-task-job',
+  },
+] satisfies QuietExhaustion[]);
+
+const QUIET_EXHAUSTION_BY_BUCKET: ReadonlyMap<string, QuietExhaustion> = new Map(
+  QUIET_EXHAUSTION_BUCKETS.map((entry) => [entry.bucket, entry]),
+);
+
+/** True when `bucket` names a known {@link QUIET_EXHAUSTION_BUCKETS} entry. */
+export function isQuietExhaustionBucket(bucket: string | null | undefined): boolean {
+  const trimmed = (bucket ?? '').trim();
+  if (!trimmed) return false;
+  return QUIET_EXHAUSTION_BY_BUCKET.has(trimmed);
+}
+
 const OPERATOR_DECISION_BY_CODE: ReadonlyMap<string, OperatorDecision> = new Map(
   OPERATOR_DECISIONS.map((decision) => [decision.code, decision]),
 );

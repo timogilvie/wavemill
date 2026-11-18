@@ -4,12 +4,14 @@ import { classifyArmFault } from './arm-failure-taxonomy.ts';
 import {
   DEFAULT_RETRY_ATTEMPTS,
   OPERATOR_DECISIONS,
+  QUIET_EXHAUSTION_BUCKETS,
   TERMINAL_ALLOWLIST,
   TERMINAL_CODES_BEFORE_HOK_3176,
   canonicalFailureKind,
   classifyFailure,
   detectFailureKind,
   isOperatorDecisionCode,
+  isQuietExhaustionBucket,
   isTerminalKind,
   nextActionFor,
   operatorDecisionFor,
@@ -173,6 +175,32 @@ test('detectFailureKind keeps the monitor ladder precedence', () => {
     'planning-artifact-invalid:missing_plan_sections',
   );
   assert.equal(detectFailureKind('Native planning final artifact rejected:'), 'planning-artifact-invalid');
+});
+
+test('quiet-exhaustion-buckets-are-explicit: every entry has a bucket, reason, and pinned test', () => {
+  const buckets = new Set<string>();
+  for (const entry of QUIET_EXHAUSTION_BUCKETS) {
+    assert.match(entry.bucket, /^[a-z-]+$/, `bad bucket ${entry.bucket}`);
+    assert.ok(entry.reason.length > 20, `${entry.bucket} needs a real reason`);
+    assert.match(entry.testRef, /^failure-policy\.test\.ts:quiet-exhaustion:/, `${entry.bucket} testRef`);
+    assert.ok(!buckets.has(entry.bucket), `duplicate quiet-exhaustion bucket ${entry.bucket}`);
+    buckets.add(entry.bucket);
+  }
+  assert.ok(Object.isFrozen(QUIET_EXHAUSTION_BUCKETS));
+});
+
+test('quiet-exhaustion-buckets-cover-known-degrading-cases', () => {
+  // Touch-set exhaustion degrades correctly (picker continues without it).
+  assert.ok(isQuietExhaustionBucket('in-flight-touch-set-job'));
+  
+  // Expanded reroute exhaustion degrades correctly (coding proceeds on bootstrap route).
+  assert.ok(isQuietExhaustionBucket('route-task-job'));
+  
+  // These buckets escalate when exhausted (they're not quiet):
+  assert.ok(!isQuietExhaustionBucket('cross-pr-guard-job'));
+  assert.ok(!isQuietExhaustionBucket('expansion-recovery-job'));
+  assert.ok(!isQuietExhaustionBucket('cleanup-decision-job'));
+  assert.ok(!isQuietExhaustionBucket('pr-ci-status-job'));
 });
 
 test('code failures are recognised and carry their excerpt', () => {
