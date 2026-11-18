@@ -3775,9 +3775,13 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
   let findings = snapshot.findings;
   for (const [repoDir, repoIncidents] of incidentsByRepo) {
     const repoFindings = findings.filter((finding) => finding.repoDir === repoDir);
-    const rewritten = suppressFleetFindings(supersedeGenericFindings(repoFindings, repoIncidents), repoIncidents);
-    const remaining = new Set(rewritten);
-    findings = findings.filter((finding) => finding.repoDir !== repoDir || remaining.has(finding));
+    const kept = suppressFleetFindings(repoFindings, repoIncidents);
+    const keptSet = new Set(kept);
+    const rewritten = supersedeGenericFindings(kept, repoIncidents);
+    const replacement = new Map(kept.map((finding, index) => [finding, rewritten[index]] as const));
+    findings = findings
+      .filter((finding) => finding.repoDir !== repoDir || keptSet.has(finding))
+      .map((finding) => replacement.get(finding) ?? finding);
   }
   const projection = projectRemediationProposals(uniqueIncidents);
   return {
