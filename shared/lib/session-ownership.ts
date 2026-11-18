@@ -511,6 +511,26 @@ export function readLatestStageLaunch(
 }
 
 /**
+ * Find a late stage result's *own* launch row by matching `startedAt`
+ * against the full history's `launchedAt` (HOK-3476, REQ-F2). Used when the
+ * latest launch row no longer belongs to this result (a newer attempt has
+ * since launched): this still recovers the result's own attempt instead of
+ * leaving lineage unknown, and — because it matches on this exact result's
+ * own timestamp — never attributes a different attempt's identity. Returns
+ * `null` when no launch row's `launchedAt` matches.
+ */
+export function findStageLaunchByStartedAt(
+  stateDir: string,
+  stage: ExecutionStage,
+  startedAt: string,
+): SessionOwnershipRow | null {
+  const startedMs = Date.parse(startedAt);
+  if (!Number.isFinite(startedMs)) return null;
+  const { rows } = readLaunchHistory([join(stateDir, SESSION_OWNERSHIP_FILE)]);
+  return rows.find((row) => stageLaunchForRow(row) === stage && Date.parse(row.launchedAt) === startedMs) ?? null;
+}
+
+/**
  * Resolve lineage information for a stage result from a launch row (HOK-3476).
  * Returns undefined for legacy rows that lack stageAttemptId.
  */

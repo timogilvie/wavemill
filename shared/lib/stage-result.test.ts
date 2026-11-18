@@ -1577,7 +1577,7 @@ describe('stage result task-run identity', () => {
 
   // protects: attempt A's late result must never be stamped with attempt B's
   // lineage just because B is the most recently launched row (HOK-3476 REQ-F2).
-  it('a late result with no lineage of its own stays unknown when a newer attempt has already launched', async () => {
+  it('a late result recovers its OWN attempt identity (by startedAt) when a newer attempt has already launched', async () => {
     const dir=await fs.mkdtemp(path.join(os.tmpdir(),'stage-lineage-race-'));
     try {
       appendOwnershipRow(dir, {
@@ -1601,9 +1601,34 @@ describe('stage result task-run identity', () => {
         agent: 'claude', model: 'model', notes: '',
       });
       const late = await readStageResult(dir, 'coding');
-      // Must not be mislabeled with attempt B's identity just because B is
-      // the latest launch row; it must also not silently keep B's running
-      // write in place, since the late write is distinct evidence.
+      // Must resolve to attempt A's own identity (found by matching this
+      // result's startedAt against the full ownership history), never
+      // attempt B's just because B is the latest launch row (HOK-3476
+      // REQ-F2: late results remain attached to their own attempt).
+      assert.equal(late?.runId, 'run-a');
+      assert.equal(late?.stageAttemptId, 'attempt-a');
+    } finally {await fs.rm(dir,{recursive:true,force:true});}
+  });
+
+  it('a late result with no matching launch row at all stays explicitly unknown, never guessed', async () => {
+    const dir=await fs.mkdtemp(path.join(os.tmpdir(),'stage-lineage-no-match-'));
+    try {
+      // Only attempt B's launch is on record; the late write's startedAt
+      // matches no row in ownership history at all.
+      appendOwnershipRow(dir, {
+        sessionRef: 'attempt-b-session', harness: 'native', kind: 'coding', model: 'model',
+        runId: 'run-b', stageAttemptId: 'attempt-b', launchedAt: '2026-11-18T10:05:00.000Z',
+      });
+      await writeStageResult(dir, {
+        stage: 'coding', status: 'running', runId: 'run-b', stageAttemptId: 'attempt-b',
+        startedAt: '2026-11-18T10:05:00Z', finishedAt: null, agent: 'claude', model: 'model', notes: '',
+      });
+      await writeStageResult(dir, {
+        stage: 'coding', status: 'completed',
+        startedAt: '2026-11-18T09:00:00Z', finishedAt: '2026-11-18T10:06:00Z',
+        agent: 'claude', model: 'model', notes: '',
+      });
+      const late = await readStageResult(dir, 'coding');
       assert.equal(late?.runId, undefined);
       assert.equal(late?.stageAttemptId, undefined);
     } finally {await fs.rm(dir,{recursive:true,force:true});}
