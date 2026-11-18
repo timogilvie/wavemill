@@ -328,6 +328,7 @@ export type OperatorTouchKind =
 /** Operator commands (`operator_event_record`) → class. Unknown → `R`. */
 export const OPERATOR_COMMAND_CLASS: Readonly<Record<string, InterventionClass>> = {
   advance: 'R',
+  expand: 'R',
   're-review': 'R',
   reroute: 'R',
   'reroute-task': 'R',
