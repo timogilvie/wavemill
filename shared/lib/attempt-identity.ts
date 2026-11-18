@@ -18,6 +18,9 @@
  * @module attempt-identity
  */
 
+import { randomUUID } from 'crypto';
+import { TaskAttemptRef } from './sdk-task-cost/contract.js';
+
 /** Inputs of {@link mintRunId}. */
 export interface MintRunIdArgs {
   /** The `.tasks` key (challenger keys included). */
@@ -34,6 +37,25 @@ export function mintRunId(args: MintRunIdArgs): string {
   const seconds = Math.floor(args.launchedAt.getTime() / 1000);
   if (!Number.isFinite(seconds)) throw new Error('mintRunId: launchedAt is not a valid date');
   return `${args.issue}:${args.runEpoch ?? ''}:${seconds}`;
+}
+
+/** Mint a stage attempt id (UUIDv7) for one launch. */
+export function mintStageAttemptId(): string {
+  return randomUUID();
+}
+
+/**
+ * Project a TaskAttemptRef from an ownership row.
+ * 
+ * Returns undefined run_id for legacy rows with no runId field.
+ * The stage_attempt_id is always present for new rows.
+ */
+export function projectTaskAttemptRef(ownershipRow: any): TaskAttemptRef {
+  return {
+    task_id: ownershipRow.issue,
+    run_id: ownershipRow.runId,
+    stage_attempt_id: ownershipRow.stageAttemptId
+  };
 }
 
 /**

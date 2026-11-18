@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2155
 # HOK-3373 — bash twin of shared/lib/attempt-identity.ts (the one run
 # identity of a task row) plus the settled-run reads every shell decision
 # site uses instead of private status/phase checks or the retired in-memory
@@ -31,12 +32,33 @@
 #       TS linear-state-renderer.ts renderLinearState), or nothing when the
 #       row does not decide Linear by itself.
 #
+#   mint_stage_attempt_id
+#       Prints a UUIDv7 for a new stage attempt (HOK-3476). Falls back to
+#       openssl rand if uuidgen is unavailable. Used by session_ownership_append
+#       and agent adapters.
+#
 # state_file defaults to $STATE_FILE.
 
 if [[ -n "${WAVEMILL_ATTEMPT_IDENTITY_SH_LOADED:-}" ]]; then
   return 0
 fi
 WAVEMILL_ATTEMPT_IDENTITY_SH_LOADED=1
+
+# HOK-3476: Mint a stage attempt id (UUIDv7) for one launch.
+mint_stage_attempt_id() {
+  # Try uuidgen first (macOS, some Linux distros)
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen --random 2>/dev/null && return 0
+  fi
+  
+  # Fallback to openssl (Linux, Windows WSL)
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 16 | sed 's/\(..\)/\1/g' | tr -d '\n' && echo && return 0
+  fi
+  
+  # Final fallback: timestamp + random
+  printf '%x%x\n' "$(date +%s%N)" "$RANDOM"
+}
 
 attempt_identity_mint_run_id() {
   local issue="${1:-}" run_epoch="${2:-}" launched_at="${3:-}"

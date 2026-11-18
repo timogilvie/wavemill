@@ -4,6 +4,7 @@ import { readNativeTranscriptEvents, resolveNativeStageTimeSplit } from '../stag
 import { ProviderIdentityMismatchError, extractProviderReportedIdentity } from '../provider-identity.ts';
 import { createRunTestsTool } from '../tools/command-tools.ts';
 import { recordLaunch } from '../../session-ownership.ts';
+import { mintRunId, mintStageAttemptId } from '../../attempt-identity.ts';
 import { meterWorkflowCost } from '../../sdk-task-cost/meter.ts';
 import { redactProviderExecutions, redactStageTaskCost, redactSessionIds } from '../../hokusai-redaction.ts';
 import { buildTechnicalTaskRouterRowV4 } from '../../hokusai-contribution-builder.ts';
@@ -284,8 +285,14 @@ async function runSingleCanaryAttempt(input: {
       }
 
       evidenceDir = options.evidenceRoot ? join(options.evidenceRoot, sessionId) : join(workspace.tmpRoot, 'evidence');
+      const runId = mintRunId({
+        issue: 'CANARY',
+        runEpoch: process.env.WAVEMILL_RUN_EPOCH ?? '',
+        launchedAt: input.now(),
+      });
+      const stageAttemptId = mintStageAttemptId();
       recordLaunch(evidenceDir, { sessionRef: sessionId, harness: 'native', kind: 'coding', model: options.registryModelId,
-        attemptId: sessionId, launchedAt: input.now(), cwd: workspace.repoDir });
+        attemptId: sessionId, launchedAt: input.now(), cwd: workspace.repoDir, runId, stageAttemptId });
       transcript = new TranscriptWriter({ sessionId, model: options.registryModelId, provider: options.provider,
         api: input.model.api, worktreePath: workspace.repoDir, path: join(evidenceDir, 'native-sessions', `${sessionId}.jsonl`) });
       const evidenceRecorder = createEvidenceRecorder();

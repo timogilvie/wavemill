@@ -126,6 +126,24 @@ function stageRunId(featureDir: string, stage: StageName, status: StageStatus, f
   return expected ?? (status === 'running' ? resolved.location.task.runId : fallback);
 }
 
+/** Resolve stage attempt id from flags or existing result (HOK-3476). */
+function stageAttemptId(featureDir: string, stage: StageName, status: StageStatus, flags: Record<string,string>, existing: StageResult | null): string | null | undefined {
+  if (flags['stage-attempt-id']) return flags['stage-attempt-id'];
+  return status === 'running' ? undefined : existing?.stageAttemptId;
+}
+
+/** Resolve parent run id from flags or existing result (HOK-3476). */
+function parentRunId(featureDir: string, stage: StageName, status: StageStatus, flags: Record<string,string>, existing: StageResult | null): string | null | undefined {
+  if (flags['parent-run-id']) return flags['parent-run-id'];
+  return status === 'running' ? undefined : existing?.parentRunId;
+}
+
+/** Resolve retry of from flags or existing result (HOK-3476). */
+function retryOf(featureDir: string, stage: StageName, status: StageStatus, flags: Record<string,string>, existing: StageResult | null): string | null | undefined {
+  if (flags['retry-of']) return flags['retry-of'];
+  return status === 'running' ? undefined : existing?.retryOf;
+}
+
 /**
  * HOK-3369: compute `latestLaunchAt` for the stage so `executionTruthFields`
  * knows whether existing evidence is from a prior attempt. Returns `null` for
@@ -241,6 +259,9 @@ Subcommands:
 
 Options (write/update):
   --run-id <id>             Task run captured by the launcher
+  --stage-attempt-id <id>   Stage attempt identity (HOK-3476)
+  --parent-run-id <id>      Parent run identity for retries (HOK-3476)
+  --retry-of <id>           Previous attempt this replaces (HOK-3476)
   --agent <name>            Agent identifier
   --model <name>            Model identifier
   --notes <text>            Human-readable notes
@@ -373,6 +394,9 @@ async function main(): Promise<void> {
       stage,
       status,
       runId: stageRunId(featureDir, stage, status, writeFlags, existing),
+      stageAttemptId: stageAttemptId(featureDir, stage, status, writeFlags, existing),
+      parentRunId: parentRunId(featureDir, stage, status, writeFlags, existing),
+      retryOf: retryOf(featureDir, stage, status, writeFlags, existing),
       startedAt,
       finishedAt,
       agent: writeFlags['agent'] ?? existing?.agent ?? '',
@@ -423,6 +447,12 @@ async function main(): Promise<void> {
     const status = (patch.status ?? existing?.status ?? 'running') as StageStatus;
     const runId = stageRunId(featureDir, stage, status, updateFlags, existing);
     if (runId !== undefined) patch.runId = runId;
+    const stageAttemptIdVal = stageAttemptId(featureDir, stage, status, updateFlags, existing);
+    if (stageAttemptIdVal !== undefined) patch.stageAttemptId = stageAttemptIdVal;
+    const parentRunIdVal = parentRunId(featureDir, stage, status, updateFlags, existing);
+    if (parentRunIdVal !== undefined) patch.parentRunId = parentRunIdVal;
+    const retryOfVal = retryOf(featureDir, stage, status, updateFlags, existing);
+    if (retryOfVal !== undefined) patch.retryOf = retryOfVal;
     const hasEvidenceFlag =
       updateFlags['intended-model'] !== undefined
       || updateFlags['executed-model'] !== undefined

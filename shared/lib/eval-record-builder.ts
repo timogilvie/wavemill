@@ -287,6 +287,41 @@ export function attachChallengeExecutionMetadata(
   }
 }
 
+/**
+ * Attach attempt lineage to an eval record (HOK-3476).
+ * 
+ * Safely attaches runId, stageAttemptId, parentRunId, and retryOf to the record.
+ * Returns early if lineage is absent or incomplete.
+ */
+export function attachAttemptLineage(
+  record: EvalRecord,
+  lineage: {
+    runId?: string | null;
+    stageAttemptId?: string | null;
+    parentRunId?: string | null;
+    retryOf?: string | null;
+  },
+): void {
+  // Null-safe attachment - return early if lineage is absent
+  if (!lineage) return;
+  
+  if (lineage.runId !== undefined) {
+    record.runId = lineage.runId;
+  }
+  
+  if (lineage.stageAttemptId !== undefined) {
+    record.stageAttemptId = lineage.stageAttemptId;
+  }
+  
+  if (lineage.parentRunId !== undefined) {
+    record.parentRunId = lineage.parentRunId;
+  }
+  
+  if (lineage.retryOf !== undefined) {
+    record.retryOf = lineage.retryOf;
+  }
+}
+
 export function attachAttemptedModel(
   record: EvalRecord,
   input?: {

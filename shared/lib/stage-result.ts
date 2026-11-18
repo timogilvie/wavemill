@@ -31,6 +31,7 @@ export type { ReadyRemediationDecision } from './native-agent/workflow-tools/rea
 import type { ReviewExecutedIdentitySet } from './challenge-execution-contract.ts';
 import type { MergeQueueState } from './merge-queue.ts';
 export type { ReviewExecutedIdentitySet, ExecutedIdentity, ExecutedIdentityRole } from './challenge-execution-contract.ts';
+import { readLatestStageLaunch } from './session-ownership.ts';
 import { isSameRunId, runIdStartedAt } from './attempt-identity.ts';
 import { challengeModelIdsEquivalent } from './challenge-comparison.ts';
 import { acquireStateLockSync, releaseStateLock } from './state-lock.ts';
@@ -524,6 +525,12 @@ export type StageArtifacts = (
 export interface StageResult {
   /** Task run captured at launch, when available. Never reassigned on completion. */
   runId?: string | null;
+  /** Stage attempt identity (HOK-3476) */
+  stageAttemptId?: string | null;
+  /** Parent run identity for retries (HOK-3476) */
+  parentRunId?: string | null;
+  /** Previous attempt this replaces (HOK-3476) */
+  retryOf?: string | null;
   stage: StageName;
   status: StageStatus;
   startedAt: string;
@@ -1188,10 +1195,49 @@ export async function writeStageResult(
   result: StageResult,
 ): Promise<void> {
   await fs.mkdir(featureDir, { recursive: true });
-  if (result.runId === undefined && result.status !== 'running' && result.startedAt) {
+  
+  // Resolve missing lineage from the latest matching launch row (HOK-3476)
+  if ((result.runId === undefined || result.stageAttemptId === undefined) && result.status !== 'running' && result.startedAt) {
+    // First try to get lineage from existing result file
     const launched = await readStageResult({ featureDir, stage: result.stage });
-    // A different launch may already own the path. Never relabel late bytes.
-    if (launched?.runId && launched.startedAt === result.startedAt) result = { ...result, runId: launched.runId };
+    
+    // Check if we have a matching existing result (prefer stageAttemptId equality, fallback to startedAt for legacy rows)
+    const isMatchingResult = (launched?.stageAttemptId && launched.stageAttemptId === result.stageAttemptId) || 
+                            (!result.stageAttemptId && launched?.startedAt === result.startedAt);
+    
+    if (isMatchingResult) {
+      // A different launch may already own the path. Never relabel late bytes.
+      if (result.runId === undefined && launched.runId) {
+        result = { ...result, runId: launched.runId };
+      }
+      if (result.stageAttemptId === undefined && launched.stageAttemptId) {
+        result = { ...result, stageAttemptId: launched.stageAttemptId };
+      }
+      if (result.parentRunId === undefined && launched.parentRunId) {
+        result = { ...result, parentRunId: launched.parentRunId };
+      }
+      if (result.retryOf === undefined && launched.retryOf) {
+        result = { ...result, retryOf: launched.retryOf };
+      }
+    } else {
+      // No matching existing result, try to get lineage from latest launch row
+      const launchRow = readLatestStageLaunch(featureDir, result.stage);
+      if (launchRow) {
+        const launchLineage = resolveLineageForStageResult(launchRow);
+        if (result.runId === undefined && launchLineage.runId) {
+          result = { ...result, runId: launchLineage.runId };
+        }
+        if (result.stageAttemptId === undefined && launchLineage.stageAttemptId) {
+          result = { ...result, stageAttemptId: launchLineage.stageAttemptId };
+        }
+        if (result.parentRunId === undefined && launchLineage.parentRunId) {
+          result = { ...result, parentRunId: launchLineage.parentRunId };
+        }
+        if (result.retryOf === undefined && launchLineage.retryOf) {
+          result = { ...result, retryOf: launchLineage.retryOf };
+        }
+      }
+    }
   }
 
   const validation = validateSeamArtifactValue('stage-result', result);

@@ -102,6 +102,7 @@ import { equivalentOpenRouterModelIds } from '../openrouter-catalog.ts';
 import { getNativeContextManagementConfig, getNativePayloadCaptureConfig, getNativeReviewTimeoutConfig } from '../config.ts';
 import type { NormalizedPricing } from '../openrouter-catalog.ts';
 import { buildAttemptId, nativeLaunchKind, newSessionRef, recordLaunch } from '../session-ownership.ts';
+import { mintRunId, mintStageAttemptId } from '../attempt-identity.ts';
 import {
   buildExecutedIdentity,
   type ExecutedIdentity,
@@ -819,6 +820,12 @@ export async function runNativeReview(
   const launchedAt = new Date();
   const launchKind = nativeLaunchKind();
   // HOK-3328: own the transcript's session before the loop starts.
+  const runId = mintRunId({
+    issue: options.issue,
+    runEpoch: process.env.WAVEMILL_RUN_EPOCH ?? '',
+    launchedAt,
+  });
+  const stageAttemptId = mintStageAttemptId();
   recordLaunch(options.featureDir, {
     sessionRef: sessionId,
     harness: 'native',
@@ -827,6 +834,8 @@ export async function runNativeReview(
     model: resolvedModelId,
     launchedAt,
     attemptId: buildAttemptId(launchKind, null, launchedAt, launchToken),
+    runId,
+    stageAttemptId,
   });
   const transcriptPath = makeTranscriptPath(repoDir, sessionId);
   const transcriptWriter = new TranscriptWriter({

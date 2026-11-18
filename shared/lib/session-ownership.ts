@@ -88,6 +88,14 @@ export interface SessionOwnershipRow {
   attemptId: string;
   /** Working directory of the launch (Codex rollouts are matched on it). */
   cwd?: string;
+  /** Run identity (HOK-3476) */
+  runId?: string;
+  /** Stage attempt identity (HOK-3476) */
+  stageAttemptId?: string;
+  /** Parent run identity for retries (HOK-3476) */
+  parentRunId?: string;
+  /** Previous attempt this replaces (HOK-3476) */
+  retryOf?: string;
 }
 
 interface LaunchLine extends SessionOwnershipRow {
@@ -115,6 +123,14 @@ export interface AppendOwnershipRowInput {
   cwd?: string;
   /** Worktree HEAD used for the default attempt id. */
   head?: string | null;
+  /** Run identity (HOK-3476) */
+  runId?: string;
+  /** Stage attempt identity (HOK-3476) */
+  stageAttemptId?: string;
+  /** Parent run identity for retries (HOK-3476) */
+  parentRunId?: string;
+  /** Previous attempt this replaces (HOK-3476) */
+  retryOf?: string;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -288,6 +304,10 @@ export function appendOwnershipRow(stateDir: string, input: AppendOwnershipRowIn
     launchedAt: launchedAt.toISOString(),
     attemptId: input.attemptId ?? buildAttemptId(input.kind, input.head, launchedAt),
     ...(input.cwd ? { cwd: input.cwd } : {}),
+    ...(input.runId ? { runId: input.runId } : {}),
+    ...(input.stageAttemptId ? { stageAttemptId: input.stageAttemptId } : {}),
+    ...(input.parentRunId ? { parentRunId: input.parentRunId } : {}),
+    ...(input.retryOf ? { retryOf: input.retryOf } : {}),
   };
   appendLine(stateDir, { schemaVersion: SESSION_OWNERSHIP_SCHEMA_VERSION, type: 'launch', ...row });
   return row;
@@ -345,7 +365,7 @@ export interface OwnershipReadResult {
 }
 
 function parseLaunch(value: Record<string, unknown>): SessionOwnershipRow | null {
-  const { sessionRef, harness, kind, stage, model, launchedAt, attemptId, cwd } = value;
+  const { sessionRef, harness, kind, stage, model, launchedAt, attemptId, cwd, runId, stageAttemptId, parentRunId, retryOf } = value;
   if (typeof sessionRef !== 'string' || sessionRef === '') return null;
   if (!SESSION_HARNESSES.includes(harness as SessionHarness)) return null;
   if (!isOwnershipKind(kind)) return null;
@@ -360,6 +380,10 @@ function parseLaunch(value: Record<string, unknown>): SessionOwnershipRow | null
     launchedAt,
     attemptId: typeof attemptId === 'string' ? attemptId : '',
     ...(typeof cwd === 'string' && cwd ? { cwd } : {}),
+    ...(typeof runId === 'string' && runId ? { runId } : {}),
+    ...(typeof stageAttemptId === 'string' && stageAttemptId ? { stageAttemptId } : {}),
+    ...(typeof parentRunId === 'string' && parentRunId ? { parentRunId } : {}),
+    ...(typeof retryOf === 'string' && retryOf ? { retryOf } : {}),
   };
 }
 
@@ -484,6 +508,19 @@ export function readLatestStageLaunch(
   query: StageLaunchQuery = {},
 ): SessionOwnershipRow | null {
   return latestStageLaunch(readLaunchHistory([join(stateDir, SESSION_OWNERSHIP_FILE)]).rows, stage, query);
+}
+
+/**
+ * Resolve lineage information for a stage result from a launch row (HOK-3476).
+ * Returns undefined for legacy rows that lack stageAttemptId.
+ */
+export function resolveLineageForStageResult(launchRow: SessionOwnershipRow) {
+  return {
+    runId: launchRow.runId,
+    stageAttemptId: launchRow.stageAttemptId,
+    parentRunId: launchRow.parentRunId,
+    retryOf: launchRow.retryOf,
+  };
 }
 
 /**

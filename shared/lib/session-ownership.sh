@@ -9,7 +9,7 @@
 #   session_ownership_kind_for_launch <launch_phase>
 #       Prints the launch kind: $WAVEMILL_SESSION_KIND when set (remediation
 #       launchers set it), else the normalized phase (planning|coding|review).
-#   session_ownership_append <state_dir> <session_ref> <harness> <kind> <model> [attempt_id] [cwd]
+#   session_ownership_append <state_dir> <session_ref> <harness> <kind> <model> [attempt_id] [cwd] [run_id] [stage_attempt_id] [retry_of] [parent_run_id]
 #       Appends one launch row. The stage is derived from the kind exactly like
 #       stageForKind() in the TS module. Fails (rc 1) on an invalid row; never
 #       fails a launch on its own — launch sites call it with `|| true`.
@@ -89,7 +89,7 @@ _session_ownership_attempt_id() {
 
 session_ownership_append() {
   local state_dir="${1:-}" session_ref="${2:-}" harness="${3:-}" kind="${4:-}" model="${5:-}"
-  local attempt_id="${6:-}" cwd="${7:-}"
+  local attempt_id="${6:-}" cwd="${7:-}" run_id="${8:-}" stage_attempt_id="${9:-}" retry_of="${10:-}" parent_run_id="${11:-}"
   [[ -n "$state_dir" && -n "$session_ref" ]] || return 1
   case "$harness" in claude-code|codex|native) ;; *) return 1 ;; esac
   _session_ownership_valid_kind "$kind" || return 1
@@ -107,10 +107,16 @@ session_ownership_append() {
     --arg sessionRef "$session_ref" --arg harness "$harness" --arg kind "$kind" \
     --arg stage "$stage" --arg model "$model" --arg launchedAt "$launched_at" \
     --arg attemptId "$attempt_id" --arg cwd "$cwd" \
+    --arg runId "$run_id" --arg stageAttemptId "$stage_attempt_id" \
+    --arg retryOf "$retry_of" --arg parentRunId "$parent_run_id" \
     '{schemaVersion: 1, type: "launch", sessionRef: $sessionRef, harness: $harness, kind: $kind}
      + (if $stage == "" then {} else {stage: $stage} end)
      + {model: $model, launchedAt: $launchedAt, attemptId: $attemptId}
-     + (if $cwd == "" then {} else {cwd: $cwd} end)')" || return 1
+     + (if $cwd == "" then {} else {cwd: $cwd} end)
+     + (if $runId == "" then {} else {runId: $runId} end)
+     + (if $stageAttemptId == "" then {} else {stageAttemptId: $stageAttemptId} end)
+     + (if $retryOf == "" then {} else {retryOf: $retryOf} end)
+     + (if $parentRunId == "" then {} else {parentRunId: $parentRunId} end)")" || return 1
 
   mkdir -p "$state_dir" 2>/dev/null || return 1
   # A single short append: concurrent launchers never interleave lines.

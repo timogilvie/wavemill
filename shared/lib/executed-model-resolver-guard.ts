@@ -68,6 +68,30 @@ export const EXECUTED_MODEL_RESOLVER_GUARD: GuardSpec = {
       lang: 'ts',
       re: /\bexecutionEvidence\s*:\s*\{\s*(?:status\s*:|\s*$)/,
     },
+    {
+      name: 'hand-written-run-id-literal',
+      description: 'Stage results derive lineage through resolveLineageForStageResult — never a hand-written `{ runId: ... }` block (HOK-3476).',
+      lang: 'ts',
+      re: /\brunId\s*:\s*["'][^"']*["']/,
+    },
+    {
+      name: 'hand-written-stage-attempt-id-literal',
+      description: 'Stage results derive lineage through resolveLineageForStageResult — never a hand-written `{ stageAttemptId: ... }` block (HOK-3476).',
+      lang: 'ts',
+      re: /\bstageAttemptId\s*:\s*["'][^"']*["']/,
+    },
+    {
+      name: 'hand-written-parent-run-id-literal',
+      description: 'Stage results derive lineage through resolveLineageForStageResult — never a hand-written `{ parentRunId: ... }` block (HOK-3476).',
+      lang: 'ts',
+      re: /\bparentRunId\s*:\s*["'][^"']*["']/,
+    },
+    {
+      name: 'hand-written-retry-of-literal',
+      description: 'Stage results derive lineage through resolveLineageForStageResult — never a hand-written `{ retryOf: ... }` block (HOK-3476).',
+      lang: 'ts',
+      re: /\bretryOf\s*:\s*["'][^"']*["']/,
+    },
   ],
   invariantPaths: [
     // The one resolver and its tests/wrappers.
@@ -82,6 +106,7 @@ export const EXECUTED_MODEL_RESOLVER_GUARD: GuardSpec = {
     // Model-registry equivalence tables may contain the literal strings as
     // enum values — allowed because they are not an eligibility decision.
     'shared/lib/eval-schema.ts',
+    'shared/lib/eval-schema.json',
     'shared/validators/stage-result.schema.ts',
     'shared/schemas/stage-result.schema.json',
     // HOK-3498: the native launchers are scanned now — their exits write the

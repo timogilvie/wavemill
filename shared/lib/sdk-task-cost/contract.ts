@@ -25,6 +25,10 @@ export {
   TASK_COST_SUMMARY_SCHEMA_VERSION,
   TASK_COST_TOKEN_FIELDS,
   PROVIDER_CONTRACT_VERSIONS as SDK_PROVIDER_CONTRACT_VERSIONS,
+  // Task attempt contract exports (HOK-3476)
+  validateTaskAttemptLogEntryV1,
+  validateTaskAttemptRef,
+  TASK_ATTEMPT_SCHEMA_VERSION,
 } from '@hokusai/core';
 
 export type {
@@ -38,4 +42,7 @@ export type {
   TaskCostSource,
   TaskCostSummaryV1,
   TaskCostTokenUsage,
+  // Task attempt contract exports (HOK-3476)
+  TaskAttemptRef,
+  TaskAttemptRecordV1,
 } from '@hokusai/core';

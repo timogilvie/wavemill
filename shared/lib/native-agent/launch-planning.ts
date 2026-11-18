@@ -87,6 +87,7 @@ import {
 import { loadPricingTable } from '../pricing/model-pricing.ts';
 import { priceUsageUsd } from '../sdk-task-cost/price-overrides.ts';
 import { buildAttemptId, nativeLaunchKind, newSessionRef, recordLaunch } from '../session-ownership.ts';
+import { mintRunId, mintStageAttemptId } from '../attempt-identity.ts';
 
 const DEFAULT_HELPER_TIMEOUT_MS = 12 * 60 * 1000;
 const HELPER_STDERR_TAIL_CHARS = 2000;
@@ -748,6 +749,12 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
 
     // Construct session stream configuration
     // HOK-3328: own the transcript's session before the loop starts.
+    const runId = mintRunId({
+      issue: options.issue,
+      runEpoch: process.env.WAVEMILL_RUN_EPOCH ?? '',
+      launchedAt,
+    });
+    const stageAttemptId = mintStageAttemptId();
     recordLaunch(featureDir, {
       sessionRef: planningNativeSessionId,
       harness: 'native',
@@ -757,6 +764,8 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       launchedAt,
       attemptId: buildAttemptId(launchKind, null, launchedAt, launchToken),
       cwd: options.wtDir,
+      runId,
+      stageAttemptId,
     });
     const eventStreamPath = resolveSessionEventStreamPath(planningNativeSessionId, options.repoDir);
     const sessionStreamConfig: SessionStreamConfig = {

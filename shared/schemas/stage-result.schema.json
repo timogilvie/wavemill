@@ -30,6 +30,18 @@
       "type": ["string", "null"],
       "description": "Task run captured at stage launch; preserved across completion writes."
     },
+    "stageAttemptId": {
+      "type": ["string", "null"],
+      "description": "Stage attempt identity (HOK-3476)."
+    },
+    "parentRunId": {
+      "type": ["string", "null"],
+      "description": "Parent run identity for retries (HOK-3476)."
+    },
+    "retryOf": {
+      "type": ["string", "null"],
+      "description": "Previous attempt this replaces (HOK-3476)."
+    },
     "startedAt": {
       "type": "string"
     },

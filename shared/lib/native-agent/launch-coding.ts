@@ -133,6 +133,7 @@ import { getNativeContextManagementConfig, getNativePayloadCaptureConfig } from 
 import { equivalentOpenRouterModelIds, type NormalizedPricing } from '../openrouter-catalog.ts';
 import { logPromptUsage } from '../prompt-registry.ts';
 import { buildAttemptId, nativeLaunchKind, newSessionRef, recordLaunch } from '../session-ownership.ts';
+import { mintRunId, mintStageAttemptId } from '../attempt-identity.ts';
 import type { ResourceRef } from '../resource-registry.ts';
 import {
   getBlockedCompletionPath,
@@ -1235,6 +1236,12 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
 
     // Construct session stream configuration and create persistent writer
     // HOK-3328: own the transcript's session before the loop starts.
+    const runId = mintRunId({
+      issue: options.issue,
+      runEpoch: process.env.WAVEMILL_RUN_EPOCH ?? '',
+      launchedAt,
+    });
+    const stageAttemptId = mintStageAttemptId();
     recordLaunch(featureDir, {
       sessionRef: codingNativeSessionId,
       harness: 'native',
@@ -1244,6 +1251,8 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       launchedAt,
       attemptId: buildAttemptId(launchKind, null, launchedAt, launchToken),
       cwd: options.wtDir,
+      runId,
+      stageAttemptId,
     });
     const eventStreamPath = resolveSessionEventStreamPath(codingNativeSessionId, options.repoDir);
 

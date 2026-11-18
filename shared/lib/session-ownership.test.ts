@@ -28,6 +28,7 @@ import {
   readLaunchHistory,
   readOwnershipRows,
   recordLaunch,
+  resolveLineageForStageResult,
   rowsForStage,
   stageForKind,
   type SessionOwnershipRow,
@@ -368,5 +369,47 @@ describe('one launch identity (HOK-3447)', () => {
       buildAttemptId('coding', 'abcdef0123', at, 'tok1'),
       buildAttemptId('coding', 'abcdef0123', at, 'tok2'),
     );
+  });
+
+  // HOK-3476: Test resolveLineageForStageResult function
+  it('resolveLineageForStageResult extracts lineage from launch row', () => {
+    const launchRow: SessionOwnershipRow = {
+      sessionRef: 'session123',
+      harness: 'native',
+      kind: 'coding',
+      stage: 'coding',
+      model: 'test-model',
+      launchedAt: '2026-11-16T10:00:00.000Z',
+      attemptId: 'coding@abcdef0#1794823200',
+      runId: 'HOK-123:test-epoch:1794823200',
+      stageAttemptId: '123e4567-e89b-12d3-a456-426614174000',
+      parentRunId: 'HOK-123:prev-epoch:1794820000',
+      retryOf: 'HOK-123:prev-epoch:1794822000',
+    };
+    
+    const lineage = resolveLineageForStageResult(launchRow);
+    assert.equal(lineage.runId, 'HOK-123:test-epoch:1794823200');
+    assert.equal(lineage.stageAttemptId, '123e4567-e89b-12d3-a456-426614174000');
+    assert.equal(lineage.parentRunId, 'HOK-123:prev-epoch:1794820000');
+    assert.equal(lineage.retryOf, 'HOK-123:prev-epoch:1794822000');
+  });
+
+  it('resolveLineageForStageResult handles legacy rows without lineage', () => {
+    const launchRow: SessionOwnershipRow = {
+      sessionRef: 'session123',
+      harness: 'native',
+      kind: 'coding',
+      stage: 'coding',
+      model: 'test-model',
+      launchedAt: '2026-11-16T10:00:00.000Z',
+      attemptId: 'coding@abcdef0#1794823200',
+      // No lineage fields
+    };
+    
+    const lineage = resolveLineageForStageResult(launchRow);
+    assert.equal(lineage.runId, undefined);
+    assert.equal(lineage.stageAttemptId, undefined);
+    assert.equal(lineage.parentRunId, undefined);
+    assert.equal(lineage.retryOf, undefined);
   });
 });

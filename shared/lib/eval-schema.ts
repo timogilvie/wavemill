@@ -2275,6 +2275,18 @@ export interface EvalRecord {
   /** Pull request URL, if the task produced a PR */
   prUrl?: string;
 
+  /** Task run identity (HOK-3476) */
+  runId?: string;
+
+  /** Stage attempt identity (HOK-3476) */
+  stageAttemptId?: string;
+
+  /** Parent run identity for retries (HOK-3476) */
+  parentRunId?: string;
+
+  /** Previous attempt this replaces (HOK-3476) */
+  retryOf?: string;
+
   /**
    * Immutable PR head SHA that was evaluated when this row was produced.
    * This is intentionally distinct from a PR's head when a reader happens to

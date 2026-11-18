@@ -197,6 +197,22 @@
       "type": "string",
       "description": "Linear issue identifier (e.g. \"HOK-697\"), if the task was issue-based."
     },
+    "runId": {
+      "type": ["string", "null"],
+      "description": "Task run identity (HOK-3476)."
+    },
+    "stageAttemptId": {
+      "type": ["string", "null"],
+      "description": "Stage attempt identity (HOK-3476)."
+    },
+    "parentRunId": {
+      "type": ["string", "null"],
+      "description": "Parent run identity for retries (HOK-3476)."
+    },
+    "retryOf": {
+      "type": ["string", "null"],
+      "description": "Previous attempt this replaces (HOK-3476)."
+    },
     "challengePairId": {
       "type": "string",
       "description": "Shared identifier linking both sides of a challenge-mode pair."
