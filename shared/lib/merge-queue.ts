@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { mutateJsonState } from './state-mutex.ts';
+import { readValidTendAttemptFact } from './tend-attempt-fact.ts';
 
 /**
  * The only declared list of Ready `queueState` values (HOK-3453). The monitor
@@ -57,6 +58,8 @@ export type MergeQueueCiConclusion = 'pass' | 'fail' | 'pending' | 'unknown' | '
 export interface MergeQueueCiState {
   conclusion: MergeQueueCiConclusion;
   headSha?: string;
+  /** GitHub's 3-way mergeability read for the PR head (`MERGEABLE`/`CONFLICTING`/`UNKNOWN`). */
+  mergeable?: string;
   mergeStateStatus?: string;
   observedAt?: string;
   failing?: string[];
@@ -89,12 +92,34 @@ export interface MergeQueuePr {
    * closed and marks the PR excluded in that case.
    */
   labels?: string[];
+  /**
+   * When tend recorded a rebase conflict for this PR head and base
+   * (`.tend-attempt-result.json`, HOK-3316), the fact's `writtenAt`. Filled by
+   * the caller from the fact store — see {@link withTendRebaseConflictFacts} —
+   * so the planner never reads files. Only a fact newer than the Ready pass
+   * invalidates the verdict (once per fact).
+   */
+  tendRebaseConflictAt?: string;
   /** Progress-only telemetry mirrored from the lane-progress record (HOK-2919). */
   lastProgressAt?: string;
   laneWaitSeconds?: number;
   laneHoldSeconds?: number;
   rebaseCount?: number;
   ciRestartCount?: number;
+}
+
+/**
+ * Planner input a caller (the monitor's merge-queue tick) builds: the PR plus
+ * where its tend merge-attempt fact lives and the integration tip this pass
+ * observed. {@link withTendRebaseConflictFacts} consumes the two extra fields
+ * and drops them, so {@link planMergeQueueTick} only ever sees a
+ * {@link MergeQueuePr}.
+ */
+export interface MergeQueueSelectPr extends MergeQueuePr {
+  /** Task state dir holding the tend merge-attempt fact (`.tend-attempt-result.json`). */
+  stateDir?: string;
+  /** Live integration-branch tip this pass read; absent when the read failed. */
+  integrationBaseSha?: string;
 }
 
 /**
@@ -224,10 +249,88 @@ export function isSelectableMergeQueuePr(pr: Pick<MergeQueuePr, 'workflowStatus'
   return true;
 }
 
+function timestampMs(value?: string): number {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * Why a passed Ready verdict no longer holds (HOK-3513). One cause per PR,
+ * checked in this order by {@link readyVerdictInvalidation}:
+ *
+ * - `ci-failing`           — live required checks failed.
+ * - `conflict`             — GitHub reports the PR head cannot merge into its
+ *                            base (`CONFLICTING` / `DIRTY`).
+ * - `tend-rebase-conflict` — tend recorded a rebase failure for this exact
+ *                            (head, base) after Ready passed (HOK-3316): GitHub
+ *                            can read MERGEABLE while tend's per-commit rebase
+ *                            conflicts.
+ */
+export type ReadyInvalidationCause = 'ci-failing' | 'conflict' | 'tend-rebase-conflict';
+
+/** True only from a POSITIVE GitHub read: a conflict, never an unknown state. */
+function isConflictingMergeState(ci?: MergeQueueCiState): boolean {
+  if (!ci) return false;
+  return ci.mergeable === 'CONFLICTING' || ci.mergeStateStatus === 'DIRTY';
+}
+
+/**
+ * The one answer to "does this passed Ready verdict still hold?" (HOK-3513).
+ *
+ * A Ready pass is a claim about a live PR, so the monitor withdraws it when the
+ * live PR is red OR cannot merge. Returning a cause means the caller must write
+ * the failed verdict (the monitor's `invalidate_ready_verdict`) and let the
+ * existing failed-Ready path re-run Ready — whose CONFLICTED branch is the only
+ * conflict resolver. Returning null means the pass stands (or the evidence is
+ * not positive enough to withdraw it: `UNKNOWN`, an absent mergeability read or
+ * a CI read error never invalidate).
+ */
+export function readyVerdictInvalidation(
+  pr: Pick<MergeQueuePr, 'ci' | 'readyAt' | 'tendRebaseConflictAt'>,
+): ReadyInvalidationCause | null {
+  if (pr.ci?.conclusion === 'fail') return 'ci-failing';
+  if (isConflictingMergeState(pr.ci)) return 'conflict';
+  const factAt = timestampMs(pr.tendRebaseConflictAt);
+  if (factAt > 0) {
+    const readyAt = timestampMs(pr.readyAt);
+    // Once per fact: a fact written before the pass finished was already seen by
+    // that pass (Ready reports CONFLICTED and launches the resolver itself).
+    if (readyAt <= 0 || factAt > readyAt) return 'tend-rebase-conflict';
+  }
+  return null;
+}
+
+/**
+ * Fill each PR's `tendRebaseConflictAt` from its task's tend merge-attempt fact.
+ * Fact validity (recorded head === live head, recorded base === live base) is
+ * `readValidTendAttemptFact` / `tendAttemptFactHolds`'s decision, never
+ * re-derived here. Only a `rebase` fact is a conflict: the other phases surface
+ * as CI, handoff or worktree failures with their own dispositions.
+ */
+export function withTendRebaseConflictFacts(prs: readonly MergeQueueSelectPr[]): MergeQueuePr[] {
+  return prs.map(({ stateDir, integrationBaseSha, ...pr }) => {
+    if (!stateDir || !pr.ci?.headSha) return pr;
+    const fact = readValidTendAttemptFact(stateDir, {
+      prHeadSha: pr.ci.headSha,
+      integrationBaseSha,
+    });
+    return fact?.phase === 'rebase' ? { ...pr, tendRebaseConflictAt: fact.writtenAt } : pr;
+  });
+}
+
+/**
+ * CI is green only when the live conclusion passed AND the PR can merge. The
+ * conflict half is {@link isConflictingMergeState} — the one conflict read,
+ * shared with {@link readyVerdictInvalidation} — so "conflicted" is written
+ * once; `BLOCKED` (a required gate) and `UNSTABLE` stay non-green without
+ * withdrawing the verdict.
+ */
 export function isCiGreen(pr: Pick<MergeQueuePr, 'ci'>): boolean {
   if (pr.ci?.conclusion !== 'pass') return false;
   const mergeStateStatus = pr.ci.mergeStateStatus ?? '';
-  return !['BLOCKED', 'DIRTY', 'UNSTABLE'].includes(mergeStateStatus);
+  if (['BLOCKED', 'UNSTABLE'].includes(mergeStateStatus)) return false;
+  return !isConflictingMergeState(pr.ci);
 }
 
 export interface MergeQueueConfigResolved {
@@ -247,15 +350,30 @@ export interface MergeQueueExclusion {
   nextAction?: string;
 }
 
+/** One passed Ready verdict the planner withdrew, with the live fact that did it. */
+export interface ReadyVerdictInvalidationRecord {
+  issue: string;
+  prNumber: number;
+  headSha?: string;
+  cause: ReadyInvalidationCause;
+}
+
 export interface MergeQueueTickPlan {
   stuckIssues: string[];
   selectedIssues: string[];
-  ciBlockedIssues: string[];
+  /**
+   * Passed Ready verdicts the live PR has withdrawn (HOK-3513): red CI, a
+   * GitHub conflict, or a tend rebase conflict at the live (head, base). The
+   * monitor rewrites each as a failed Ready result through
+   * `invalidate_ready_verdict`; the planner has already dropped them from
+   * every other list. The decision is {@link readyVerdictInvalidation}.
+   */
+  invalidatedIssues: ReadyVerdictInvalidationRecord[];
   /**
    * PRs that are excluded from candidate accounting because tend will refuse
    * to consume them (e.g. carry `wm:blocked`) or because live label state
    * could not be read. Excluded PRs never enter `selectedIssues`, and are
-   * ignored for stuck/ciBlocked accounting so a `wm:blocked` PR does not
+   * ignored for stuck/invalidated accounting so a `wm:blocked` PR does not
    * bounce between promote and demote (HOK-3111).
    */
   excludedIssues: MergeQueueExclusion[];
@@ -293,12 +411,6 @@ export function classifyMergeQueueConsumability(
     }
   }
   return { consumable: true };
-}
-
-function timestampMs(value?: string): number {
-  if (!value) return 0;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function overlaps(left?: string[], right?: string[]): boolean {
@@ -392,12 +504,33 @@ export function planMergeQueueTick(options: {
   const { readyPrs, now, config } = options;
   const selectablePrs = readyPrs.filter(isSelectableMergeQueuePr);
 
+  // HOK-3513: a passed verdict is withdrawn by live PR state before anything
+  // else is decided. This runs over every selectable PR — not just candidates —
+  // and before label exclusion, because invalidation is about the verdict, not
+  // about whether tend can consume the PR (a conflicted PR already carries
+  // wm:blocked, and an excluded PR must still have its verdict withdrawn).
+  // Invalidated PRs are then dropped from every later list.
+  const invalidatedIssues: ReadyVerdictInvalidationRecord[] = [];
+  const invalidatedIssueSet = new Set<string>();
+  for (const pr of selectablePrs) {
+    const cause = readyVerdictInvalidation(pr);
+    if (!cause) continue;
+    invalidatedIssueSet.add(pr.issue);
+    invalidatedIssues.push({
+      issue: pr.issue,
+      prNumber: pr.prNumber,
+      ...(pr.ci?.headSha ? { headSha: pr.ci.headSha } : {}),
+      cause,
+    });
+  }
+
   // HOK-3111: split tend-refusal PRs (e.g. wm:blocked) out before any
   // candidate/stuck accounting so they never enter promote/demote cycles.
   const excludedIssues: MergeQueueExclusion[] = [];
   const excludedIssueSet = new Set<string>();
   const consumablePrs: MergeQueuePr[] = [];
   for (const pr of selectablePrs) {
+    if (invalidatedIssueSet.has(pr.issue)) continue;
     const verdict = classifyMergeQueueConsumability(pr);
     if (verdict.consumable) {
       consumablePrs.push(pr);
@@ -414,19 +547,13 @@ export function planMergeQueueTick(options: {
     });
   }
 
-  const ciBlockedIssues = consumablePrs
-    .filter((pr) => pr.queueState === 'merge-candidate')
-    .filter((pr) => pr.ci?.conclusion === 'fail')
-    .map((pr) => pr.issue);
   const stuckIssues = consumablePrs
     .filter((pr) => pr.queueState === 'merge-candidate')
-    .filter((pr) => !ciBlockedIssues.includes(pr.issue))
     .filter((pr) => isCandidateStuck(pr, now, config))
     .map((pr) => pr.issue);
 
   const activeCandidates = consumablePrs
     .filter((pr) => pr.queueState === 'merge-candidate')
-    .filter((pr) => !ciBlockedIssues.includes(pr.issue))
     .filter((pr) => !stuckIssues.includes(pr.issue));
   const eligibleReadyPrs = consumablePrs.filter((pr) => !stuckIssues.includes(pr.issue));
 
@@ -439,5 +566,5 @@ export function planMergeQueueTick(options: {
     .filter((pr) => !excludedIssueSet.has(pr.issue))
     .map((pr) => pr.issue);
 
-  return { stuckIssues, selectedIssues, ciBlockedIssues, excludedIssues };
+  return { stuckIssues, selectedIssues, invalidatedIssues, excludedIssues };
 }

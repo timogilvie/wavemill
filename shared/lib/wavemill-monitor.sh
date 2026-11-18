@@ -4406,34 +4406,11 @@ conflict_remediation_exhausted_hold() {
   bounded_retry_is_exhausted "$state_dir" "conflict-remediation-relaunch"
 }
 
-# Tend merge-attempt fact (HOK-3316). Tend records a failed merge attempt as
-# one condition-keyed marker, .tend-attempt-result.json, keyed on (PR head,
-# integration base); deriveMergeLabel renders it as wm:blocked. GitHub's 3-way
-# mergeability can be clean while tend's per-commit rebase conflicts, so a
-# rebase failure is also a merge conflict for this task: Ready's
-# merge-conflict check reads the same fact and reports CONFLICTED, which
-# launches the one-per-(head, base) conflict resolver above.
-tend_attempt_fact_path() {
-  printf '%s\n' "$1/.tend-attempt-result.json"
-}
-
-# tend_attempt_conflict_needs_ready <state_dir> <pr_number> <base_sha>
-# True when tend recorded a rebase failure for the PR's current head against
-# <base_sha> after the last Ready run finished, so Ready has not yet seen it.
-# Each fact therefore re-runs Ready once; Ready's own result then carries the
-# conflict (and the resolver it launched), never this marker.
-tend_attempt_conflict_needs_ready() {
-  local state_dir="$1" pr_number="$2" base_sha="$3" fact pr_head written_at ready_at
-  fact="$(tend_attempt_fact_path "$state_dir")"
-  [[ -f "$fact" && -n "$base_sha" && -n "$pr_number" ]] || return 1
-  [[ "$(jq -r '.detail.phase // empty' "$fact" 2>/dev/null || echo "")" == "rebase" ]] || return 1
-  [[ "$(jq -r '.detail.baseSha // empty' "$fact" 2>/dev/null || echo "")" == "$base_sha" ]] || return 1
-  pr_head=$(wavemill_pr_cache_row_by_pr "$pr_number" 2>/dev/null | jq -r '.headRefOid // empty' 2>/dev/null || echo "")
-  [[ -n "$pr_head" && "$(jq -r '.headSha // empty' "$fact" 2>/dev/null || echo "")" == "$pr_head" ]] || return 1
-  written_at=$(jq -r '.writtenAt // empty' "$fact" 2>/dev/null || echo "")
-  ready_at=$(jq -r '.finishedAt // .startedAt // empty' "$state_dir/.ready-result.json" 2>/dev/null || echo "")
-  [[ -n "$written_at" && ( -z "$ready_at" || "$written_at" > "$ready_at" ) ]]
-}
+# HOK-3513: the tend merge-attempt fact is no longer read here. A rebase
+# conflict after Ready passed is one cause of
+# `readyVerdictInvalidation` (shared/lib/merge-queue.ts), filled by
+# merge-queue-select from the same `.tend-attempt-result.json`, so the fact
+# re-runs Ready through the one invalidation instead of a private shell gate.
 
 # HOK-3385: the rebase-alternative resolver note (tend_attempt_conflict_prompt_note)
 # is deleted. One strategy brings a task branch up to date with its base:
@@ -11124,20 +11101,78 @@ ci_summary_from_json() {
   ' 2>/dev/null || echo "unknown"
 }
 
-invalidate_ready_for_ci() {
-  local issue="$1" state_dir="$2" ci_json="$3"
-  local now failing_names reason existing_artifacts artifacts_json pr_number
+# invalidate_ready_verdict <issue> <state_dir> <ci_json> <cause>
+#
+# The ONE write of "a passed Ready verdict no longer holds" (HOK-3513). The
+# decision is readyVerdictInvalidation (shared/lib/merge-queue.ts) over the
+# queue pass's live PR input; this function only records it. Whatever consumed
+# the pass then relaunches Ready through the normal failed-Ready disposition,
+# whose CONFLICTED branch is the only conflict resolver.
+#
+# Idempotent by construction: a no-op unless the current result is a completed
+# pass/warn, so a running, failed or already-relaunched Ready is never
+# clobbered by a second monitor pass.
+#
+# The invalidation deliberately does NOT stamp `mergeConflict` (HOK-3513
+# finding 2): a CONFLICT* mergeConflict artifact reads as base drift to
+# ready_failure_base_drift, which routes to the update-base path and pages at
+# once on a real conflict. The pass's own mergeConflict (normally CLEAN) is
+# kept; the live read lands in liveMergeable / liveMergeStateStatus.
+invalidate_ready_verdict() {
+  local issue="$1" state_dir="$2" ci_json="${3:-}" cause="${4:-}"
+  local result_file="$state_dir/.ready-result.json"
+  local now status verdict agent model pr_number reason failing_names mergeable merge_state
+  local existing_artifacts artifacts_json
+
+  [[ -f "$result_file" ]] || return 0
+  status=$(jq -r '.status // empty' "$result_file" 2>/dev/null || echo "")
+  verdict=$(jq -r '.artifacts.verdict // empty' "$result_file" 2>/dev/null || echo "")
+  if [[ "$status" != "completed" ]] || [[ "$verdict" != "pass" && "$verdict" != "warn" ]]; then
+    return 0
+  fi
+
+  [[ -n "$ci_json" ]] || ci_json='{}'
+  if ! jq -e 'type == "object"' <<<"$ci_json" >/dev/null 2>&1; then
+    ci_json='{}'
+  fi
+
   now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  pr_number=$(jq -r '.artifacts.prNumber // empty' "$result_file" 2>/dev/null || echo "")
+  # Carry the completed run's identity forward (HOK-3513 finding 1): the
+  # failed-Ready recovery refuses a result with no agent ("a monitor
+  # terminalization, never an agent run that could be retried"), so without
+  # this the invalidation could never relaunch Ready.
+  agent=$(jq -r '.agent // empty' "$result_file" 2>/dev/null || echo "")
+  model=$(jq -r '.model // empty' "$result_file" 2>/dev/null || echo "")
+  mergeable=$(printf '%s' "$ci_json" | jq -r '.mergeable // empty' 2>/dev/null || echo "")
+  merge_state=$(printf '%s' "$ci_json" | jq -r '.mergeStateStatus // empty' 2>/dev/null || echo "")
   failing_names=$(printf '%s' "$ci_json" | jq -r '(.failing // []) | join(", ")' 2>/dev/null || echo "")
   [[ -n "$failing_names" ]] || failing_names="required CI checks"
-  reason="CI regressed after ready pass: $failing_names"
-  pr_number=$(jq -r '.artifacts.prNumber // empty' "$state_dir/.ready-result.json" 2>/dev/null || echo "")
-  existing_artifacts=$(jq -c '.artifacts // {"type":"ready"}' "$state_dir/.ready-result.json" 2>/dev/null || echo '{"type":"ready"}')
+
+  case "$cause" in
+    conflict)
+      reason="PR #${pr_number:-?} conflicts with $BASE_BRANCH after Ready passed (mergeable=${mergeable:-unknown}, mergeStateStatus=${merge_state:-unknown})"
+      ;;
+    tend-rebase-conflict)
+      reason="tend could not rebase PR #${pr_number:-?} onto $BASE_BRANCH after Ready passed"
+      ;;
+    *)
+      # `ci-failing` is the only other declared cause; an absent cause (an
+      # older selection file) keeps the historical CI wording.
+      cause="ci-failing"
+      reason="CI regressed after ready pass: $failing_names"
+      ;;
+  esac
+
+  existing_artifacts=$(jq -c '.artifacts // {"type":"ready"}' "$result_file" 2>/dev/null || echo '{"type":"ready"}')
   artifacts_json=$(jq -cn \
     --argjson existing "$existing_artifacts" \
     --argjson ci "$ci_json" \
     --arg now "$now" \
-    --arg reason "$reason" '
+    --arg reason "$reason" \
+    --arg cause "$cause" \
+    --arg mergeable "$mergeable" \
+    --arg merge_state "$merge_state" '
       $existing
       + {
           type: "ready",
@@ -11146,18 +11181,21 @@ invalidate_ready_for_ci() {
           candidatePromotedAt: null,
           candidateLastProgressAt: null,
           mergeRetryInProgressUntil: null,
-          ciInvalidatedAt: $now,
-          ciInvalidationReason: $reason,
+          verdictInvalidatedAt: $now,
+          verdictInvalidationReason: $reason,
+          verdictInvalidationCause: $cause,
+          liveMergeable: (if $mergeable == "" then null else $mergeable end),
+          liveMergeStateStatus: (if $merge_state == "" then null else $merge_state end),
           ciFailingChecks: ($ci.failing // []),
           lastCiConclusion: ($ci.conclusion // "unknown"),
           lastCiHeadSha: ($ci.headSha // ""),
           lastCiObservedAt: $now,
-          lastCiSummary: ($reason)
+          lastCiSummary: $reason
         }
       | with_entries(select(.value != null))
     ')
-  write_stage_result "$state_dir" "ready" "failed" "" "" "$reason" "$artifacts_json"
-  log "status" "✗ $issue → PR ${pr_number:+#$pr_number }live CI failing ($failing_names); ready verdict invalidated"
+  write_stage_result "$state_dir" "ready" "failed" "$agent" "$model" "$reason" "$artifacts_json"
+  log "status" "✗ $issue → PR ${pr_number:+#$pr_number }${reason}; ready verdict invalidated (${cause})"
 }
 
 ready_candidate_selected() {
@@ -11242,11 +11280,12 @@ refresh_ready_merge_queue_tick() {
   local now input_file output_file input_json output_json config_json
   local issue phase slug pr state_dir ready_status ready_verdict stored_base current_main queue_state wt_dir workflow_status pr_state_val
   local ci_json ci_conclusion ci_head ci_summary stored_head lane_progress_patch labels_json
+  local ready_lane_owned invalidation invalidation_issue invalidation_cause
   local ready_prs='[]'
 
   : > "$MERGE_QUEUE_SELECTION_FILE"
   if ! merge_queue_enabled; then
-    printf '{"selectedIssues":[],"stuckIssues":[],"ciBlockedIssues":[],"excludedIssues":[]}\n' > "$MERGE_QUEUE_SELECTION_FILE"
+    printf '{"selectedIssues":[],"stuckIssues":[],"invalidatedIssues":[],"excludedIssues":[]}\n' > "$MERGE_QUEUE_SELECTION_FILE"
     return 0
   fi
 
@@ -11281,44 +11320,63 @@ refresh_ready_merge_queue_tick() {
     pr_state_val=$(printf '%s' "$ci_json" | jq -r '.state // empty' 2>/dev/null || echo "")
     [[ -n "$pr_state_val" ]] || pr_state_val="$(pr_state "$pr")"
 
-    write_ready_queue_artifacts "$state_dir" "$(jq -cn \
-      --arg conclusion "$ci_conclusion" \
-      --arg head "$ci_head" \
-      --arg now "$now" \
-      --arg summary "$ci_summary" \
-      '{
-        lastCiConclusion: $conclusion,
-        lastCiHeadSha: $head,
-        lastCiObservedAt: $now,
-        lastCiSummary: $summary
-      }')"
+    # HOK-3513: the queue pass only writes to a result that is a saved verdict
+    # the lane owns. A Ready that is running or failed (a first pass, a
+    # relaunch after an invalidation, a remediation) is the launcher's record:
+    # this pass used to merge `lastCi*` onto it unconditionally, and the
+    # read-modify-write could land after the launcher's own write and restore
+    # the stale artifacts (observed: a guard-deferred relaunch's `pending`
+    # verdict resurrected as `fail`, so the pending re-check never re-armed
+    # and the task parked silently).
+    ready_lane_owned=""
+    if [[ "$ready_status" == "completed" && ( "$ready_verdict" == "pass" || "$ready_verdict" == "warn" ) ]] \
+      || [[ "$queue_state" == "merge-candidate" || "$queue_state" == "ready-stale" ]]; then
+      ready_lane_owned=1
+      write_ready_queue_artifacts "$state_dir" "$(jq -cn \
+        --arg conclusion "$ci_conclusion" \
+        --arg head "$ci_head" \
+        --arg now "$now" \
+        --arg summary "$ci_summary" \
+        '{
+          lastCiConclusion: $conclusion,
+          lastCiHeadSha: $head,
+          lastCiObservedAt: $now,
+          lastCiSummary: $summary
+        }')"
 
-    # Mirror tend's lane-progress telemetry (rebase/CI-restart counts, hold
-    # time) into the queue artifacts so both subsystems explain residence from
-    # the same numbers (HOK-2919).
-    lane_progress_patch="$(lane_progress_patch_json "$pr")"
-    if [[ -n "$lane_progress_patch" && "$lane_progress_patch" != "{}" ]]; then
-      write_ready_queue_artifacts "$state_dir" "$lane_progress_patch"
+      # Mirror tend's lane-progress telemetry (rebase/CI-restart counts, hold
+      # time) into the queue artifacts so both subsystems explain residence from
+      # the same numbers (HOK-2919).
+      lane_progress_patch="$(lane_progress_patch_json "$pr")"
+      if [[ -n "$lane_progress_patch" && "$lane_progress_patch" != "{}" ]]; then
+        write_ready_queue_artifacts "$state_dir" "$lane_progress_patch"
+      fi
     fi
 
+    # A base (or head) move on a still-mergeable PR is only stale, not
+    # invalidated: tend refreshes the lane and the pass stands. A conflicted PR
+    # also lands here, but its stale mark is superseded in this same pass by the
+    # planner's `invalidatedIssues` (HOK-3513), which rewrites the verdict and
+    # clears queueState — so `ready-stale` is never a conflicted PR's end state.
+    # The stale mark is left unconditional on purpose: gating it here would add
+    # a second conflict predicate in shell, which is exactly what the one
+    # invalidation removes.
     if [[ "$ready_status" == "completed" && ( "$ready_verdict" == "pass" || "$ready_verdict" == "warn" ) && -n "$current_main" && "$stored_base" != "$current_main" && "$queue_state" != "merge-candidate" ]]; then
       mark_ready_stale "$issue" "$state_dir" "$stored_base" "$current_main"
       queue_state="ready-stale"
     fi
 
     stored_head=$(ready_queue_field "$state_dir" "readyHeadSha")
-    if [[ "$ready_status" == "completed" && ( "$ready_verdict" == "pass" || "$ready_verdict" == "warn" ) && "$ci_conclusion" == "fail" ]]; then
-      invalidate_ready_for_ci "$issue" "$state_dir" "$ci_json"
-      continue
-    fi
     if [[ "$ready_status" == "completed" && ( "$ready_verdict" == "pass" || "$ready_verdict" == "warn" ) && -n "$stored_head" && -n "$ci_head" && "$stored_head" != "$ci_head" && "$queue_state" != "merge-candidate" ]]; then
       mark_ready_stale_head "$issue" "$state_dir" "$stored_head" "$ci_head"
       queue_state="ready-stale"
     fi
 
-    if [[ "$ready_status" == "completed" && ( "$ready_verdict" == "pass" || "$ready_verdict" == "warn" ) ]] || [[ "$queue_state" == "merge-candidate" || "$queue_state" == "ready-stale" ]]; then
+    if [[ -n "$ready_lane_owned" ]]; then
       # HOK-3111: authoritative live labels; the planner fails closed when
       # this returns "null" so we never promote based on stale/unknown state.
+      # HOK-3513: stateDir + integrationBaseSha let merge-queue-select fill
+      # tendRebaseConflictAt from the task's tend attempt fact before planning.
       labels_json="$(pr_live_labels_json "$wt_dir" "$pr")"
       ready_prs=$(jq -cn \
         --argjson prs "$ready_prs" \
@@ -11327,6 +11385,8 @@ refresh_ready_merge_queue_tick() {
         --arg branch "${BRANCH_BY_ISSUE[$issue]}" \
         --argjson pr_number "$pr" \
         --arg ready_base_sha "$stored_base" \
+        --arg state_dir "$state_dir" \
+        --arg integration_base_sha "$current_main" \
         --arg queue_state "$queue_state" \
         --arg workflow_status "$workflow_status" \
         --arg pr_state "$pr_state_val" \
@@ -11346,6 +11406,8 @@ refresh_ready_merge_queue_tick() {
             prNumber: $pr_number,
             branch: $branch,
             readyBaseSha: $ready_base_sha,
+            stateDir: $state_dir,
+            integrationBaseSha: (if $integration_base_sha == "" then null else $integration_base_sha end),
             queueState: (if $queue_state == "" then null else $queue_state end),
             changedFiles: $changed_files,
             readyAt: (if $ready_at == "" then null else $ready_at end),
@@ -11361,6 +11423,7 @@ refresh_ready_merge_queue_tick() {
             ci: {
               conclusion: ($ci.conclusion // "unknown"),
               headSha: ($ci.headSha // null),
+              mergeable: ($ci.mergeable // null),
               mergeStateStatus: ($ci.mergeStateStatus // null),
               observedAt: $now,
               failing: ($ci.failing // []),
@@ -11396,7 +11459,7 @@ refresh_ready_merge_queue_tick() {
   jq -cn --arg now "$now" --argjson prs "$ready_prs" --argjson config "$config_json" '{readyPrs:$prs, now:$now, config:$config}' > "$input_file"
   if ! wavemill_run_tsx_tool "$TOOLS_DIR/merge-queue-select.ts" --input "$input_file" > "$output_file" 2>/dev/null; then
     rm -f "$input_file" "$output_file"
-    printf '{"selectedIssues":[],"stuckIssues":[],"ciBlockedIssues":[],"excludedIssues":[]}\n' > "$MERGE_QUEUE_SELECTION_FILE"
+    printf '{"selectedIssues":[],"stuckIssues":[],"invalidatedIssues":[],"excludedIssues":[]}\n' > "$MERGE_QUEUE_SELECTION_FILE"
     return 0
   fi
   mv "$output_file" "$MERGE_QUEUE_SELECTION_FILE"
@@ -11424,15 +11487,20 @@ refresh_ready_merge_queue_tick() {
     fi
   done
 
-  jq -r '.ciBlockedIssues[]?' "$MERGE_QUEUE_SELECTION_FILE" 2>/dev/null | while IFS= read -r issue; do
-    [[ -n "$issue" ]] || continue
-    slug="${SLUG_BY_ISSUE[$issue]}"
+  # HOK-3513: the planner withdrew these passed Ready verdicts (red CI, a
+  # GitHub conflict, or a tend rebase conflict at the live head/base). One
+  # write site: invalidate_ready_verdict. The next tick's failed-Ready
+  # disposition relaunches Ready; its CONFLICTED branch is the only resolver.
+  jq -c '.invalidatedIssues[]? // empty' "$MERGE_QUEUE_SELECTION_FILE" 2>/dev/null | while IFS= read -r invalidation; do
+    [[ -n "$invalidation" ]] || continue
+    invalidation_issue=$(printf '%s' "$invalidation" | jq -r '.issue // empty' 2>/dev/null || echo "")
+    invalidation_cause=$(printf '%s' "$invalidation" | jq -r '.cause // empty' 2>/dev/null || echo "")
+    [[ -n "$invalidation_issue" ]] || continue
+    slug="${SLUG_BY_ISSUE[$invalidation_issue]}"
     wt_dir="${WORKTREE_ROOT}/${slug}"
     state_dir="$(ready_state_dir "$wt_dir" "$slug")"
-    pr="${PR_BY_ISSUE[$issue]:-}"
-    ci_json="$(ready_ci_json_cached "$wt_dir" "$pr" "$BASE_BRANCH" "$issue" "$state_dir")"
-    demote_merge_candidate "$issue" "$state_dir" "live CI failing"
-    invalidate_ready_for_ci "$issue" "$state_dir" "$ci_json"
+    ci_json="$(ready_ci_json_cached "$wt_dir" "${PR_BY_ISSUE[$invalidation_issue]:-}" "$BASE_BRANCH" "$invalidation_issue" "$state_dir")"
+    invalidate_ready_verdict "$invalidation_issue" "$state_dir" "$ci_json" "$invalidation_cause"
   done
 
   jq -r '.stuckIssues[]?' "$MERGE_QUEUE_SELECTION_FILE" 2>/dev/null | while IFS= read -r issue; do
@@ -22922,35 +22990,11 @@ monitor_issue_state() {
         fi
       fi
 
-      # HOK-3316: tend's rebase onto the current base conflicted although
-      # GitHub reports the PR mergeable. Re-run Ready once for that fact: its
-      # merge-conflict check reads the fact and launches the conflict
-      # resolver (one per (head, base)); the label stays wm:blocked meanwhile.
-      if tend_attempt_conflict_needs_ready "$ready_state_dir_path" "$PR" "$current_main_sha" \
-        && ! conflict_remediation_exhausted_hold "$ready_state_dir_path" "${WORKTREE_ROOT}/${SLUG}" "$BASE_BRANCH" "$current_head"; then
-        log "status" "⚠ $ISSUE → tend could not rebase PR #$PR onto $BASE_BRANCH; re-running Ready to request conflict remediation"
-        title=$(pass_task_field "$ISSUE" title)
-        [[ -n "$title" ]] || title="Task"
-        if launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$PR"; then
-          launch_rc=0
-        else
-          launch_rc=$?
-        fi
-        if [[ "$launch_rc" -eq 2 ]] && check_stage_aborted "$FEATURE_DIR"; then
-          log_task "status" "$ISSUE" "⛔ $ISSUE → Workflow aborted during tend-conflict re-check"
-          set_task_phase "$ISSUE" "aborted"
-          set_window_attention_state "$WIN" "needs-user"
-          return 0
-        fi
-        if [[ "$launch_rc" -eq 0 || "$launch_rc" -eq 3 || "$launch_rc" -eq 4 || "$launch_rc" -eq 5 || "$launch_rc" -eq 6 ]]; then
-          set_window_attention_state "$WIN" "clear"
-          active_count=$((active_count + 1))
-          return 0
-        fi
-        log "status" "⚠ $ISSUE → conflict remediation for tend's rebase failure could not launch (PR #$PR, rc=$launch_rc)"
-        set_window_attention_state "$WIN" "needs-user"
-        return 0
-      fi
+      # HOK-3316 / HOK-3513: tend's rebase onto the current base conflicting
+      # although GitHub reports the PR mergeable is one cause of
+      # readyVerdictInvalidation (merge-queue.ts), decided in the merge-queue
+      # tick. It withdraws the verdict there and re-runs Ready through the
+      # failed-Ready disposition; this handler no longer re-runs it privately.
 
       if [[ -n "$rerun_for_tend" ]] || [[ -n "$current_main_sha" && "$stored_base_sha" != "$current_main_sha" ]]; then
         if merge_queue_enabled; then

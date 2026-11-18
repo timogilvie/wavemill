@@ -171,7 +171,15 @@ Operational note: `mergeConflict.status` is independent from the main verdict. A
 
 The mill merge-queue selector receives live CI state for every ready PR. A PR is selectable only when `ci.conclusion` is `pass` and GitHub `mergeStateStatus` is not `BLOCKED`, `DIRTY`, or `UNSTABLE`.
 
-Stored ready passes are invalidated when a later tick observes live CI `fail` for that PR. The ready result is rewritten as `failed` with `ciInvalidatedAt`, `ciInvalidationReason`, `ciFailingChecks`, and `lastCi*` artifact fields. Pending or unreadable live CI is not promoted; it remains waiting until a later tick can prove green.
+Stored ready passes are invalidated when live PR state withdraws the claim (HOK-3513). One predicate, `readyVerdictInvalidation` (`shared/lib/merge-queue.ts`), decides over the merge-queue tick's live PR input, and the monitor's `invalidate_ready_verdict` is its only writer. Three causes:
+
+| Cause | Live fact |
+|-------|-----------|
+| `ci-failing` | live required checks failed |
+| `conflict` | GitHub reports `mergeable: CONFLICTING` or `mergeStateStatus: DIRTY` |
+| `tend-rebase-conflict` | a tend rebase conflict fact for this exact (head, base), written after the pass |
+
+The ready result is rewritten as `failed` with `verdictInvalidatedAt`, `verdictInvalidationReason`, `verdictInvalidationCause`, `liveMergeable`, `liveMergeStateStatus`, `ciFailingChecks` and the `lastCi*` fields. The pass's `mergeConflict` value is kept deliberately: a `CONFLICT*` artifact reads as base drift, which pages at once instead of repairing. The completed run's `agent`/`model` are carried forward so the failed-Ready recovery can relaunch. That relaunch runs `launch_ready_phase`, whose CONFLICTED branch is the only conflict resolver (mill-side base merge first, then one resolver per (head, base)). Pending or unreadable live CI and an unknown mergeability read never invalidate; the PR stays waiting until a later tick can prove red or conflicted.
 
 Queue logs no longer claim `clean/green` from stored state. Promotion logs now cite the live CI observation, for example `live CI pass: 15/15 checks @abc1234`.
 

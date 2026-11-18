@@ -143,8 +143,10 @@ In that phase, the monitor is responsible for:
 Ready tasks now also move through a small merge-lane queue once many PRs reach ready together:
 
 - `ready`: the PR passed ready checks against its recorded base and is not known stale.
-- `ready-stale`: the PR passed before, but the base branch advanced. Mill records the staleness cheaply and does not immediately launch remediation.
+- `ready-stale`: the PR passed before, but the base branch (or the PR head) advanced on a still-mergeable PR. Mill records the staleness cheaply and does not immediately launch remediation.
 - `merge-candidate`: the PR has been promoted into the bounded merge lane and is allowed to refresh against the latest base, remediate conflicts, and attempt merge readiness again.
+
+A PR that stops being live-mergeable is not left stale: one invalidation (`readyVerdictInvalidation` → `invalidate_ready_verdict`, HOK-3513) withdraws the passed verdict when the live PR is red **or** conflicted, and Ready re-runs. Its conflict branch is the only conflict resolver (the mill merges the base, then one resolver per (head, base)). The ready watchdog only observes a conflict — it never parks it at needs user.
 
 When the base branch advances after one merge, mill marks the other completed ready tasks as `ready-stale` first. It only promotes a bounded candidate set back into active refresh, which prevents every ready PR from independently rerunning conflict remediation and ready checks on the same tick. Stuck candidates are demoted back to `ready-stale` so unrelated work can continue.
 
