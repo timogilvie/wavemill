@@ -1,0 +1,34 @@
+{
+  "schemaVersion": "incident-fixture/1",
+  "chain": "remote_dependency_rate_limited",
+  "incidents": ["sanitised-2026-11-09-to-11-github-rate-limit"],
+  "dependency": "github-api",
+  "jobs": [
+    {"id":"github-rate-1","taskId":"HOK-3469","finishedAt":"2026-11-10T16:52:57Z","error":"HTTP 403: API rate limit exceeded; x-ratelimit-remaining: 0"},
+    {"id":"github-rate-2","taskId":"HOK-3447_c","finishedAt":"2026-11-10T16:54:02Z","error":"HTTP 403: API rate limit exceeded; x-ratelimit-remaining: 0"},
+    {"id":"github-rate-3","taskId":"HOK-3470","finishedAt":"2026-11-10T16:55:17Z","error":"HTTP 403: API rate limit exceeded; x-ratelimit-remaining: 0"}
+  ],
+  "initialState": {
+    "task": {"issue": "HOK-FIXTURE-3509-GH", "slug": "fleet-github-rate-limit", "phase": "coding", "status": "working"},
+    "jobs": []
+  },
+  "incident": {
+    "category": "external_transient_dependency",
+    "rootCauseClass": "remote_dependency_rate_limited",
+    "severity": "medium",
+    "confidence": "high",
+    "summary": "GitHub API rate limit exhausted; several tasks saw the same 403 within one window.",
+    "operatorAction": "Wait for the GitHub limit to clear; retries are safe once x-ratelimit-remaining returns.",
+    "metadata": {
+      "fleet": {"causeKey": "github-api::provider-fault", "endpoint": "github-api", "endpointEvidence": "dependency", "faultClass": "provider-fault", "fleetFaultClass": "provider-fault", "attemptCount": 3},
+      "knownIssueIds": ["HOK-3469", "HOK-3447_c", "HOK-3470"]
+    }
+  },
+  "observations": [{"absentCyclesBefore": 0, "evidence": [{"type": "job_state", "source": ".wavemill/jobs/github-rate-1.json", "timestamp": "2026-11-10T16:52:57.000Z", "redactedData": "replay evidence: three distinct sanitised task failures with GitHub 403 rate-limit error", "key": "fleet:github-api:provider-fault"}]}],
+  "trailingAbsentCycles": 6,
+  "convergence": {"mustMerge": true, "maxTickCount": 15, "tickIntervalSeconds": 30},
+  "journey": null,
+  "journeyNullReason": "detector-level fleet class; replayed via the incident cycle loop in incident-reconcile-cycle.test.ts",
+  "expected": {"category": "external_transient_dependency", "rootCauseClass": "remote_dependency_rate_limited", "occurrenceCount": 1, "lifecycleWhilePresent": "observed", "finalLifecycle": "resolved", "resolutionReasonPrefix": "not re-observed", "recurrences": 0},
+  "source": {"category": "external_transient_dependency", "rootCauseClass": "remote_dependency_rate_limited", "severity": "medium", "confidence": "high", "recordedLifecycle": "resolved", "recordedResolution": "auto_resolved", "occurrenceCount": 1, "firstObservedAt": "2026-11-10T16:52:57.000Z", "lastObservedAt": "2026-11-10T16:55:17.000Z", "stateSnapshot": null, "convertedBy": "HOK-3509 sanitised incident replay", "observationsTruncated": false}
+}

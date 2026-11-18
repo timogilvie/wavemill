@@ -17,11 +17,13 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import type { ArmFaultClass } from './arm-failure-taxonomy.ts';
+import { dirname, join } from 'node:path';
+import type { ArmFaultClass, ArmFaultExitEvidence } from './arm-failure-taxonomy.ts';
 import { classifyArmFault } from './arm-failure-taxonomy.ts';
 import { canonicalFailureKind, detectFailureKind } from './failure-policy.ts';
 import { classifyGitHubCallFailure } from './github.ts';
+import { parseBudgetExhaustedFact } from './native-agent/budget-exhaustion.ts';
+import { resolveNativeStageTimeSplit } from './native-agent/stage-time-split.ts';
 import {
   createIncidentDraft,
   type IncidentCategory,
@@ -172,6 +174,8 @@ interface RawStageAttempt {
   notes?: unknown;
   failureReason?: unknown;
   executionEvidence?: { status?: unknown } | null;
+  budgetExhausted?: unknown;
+  artifacts?: { exitEvidence?: unknown } | null;
 }
 
 interface RawStageResult extends RawStageAttempt {
@@ -236,7 +240,22 @@ function factFromAttempt(
   const failureKind = typeof decision?.failureKind === 'string' && decision.failureKind.trim()
     ? decision.failureKind.trim()
     : detectFailureKind(detail);
-  const faultClass = classifyArmFault({ failureKind, detail });
+  // Use exactly the evidence the arm-fault classifier owns. In particular,
+  // a native budget stop's class is derived from its typed budget fact and
+  // transcript split, while a settled coding attempt may prove a harness
+  // hold through its own exit evidence. Dropping these facts would turn a
+  // shared harness/provider fault into an unrelated cause key.
+  const budgetExhausted = parseBudgetExhaustedFact(attempt.budgetExhausted ?? null);
+  const exitEvidence = typeof attempt.artifacts?.exitEvidence === 'object' && attempt.artifacts.exitEvidence !== null
+    ? attempt.artifacts.exitEvidence as ArmFaultExitEvidence
+    : null;
+  const faultClass = classifyArmFault({
+    failureKind,
+    detail,
+    budgetExhausted,
+    timeSplit: resolveNativeStageTimeSplit(budgetExhausted, { featureDir: dirname(sourcePath) }) ?? undefined,
+    exitEvidence,
+  });
   const runId = typeof attempt.runId === 'string' && attempt.runId.length > 0 ? attempt.runId : null;
   const attemptId = runId ?? `${stage}@${attempt.startedAt ?? attempt.finishedAt ?? failedAt}`;
   return {

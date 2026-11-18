@@ -288,3 +288,24 @@ test('readTaskFailureFacts honours the cached code-failure decision', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('readTaskFailureFacts preserves typed exit evidence for the fleet cause key', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-exit-evidence-'));
+  try {
+    const featureDir = join(dir, 'features', 'x');
+    mkdirSync(featureDir, { recursive: true });
+    writeFileSync(join(featureDir, '.coding-result.json'), JSON.stringify({
+      stage: 'coding', status: 'failed', startedAt: '2026-11-10T16:50:00Z', finishedAt: '2026-11-10T16:52:57Z',
+      executedModel: 'deepseek-v4-flash', executionEvidence: { status: 'direct' },
+      notes: 'Interrupted: coding agent settled without a result (agent-stalled)', runId: 'r-1',
+      artifacts: { exitEvidence: { reason: 'agent-stalled', harnessHold: { toolName: 'run_tests', toolCallId: 'call-1', startedAt: '2026-11-10T16:40:00Z' } } },
+    }));
+    const [fact] = readTaskFailureFacts({
+      taskId: 'HOK-1', featureDir, now: Date.parse('2026-11-10T17:00:00Z'), windowMs: 10 * 60_000,
+    });
+    assert.equal(fact.faultClass, 'harness-fault');
+    assert.equal(fleetCauseKey(fact), 'deepseek-v4-flash::harness-fault');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
