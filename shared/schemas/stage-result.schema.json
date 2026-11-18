@@ -203,6 +203,26 @@
         "queueState": {
           "description": "Ready merge-queue position, written only by the monitor. Values are declared once in shared/lib/merge-queue.ts MERGE_QUEUE_STATES (HOK-3453); absent means none was recorded.",
           "enum": ["ready", "ready-stale", "merge-candidate", "merge-needed"]
+        },
+        "verdictInvalidatedAt": {
+          "description": "When live PR state withdrew a passed Ready verdict (HOK-3513), written only by the monitor's invalidate_ready_verdict.",
+          "type": "string"
+        },
+        "verdictInvalidationReason": {
+          "description": "Human reason for the invalidation, e.g. a conflict against the base.",
+          "type": "string"
+        },
+        "verdictInvalidationCause": {
+          "description": "Which live fact withdrew the verdict. The declared list lives in shared/lib/merge-queue.ts ReadyInvalidationCause.",
+          "enum": ["ci-failing", "conflict", "tend-rebase-conflict"]
+        },
+        "liveMergeable": {
+          "description": "GitHub mergeable read at invalidation (MERGEABLE/CONFLICTING/UNKNOWN).",
+          "type": "string"
+        },
+        "liveMergeStateStatus": {
+          "description": "GitHub mergeStateStatus read at invalidation (e.g. CLEAN, DIRTY, BLOCKED).",
+          "type": "string"
         }
       }
     },

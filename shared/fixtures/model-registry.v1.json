@@ -2723,9 +2723,9 @@
           "classify": 50
         },
         "pricing": {
-          "inputCostPerMTok": 0.075,
-          "outputCostPerMTok": 0.3,
-          "cacheReadCostPerMTok": 0.0075
+          "inputCostPerMTok": 0.15,
+          "outputCostPerMTok": 0.6,
+          "cacheReadCostPerMTok": 0.015
         },
         "defaultLadderEligible": false,
         "contextWindowTokens": 1048576,
@@ -2736,8 +2736,8 @@
         },
         "latencyTier": "standard",
         "reasoningTier": "advanced",
-        "costPerMillionInputTokensUsd": 0.075,
-        "costPerMillionOutputTokensUsd": 0.3,
+        "costPerMillionInputTokensUsd": 0.15,
+        "costPerMillionOutputTokensUsd": 0.6,
         "agent": "native-openrouter",
         "nativeCapability": {
           "nativeProvider": "openrouter",

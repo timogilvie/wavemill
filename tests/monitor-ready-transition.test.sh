@@ -625,7 +625,6 @@ JSON
     ready_exhausted_challenge_sibling_green() { return 1; }
     monitor_task_reap_reason() { return 1; }
     codex_capacity_idle_confirmed() { return 1; }
-    tend_attempt_conflict_needs_ready() { return 1; }
     review_gate_refusal_is_terminal() { return 1; }
     effective_task_base_branch() { printf "%s\n" "$BASE_BRANCH"; }
     read_state_value() { printf "%s\n" "${1-}"; }
