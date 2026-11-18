@@ -158,3 +158,58 @@ test('canResolveByAbsence gate blocks absence resolution', async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('HOK-3509: three tasks sharing a cause across the window upsert one fleet incident', async () => {
+  // Fault injection: three features with coding-result files recording the
+  // same failure kind and endpoint inside the window. The cycle receives
+  // them as failureSources and no per-task candidates; it must upsert one
+  // fleet incident with taskId=null and metadata.fleet.causeKey.
+  const { dir, incidentsDir } = makeSandbox();
+  try {
+    const now = Date.parse('2026-11-10T17:00:00Z');
+    const sources: Array<{ taskId: string; featureDir: string }> = [];
+    const stalls = [
+      { taskId: 'HOK-3469', slug: 'f1', at: '2026-11-10T16:52:57Z' },
+      { taskId: 'HOK-3447_c', slug: 'f2', at: '2026-11-10T16:54:02Z' },
+      { taskId: 'HOK-3470', slug: 'f3', at: '2026-11-10T16:55:17Z' },
+    ];
+    for (const t of stalls) {
+      const featureDir = join(dir, 'features', t.slug);
+      mkdirSync(featureDir, { recursive: true });
+      writeFileSync(join(featureDir, '.coding-result.json'), JSON.stringify({
+        stage: 'coding',
+        status: 'failed',
+        startedAt: '2026-11-10T16:40:00Z',
+        finishedAt: t.at,
+        agent: 'claude',
+        model: 'deepseek-v4-flash',
+        intendedModel: 'deepseek-v4-flash',
+        notes: 'Interrupted: coding agent settled without a result (agent-stalled)',
+        runId: `r-${t.slug}`,
+      }));
+      sources.push({ taskId: t.taskId, featureDir });
+    }
+    const store = new IncidentStore(incidentsDir);
+    const result = await reconcileIncidentCycle({
+      store,
+      candidates: [],
+      cycleComplete: true,
+      repoDir: dir,
+      failureSources: sources,
+      correlation: { windowMs: 10 * 60_000, threshold: 3, session: null, now: new Date(now) },
+    });
+    assert.ok(result.fleetIncidents && result.fleetIncidents.length === 1, 'exactly one correlation');
+    const stored = await store.getIncidents();
+    assert.equal(stored.length, 1);
+    assert.equal(stored[0].taskId, null);
+    assert.equal(stored[0].rootCauseClass, 'fleet_shared_endpoint_failure');
+    // The cause key names the attempt's classifyArmFault (model-fault, because
+    // the mock records no harness-hold evidence); the fleet fault class the
+    // row-attribution reader uses then maps that to harness-fault.
+    assert.equal(stored[0].metadata?.fleet?.causeKey, 'deepseek-v4-flash::model-fault');
+    assert.equal(stored[0].metadata?.fleet?.fleetFaultClass, 'harness-fault');
+    assert.deepEqual(stored[0].metadata?.knownIssueIds, ['HOK-3469', 'HOK-3447_c', 'HOK-3470']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

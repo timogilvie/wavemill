@@ -92,6 +92,27 @@ const HISTORICAL_FIXTURES: Fixture[] = [
     expectedClass: 'retryable',
     expectedKind: 'provider-transient-error',
   },
+  // HOK-3509: GitHub-shaped rate-limit text classifies as github-rate-limited,
+  // not as a provider rate limit. The failure stays retryable; attribution is
+  // unattributed because the failure is an external dependency.
+  {
+    name: 'HOK-3509: GitHub GraphQL rate limit',
+    evidence: { stage: 'tend', detail: 'gh: GraphQL: API rate limit exceeded for user ID 12345 (createCommit)' },
+    expectedClass: 'retryable',
+    expectedKind: 'github-rate-limited',
+  },
+  {
+    name: 'HOK-3509: GitHub secondary rate limit via gh',
+    evidence: { stage: 'tend', detail: 'gh: HTTP 403: secondary rate limit; x-ratelimit-remaining: 0' },
+    expectedClass: 'retryable',
+    expectedKind: 'github-rate-limited',
+  },
+  {
+    name: 'HOK-3509: provider 429 is unchanged (not GitHub-shaped)',
+    evidence: { stage: 'coding', detail: 'Native coding failed: 429 Too Many Requests from provider' },
+    expectedClass: 'retryable',
+    expectedKind: 'provider-transient-error',
+  },
   {
     name: 'native-provider-error with typed handoff (40× in the mill log)',
     evidence: { stage: 'coding', detail: 'Native coding failed: provider returned an error', handoffReason: 'provider_error', challengeArm: true },

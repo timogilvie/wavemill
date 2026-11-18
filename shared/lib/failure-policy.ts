@@ -32,6 +32,7 @@ import type { ArmFaultClass } from './arm-failure-taxonomy.ts';
 import { classifyArmFault, isModelQualitySignal } from './arm-failure-taxonomy.ts';
 import type { CiFailureCategory } from './ci-failure-classifier.ts';
 import { classifyProviderError } from './native-agent/provider-error-classifier.ts';
+import { classifyGitHubCallFailure } from './github.ts';
 
 export type FailureClass = 'terminal' | 'code-failure' | 'retryable';
 
@@ -439,6 +440,11 @@ export function detectFailureKind(detail: string | null | undefined, handoffReas
   for (const [pattern, kind] of NATIVE_PRE_PROVIDER_SIGNATURES) {
     if (pattern.test(lower)) return kind;
   }
+  // HOK-3509: a GitHub API rate-limit must not read as a model provider rate
+  // limit. Run the shared classifier before the provider classifier.
+  if (classifyGitHubCallFailure(text).category === 'rate_limit') {
+    return 'github-rate-limited';
+  }
   const providerKind = text ? classifyProviderError(text).kind : 'provider-unknown-error';
   if (providerKind !== 'provider-unknown-error' && providerKind !== 'provider-response-incomplete') {
     return providerKind;
@@ -535,6 +541,7 @@ const NEXT_ACTIONS: Readonly<Record<string, string>> = {
   'planning-artifact-invalid': 'the plan artifact failed structural validation after one repair turn. Inspect the recorded validationError; the model for the next attempt is Hokusai\'s decision',
   'review-no-output': 'the review model finished without emitting findings or a terminal verdict. Relaunch the review phase on a stronger reviewer',
   'coding-exited-without-result': 'the coding agent settled without recording a terminal result (durable commits preserved) — either it exited, or a harness tool held the loop until the recovery controller settled it. Relaunch coding to resume from the last durable commit',
+  'github-rate-limited': 'the GitHub API rate-limit is exhausted; this is an external dependency fault, not a model/provider signal. The mill retries it with backoff; wait for the window to reset or top up CI minutes',
   'native-unclassified': 'unrecognised failure signature: the mill retries it with backoff and one fresh relaunch before escalating. Inspect the recorded detail if it escalates',
 };
 

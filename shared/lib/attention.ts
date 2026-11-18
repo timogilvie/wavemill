@@ -76,6 +76,11 @@ export type AttentionKind =
   | 'exhausted'
   | 'policy-terminal'
   | 'incident'
+  // HOK-3509: a fleet incident covers N task failures that share a cause.
+  // Ranked after `incident` and before the four non-task signals so the
+  // dashboard surfaces the shared cause without confusing it with a task
+  // incident. No taskId; `affectedTaskIds` names the arms it covers.
+  | 'fleet-incident'
   | 'queue-health'
   | 'backstage-health'
   | 'openrouter'
@@ -94,10 +99,11 @@ export const ATTENTION_KIND_RANK: Readonly<Record<AttentionKind, number>> = Obje
   exhausted: 4,
   'policy-terminal': 5,
   incident: 6,
-  'queue-health': 7,
-  'backstage-health': 8,
-  openrouter: 9,
-  'malformed-challenge': 10,
+  'fleet-incident': 7,
+  'queue-health': 8,
+  'backstage-health': 9,
+  openrouter: 10,
+  'malformed-challenge': 11,
 });
 
 export interface AttentionCommand {
@@ -205,7 +211,7 @@ export interface AttentionIncidentInput {
  */
 export type AttentionFreeKind = Extract<
   AttentionKind,
-  'queue-health' | 'backstage-health' | 'openrouter' | 'malformed-challenge'
+  'queue-health' | 'backstage-health' | 'openrouter' | 'malformed-challenge' | 'fleet-incident'
 >;
 
 export interface AttentionFreeItemInput {
@@ -501,6 +507,8 @@ function escalationItem(input: AttentionTaskInput, nowMs: number): AttentionItem
 function incidentItems(incidents: readonly AttentionIncidentInput[], nowMs: number): AttentionItem[] {
   const byFingerprint = new Map<string, AttentionItem>();
   for (const { incident, reconciliation } of incidents) {
+    // HOK-3509: fleet records render as a `fleet-incident` free item.
+    if (incident.metadata?.fleet) continue;
     // Escalated (lifecycle `active`, as the incidents panel shows) and still
     // current by the one HOK-3324 job-truth disposition.
     if (incident.lifecycle !== 'active' || reconciliation.outcome !== 'confirmed_active') continue;
@@ -525,6 +533,37 @@ function incidentItems(incidents: readonly AttentionIncidentInput[], nowMs: numb
     });
   }
   return [...byFingerprint.values()];
+}
+
+/**
+ * HOK-3509: split fleet records out of the incident list and turn each one
+ * into a `fleet-incident` free item. Fleet records are observed-or-active and
+ * confirmed by the shared filing reconciliation; anything else is skipped.
+ */
+function fleetIncidentItemsFromIncidents(incidents: readonly AttentionIncidentInput[], nowMs: number): AttentionFreeItemInput[] {
+  const items: AttentionFreeItemInput[] = [];
+  const seen = new Set<string>();
+  for (const { incident, reconciliation } of incidents) {
+    const fleet = incident.metadata?.fleet as { causeKey?: string; endpoint?: string } | undefined;
+    if (!fleet || typeof fleet !== 'object') continue;
+    if (incident.lifecycle !== 'observed' && incident.lifecycle !== 'active') continue;
+    if (reconciliation.outcome !== 'confirmed_active') continue;
+    const key = typeof fleet.causeKey === 'string' && fleet.causeKey ? fleet.causeKey : incident.fingerprint;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const affected = Array.isArray(incident.metadata?.knownIssueIds)
+      ? incident.metadata.knownIssueIds.filter((id): id is string => typeof id === 'string' && id.length > 0)
+      : [];
+    items.push({
+      kind: 'fleet-incident',
+      key,
+      summary: incident.summary,
+      sinceMs: isoToMs(incident.firstObservedAt, nowMs),
+      evidence: [{ source: 'incident', summary: `${incident.severity}: ${incident.summary}` }],
+      ...(affected.length > 0 ? { affectedTaskIds: affected } : {}),
+    });
+  }
+  return items;
 }
 
 function freeItems(inputs: readonly AttentionFreeItemInput[], nowMs: number): AttentionItem[] {
@@ -565,7 +604,8 @@ export function deriveAttentionItems(inputs: AttentionInputs): AttentionProjecti
     if (escalated) items.push(escalated);
   }
   items.push(...incidentItems(inputs.incidents, inputs.nowMs));
-  items.push(...freeItems(inputs.freeItems ?? [], inputs.nowMs));
+  const fleetItems = fleetIncidentItemsFromIncidents(inputs.incidents, inputs.nowMs);
+  items.push(...freeItems([...(inputs.freeItems ?? []), ...fleetItems], inputs.nowMs));
   items.sort(compareAttentionItems);
   return {
     schemaVersion: ATTENTION_PROJECTION_SCHEMA_VERSION,
