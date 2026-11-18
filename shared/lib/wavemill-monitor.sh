@@ -1459,14 +1459,11 @@ finalize_challenge_execution_intent_before_coding() {
   [[ "$challenge_role_meta" != "challenger" ]] || return 0
   [[ -f "$feature_dir/.post-expansion-route.json" ]] || return 0
 
-  # The launch lottery already decided challenge-vs-single. Finalization only
-  # resolves that sealed decision against the now-available expanded route; it
-  # never reruns the lottery and never substitutes a sealed challenger.
-  # HOK-3506: the plan-stage sealed-pair path below (awaiting_expanded_route
-  # materialisation) and the sealed-single path are golden-journey-covered by
-  # tests/journeys/planner-expanded-route-comparison.journey.sh (HOK-3451)
-  # and tests/fixtures/lifecycle/sealed_single_stays_single_through_plan_to_code.sh,
-  # not a new journey added by this change.
+  # The launch lottery already decided challenge-vs-single (HOK-3506).
+  # Finalization only resolves that sealed decision against the now-available
+  # expanded route; it never reruns the lottery and never substitutes a
+  # sealed challenger. Covered by tests/journeys/planner-expanded-route-comparison.journey.sh
+  # and tests/fixtures/lifecycle/sealed_single_stays_single_through_plan_to_code.sh.
   local existing_intent
   # allow-task-field: legacy challengeIntent fallback for pre-challengeExecutionIntent state files
   existing_intent=$(read_state_value "" --arg i "$issue" '(.tasks[$i].challengeExecutionIntent // .tasks[$i].challengeIntent) // empty' 2>/dev/null || true)
@@ -1568,10 +1565,8 @@ finalize_challenge_execution_intent_before_coding() {
       challenger_branch=$(pass_task_field "$challenger_key" branch 2>/dev/null || true)
       challenger_worktree=$(pass_task_field "$challenger_key" worktree 2>/dev/null || true)
       if [[ -n "$challenger_slug" && -n "$challenger_branch" && -n "$challenger_worktree" ]]; then
-        # Stamp the primary as paired only once the challenger task is
-        # confirmed to exist — stamping it first and collapsing after (the
-        # prior ordering) left a phantom pair on the primary's own task row
-        # whenever the challenger turned out to be missing (review finding).
+        # Stamp the primary as paired only once the challenger is confirmed
+        # to exist; stamping it unconditionally re-creates a phantom pair.
         local current_pr current_status current_agent current_linear_issue
         current_pr=$(pass_task_field "$issue" pr)
         current_status=$(pass_task_field "$issue" status)
