@@ -14,10 +14,15 @@
 #       stageForKind() in the TS module. Fails (rc 1) on an invalid row; never
 #       fails a launch on its own — launch sites call it with `|| true`.
 #   session_ownership_launch_snippet <state_dir> <harness> <kind> <model>
-#       Prints bash for a generated launcher script: it mints the session ref at
-#       *run* time (so a relaunch never reuses a Claude --session-id), appends
-#       the row, and leaves the ref in $WM_SESSION_REF. For codex the ref is
-#       pending:<nonce> and $WM_LAUNCH_NONCE_LINE must prefix the prompt.
+#       Prints bash for a generated launcher script: it mints the session ref
+#       and a fresh stage-attempt id (HOK-3476) at *run* time (so a relaunch
+#       never reuses a Claude --session-id or the prior attempt's identity),
+#       appends the row, and leaves the ref in $WM_SESSION_REF. For codex the
+#       ref is pending:<nonce> and $WM_LAUNCH_NONCE_LINE must prefix the
+#       prompt. The run id is left unknown here — it needs the launch site's
+#       issue/task-row context, which is a caller-side change out of this
+#       file's scope; callers that have that context may set it on the row
+#       themselves.
 #
 # Row format is pinned against the TS reader by
 # shared/lib/session-ownership.test.ts (shell twin cases).
@@ -28,6 +33,7 @@ fi
 WAVEMILL_SESSION_OWNERSHIP_SH_LOADED=1
 
 SESSION_OWNERSHIP_FILE=".session-ownership.jsonl"
+ATTEMPT_IDENTITY_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/attempt-identity.sh"
 SESSION_OWNERSHIP_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/session-ownership.sh"
 
 session_ownership_new_ref() {
@@ -125,8 +131,9 @@ session_ownership_append() {
 
 session_ownership_launch_snippet() {
   local state_dir="${1:-}" harness="${2:-}" kind="${3:-}" model="${4:-}"
-  local q_lib q_dir q_kind q_model q_harness
+  local q_lib q_attempt_lib q_dir q_kind q_model q_harness
   printf -v q_lib '%q' "$SESSION_OWNERSHIP_LIB"
+  printf -v q_attempt_lib '%q' "$ATTEMPT_IDENTITY_LIB"
   printf -v q_dir '%q' "$state_dir"
   printf -v q_kind '%q' "$kind"
   printf -v q_model '%q' "$model"
@@ -134,7 +141,9 @@ session_ownership_launch_snippet() {
   cat <<SNIPPET
 # HOK-3328: record this session before the harness starts.
 source $q_lib
+source $q_attempt_lib
 WM_SESSION_REF="\$(session_ownership_new_ref)"
+WM_STAGE_ATTEMPT_ID="\$(mint_stage_attempt_id)"
 WM_LAUNCH_NONCE_LINE=""
 SNIPPET
   # Codex picks its own thread id: record pending:<nonce> and put the nonce in
@@ -147,7 +156,7 @@ SNIPPET
   fi
   [[ -n "$state_dir" ]] || return 0
   cat <<SNIPPET
-session_ownership_append $q_dir "\$WM_SESSION_REF" $q_harness $q_kind $q_model "" "\$PWD" \\
+session_ownership_append $q_dir "\$WM_SESSION_REF" $q_harness $q_kind $q_model "" "\$PWD" "" "\$WM_STAGE_ATTEMPT_ID" "" "" \\
   || echo "[wavemill] warning: session ownership row not recorded" >&2
 SNIPPET
 }

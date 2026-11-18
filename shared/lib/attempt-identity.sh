@@ -46,16 +46,25 @@ WAVEMILL_ATTEMPT_IDENTITY_SH_LOADED=1
 
 # HOK-3476: Mint a stage attempt id (random UUID v4) for one launch.
 mint_stage_attempt_id() {
-  # Try uuidgen first (macOS, some Linux distros)
+  # Try uuidgen first (macOS, some Linux distros). No flag: macOS uuidgen
+  # takes only -r/-h (long options like --random exit nonzero with usage),
+  # and both macOS and util-linux uuidgen default to a random (v4) id.
   if command -v uuidgen >/dev/null 2>&1; then
-    uuidgen --random 2>/dev/null && return 0
+    local id
+    id="$(uuidgen 2>/dev/null)" && [[ -n "$id" ]] && printf '%s\n' "$id" | tr 'A-Z' 'a-z' && return 0
   fi
-  
-  # Fallback to openssl (Linux, Windows WSL)
+
+  # Fallback to openssl (Linux, Windows WSL): dash-format the random hex into
+  # UUID shape (same layout as session_ownership_new_ref's urandom fallback).
   if command -v openssl >/dev/null 2>&1; then
-    openssl rand -hex 16 | sed 's/\(..\)/\1/g' | tr -d '\n' && echo && return 0
+    local hex
+    hex="$(openssl rand -hex 16 2>/dev/null)"
+    if [[ -n "$hex" ]]; then
+      printf '%s-%s-4%s-a%s-%s\n' "${hex:0:8}" "${hex:8:4}" "${hex:13:3}" "${hex:17:3}" "${hex:20:12}"
+      return 0
+    fi
   fi
-  
+
   # Final fallback: timestamp + random
   printf '%x%x\n' "$(date +%s%N)" "$RANDOM"
 }

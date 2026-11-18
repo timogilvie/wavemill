@@ -1574,6 +1574,40 @@ describe('stage result task-run identity', () => {
       assert.equal(stageResultRunIdentity(late!,'HOK-1:epoch:1794668400'),'stale');
     } finally {await fs.rm(dir,{recursive:true,force:true});}
   });
+
+  // protects: attempt A's late result must never be stamped with attempt B's
+  // lineage just because B is the most recently launched row (HOK-3476 REQ-F2).
+  it('a late result with no lineage of its own stays unknown when a newer attempt has already launched', async () => {
+    const dir=await fs.mkdtemp(path.join(os.tmpdir(),'stage-lineage-race-'));
+    try {
+      appendOwnershipRow(dir, {
+        sessionRef: 'attempt-a-session', harness: 'native', kind: 'coding', model: 'model',
+        runId: 'run-a', stageAttemptId: 'attempt-a', launchedAt: '2026-11-18T10:00:00.000Z',
+      });
+      // Attempt A's own completion is written without lineage of its own
+      // (a legacy/best-effort caller), arriving after attempt B has already
+      // launched and overwritten the on-disk coding result.
+      appendOwnershipRow(dir, {
+        sessionRef: 'attempt-b-session', harness: 'native', kind: 'coding', model: 'model',
+        runId: 'run-b', stageAttemptId: 'attempt-b', launchedAt: '2026-11-18T10:05:00.000Z',
+      });
+      await writeStageResult(dir, {
+        stage: 'coding', status: 'running', runId: 'run-b', stageAttemptId: 'attempt-b',
+        startedAt: '2026-11-18T10:05:00Z', finishedAt: null, agent: 'claude', model: 'model', notes: '',
+      });
+      await writeStageResult(dir, {
+        stage: 'coding', status: 'completed',
+        startedAt: '2026-11-18T10:00:00Z', finishedAt: '2026-11-18T10:06:00Z',
+        agent: 'claude', model: 'model', notes: '',
+      });
+      const late = await readStageResult(dir, 'coding');
+      // Must not be mislabeled with attempt B's identity just because B is
+      // the latest launch row; it must also not silently keep B's running
+      // write in place, since the late write is distinct evidence.
+      assert.equal(late?.runId, undefined);
+      assert.equal(late?.stageAttemptId, undefined);
+    } finally {await fs.rm(dir,{recursive:true,force:true});}
+  });
   it('uses exact run stamps and treats missing legacy launch evidence as unknown', () => {
     const run='HOK-1:epoch:1794600000';
     assert.equal(stageResultRunIdentity({runId:run,startedAt:''},run),'current');

@@ -1219,8 +1219,10 @@ export async function writeStageResult(
       if (result.retryOf === undefined && launched.retryOf) {
         result = { ...result, retryOf: launched.retryOf };
       }
-    } else {
-      // No matching existing result, try to get lineage from latest launch row
+    } else if (!launched) {
+      // No existing result at all: this is the first write for the stage, so
+      // there is no other attempt it could be confused with. Safe to backfill
+      // from the latest launch row.
       const launchRow = readLatestStageLaunch(featureDir, result.stage);
       if (launchRow) {
         const launchLineage = resolveLineageForStageResult(launchRow);
@@ -1238,6 +1240,11 @@ export async function writeStageResult(
         }
       }
     }
+    // else: an existing result belongs to a different attempt (a newer launch
+    // has already appended its own ownership row). The "latest" launch row no
+    // longer correlates to this result, so lineage stays explicitly unknown
+    // rather than being stamped with the wrong attempt's identity (HOK-3476
+    // REQ-F2: late results remain attached to their own attempt).
   }
 
   const validation = validateSeamArtifactValue('stage-result', result);

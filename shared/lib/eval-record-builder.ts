@@ -172,6 +172,13 @@ export interface EvalRecordMetadata {
    * read from this arm's local `.review-result.json` (HOK-2969, Arbiter P2.4f).
    */
   reviewExecutedIdentity?: ReviewExecutedIdentitySet | null;
+  /** Attempt lineage carried from the evaluated stage's result (HOK-3476). */
+  attemptLineage?: {
+    runId?: string | null;
+    stageAttemptId?: string | null;
+    parentRunId?: string | null;
+    retryOf?: string | null;
+  } | null;
 }
 
 /** Richer eval metadata attachment used by training-facing eval entrypoints. */
@@ -1923,6 +1930,7 @@ export function enrichTrainingMetadata(
   attachResourceSelections(record);
   attachEnrichmentDiagnostics(record);
   attachModelIdentityAttribution(record, metadata.registry ?? getEffectiveRegistry());
+  attachAttemptLineage(record, metadata.attemptLineage ?? {});
   attachEligibility(record);
   attachChallengeExecutionMetadata(record, {
     side: metadata.challengeSide,

@@ -69,6 +69,20 @@ journey_assert "PR #1 merged into $JOURNEY_INTEGRATION_BRANCH" \
   test "$(fakes_gh_pr_field 1 baseRefName)" = "$JOURNEY_INTEGRATION_BRANCH"
 journey_assert "exactly two coding launches, with automatic crash recovery" test "$(journey_agent_launch_count "$ISSUE" coding)" = "2"
 journey_assert "Linear issue ended Done" test "$(fakes_linear_state_of "$ISSUE")" = "Done"
+
+# HOK-3476: each coding launch (the original attempt and its automatic
+# retry) mints its own joinable stage-attempt identity, and that identity
+# survives into the archived, post-reap ownership record — covering the
+# automatic-retry and terminal-cleanup legs of Acceptance #3.
+OWNERSHIP_RECORD="$REPO_DIR/.wavemill/evals/artifacts/$ISSUE/.session-ownership.jsonl"
+journey_assert "both coding launches carry distinct stage-attempt identity after reap" \
+  jq -s -e '
+    [.[] | select(.type == "launch" and .kind == "coding")] as $c
+    | ($c | length) == 2
+    and ($c | map(.stageAttemptId) | all(type == "string"))
+    and ($c[0].stageAttemptId != $c[1].stageAttemptId)
+  ' "$OWNERSHIP_RECORD"
+
 journey_assert_no_unhandled_fake_calls
 
 journey_finish
