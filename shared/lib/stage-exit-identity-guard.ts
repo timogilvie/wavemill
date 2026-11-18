@@ -156,7 +156,10 @@ export const STAGE_EXIT_IDENTITY_GUARD: GuardSpec = {
       const visit = (node: ts.Node): void => {
         if (ts.isCallExpression(node) && /(?:^|\.)runWavemillLoop$/.test(node.expression.getText(file))) {
           const owner = enclosingStage(node);
-          if (!owner || !/(?:maxCostUsd|spendLimit|taskSpend)/.test(owner.getText(file))) {
+          // The limit may be inlined on the call or resolved by the launching
+          // function (taskSpendLimit); either counts as supplied.
+          const haystack = `${owner ? owner.getText(file) : ''}\n${node.getText(file)}`;
+          if (!/(?:maxCostUsd|spendLimit|taskSpend)/.test(haystack)) {
             findings.push({ line: file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1 });
           }
         }
