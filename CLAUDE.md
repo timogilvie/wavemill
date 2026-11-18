@@ -26,8 +26,6 @@ Shared tooling for Claude and Codex workflows:
 
 **Guards cap new invariants (HOK-3236).** A "never do X" rule lives in its own file under `docs/invariants/<name>.md`, with one index line here naming the rule, its guard, and the file path. A PR that adds a new invariant adds the file, its index line, and its guard (`tools/check-<name>.ts`, built on `tools/lib/source-guard.ts` with `invariantDocs` set to the new file, wired into `test:preflight`) in the same PR; a rule that cannot be enforced mechanically does not get an invariant file. `source-guard.ts` provides the shared semantics: tracked files only, invariant source auto-excluded, whole-line comments skipped, `// allow-<name>: <reason>` on the line or the line above, and a ratcheting allowlist (`<path> [<count>]  # reason`) that only shrinks.
 
-- **Scope stop record (HOK-3457)** — Every review scope-guard refusal must record a typed `.review-scope-stop.json` finding through `writeMarker` before exiting. Guard: `tools/check-scope-stop-record.ts`. → [docs/invariants/scope-stop-record.md](docs/invariants/scope-stop-record.md)
-
 All business logic lives in `shared/lib/` for reusability across CLI tools, commands, and workflows:
 
 #### Issue Expansion
@@ -59,6 +57,7 @@ All business logic lives in `shared/lib/` for reusability across CLI tools, comm
 - **Bounded retry (HOK-2924)** — New relaunch paths must use this helper — never implement a private retry counter. Guard: `tools/check-retry-sentinel.ts`. → [docs/invariants/bounded-retry.md](docs/invariants/bounded-retry.md)
 - **Install-health verdict (HOK-3315)** — Never compare lockfile bytes or hand-roll a `.packages` diff outside this file. Guard: `tools/check-install-verdict.ts`. → [docs/invariants/install-health-verdict.md](docs/invariants/install-health-verdict.md)
 - **Failure policy (HOK-3176/HOK-3513)** — Never add a classifier branch that parks; add a fixture to `failure-policy.fixtures.test.ts`. Only `invalidate_ready_verdict` invalidates a passed Ready; never park a conflict. Guard: `tools/check-failure-policy.ts`, `tools/check-ready-failure-policy.ts`. → [docs/invariants/failure-policy.md](docs/invariants/failure-policy.md)
+- **Scope stop record (HOK-3457)** — Scope-guard refusals write `.review-scope-stop.json`. Guard: `tools/check-scope-stop-record.ts`. → [docs/invariants/scope-stop-record.md](docs/invariants/scope-stop-record.md)
 - **Merge labels (HOK-3181, HOK-3449)** — Never write or clear `wm:blocked`, call `setWavemillBlocked` / `releaseToBlocked`, or run `gh pr comment` outside those modules; `setMergeLabel` alone changes `wm:ready`/`wm:blocked`. Guard: `tests/check-label-write-sites.test.sh`, `tools/check-merge-block-writers.ts`. → [docs/invariants/merge-labels.md](docs/invariants/merge-labels.md)
 - **Handoff gate (HOK-3450)** — Never compare a handoff state outside its module. Guard: `tools/check-handoff-state.ts`. → [docs/invariants/handoff-gate.md](docs/invariants/handoff-gate.md)
 - **Queue-state vocabulary (HOK-3453)** — Never write a `queueState` literal outside `MERGE_QUEUE_STATES`; decide lane membership through `mergeLanePosition`. Guard: `tools/check-queue-state.ts`. → [docs/invariants/queue-state.md](docs/invariants/queue-state.md)
@@ -121,7 +120,7 @@ npx tsx tools/get-backlog.ts "Project Name"
 ```
 
 ### Operator Tools
-Tools the mill never calls, used by hand or during recoveries, are listed in `docs/operator-tools.md` with what each does and whether it writes — check it before writing a one-off recovery script. `tools/check-operator-tools.ts` (preflight) fails when an unreferenced tool is missing from the list or a listed tool doesn't run with `--help`; self-parsing tools call `exitOnHelp` from `shared/lib/tool-runner.ts` first.
+Hand-run and recovery tools are listed in `docs/operator-tools.md` (what each does, whether it writes); check it before writing a one-off recovery script. `tools/check-operator-tools.ts` (preflight) fails when an unreferenced tool is unlisted or a listed tool fails `--help`; self-parsing tools call `exitOnHelp` from `shared/lib/tool-runner.ts` first.
 
 ### Workflow Commands
 Available in `~/.claude/commands/`:
@@ -135,7 +134,7 @@ Available in `~/.claude/commands/`:
 ### Native Certification CLI
 `wavemill native-agent certifications` subcommands: `list`, `inspect`, `verify`, `report`, `certify`, `re-certify`, `reidentify`, `invalidate`, `migrate`, `prune`.
 
-Use `wavemill native-agent certify --provider <provider> --model <model> --phase <phase>` for one model, or `--all --phase workflow` for the full current-suite matrix. On the credentialed mill host, `npx tsx tools/native-agent-certify.ts --refresh-canary-cohort` refreshes live coding canaries for the `nativeAgent.certification.canaryCohort` cohort (HOK-3062); mill preflight does this automatically, one attempt per episode, disabled via `canaryAutoRefresh: false`. Startup preflight also auto-remediates current-suite gaps, identity drift, stale artifacts and near-TTL renewal. Set `WAVEMILL_SKIP_CERTIFICATION_AUTO_REMEDIATE=1` to require manual certification; set `WAVEMILL_SKIP_CERTIFICATION_COVERAGE_GUARD=1` only for a targeted operator override. `wavemill native-agent certifications prune` reports orphan artifacts; `--yes` removes them.
+Use `wavemill native-agent certify --provider <provider> --model <model> --phase <phase>` for one model, or `--all --phase workflow` for the full current-suite matrix. `npx tsx tools/native-agent-certify.ts --refresh-canary-cohort` refreshes the `nativeAgent.certification.canaryCohort` live canaries (HOK-3062); preflight runs it once per episode unless `canaryAutoRefresh: false`, and auto-remediates suite gaps, identity drift, stale artifacts and near-TTL renewal. `WAVEMILL_SKIP_CERTIFICATION_AUTO_REMEDIATE=1` requires manual certification; `WAVEMILL_SKIP_CERTIFICATION_COVERAGE_GUARD=1` is a targeted operator override only. `wavemill native-agent certifications prune` lists orphans; `--yes` removes them.
 
 ## Test Discovery
 

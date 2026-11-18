@@ -8218,7 +8218,7 @@ stage_failure_decision() {
           head_sha="$(jq -r '.headSha // empty' <<<"$marker_json" 2>/dev/null || echo "")"
           findings="$(jq -c '.detail.findings // []' <<<"$marker_json" 2>/dev/null || echo "[]")"
           offending_paths="$(jq -c '.detail.offendingPaths // []' <<<"$marker_json" 2>/dev/null || echo "[]")"
-          code_failure_excerpt="$(jq -r '[.detail.findings[]? | if (.message // empty) == "" then (.offendingPath // empty) else "\(.offendingPath // ""): \(.message)" end | select(length>0)] | join("; ")' <<<"$marker_json" 2>/dev/null || echo "")"
+          code_failure_excerpt="$(jq -r '[.detail.findings[]? | [(.offendingPath // empty), (.message // empty)] | map(select(length>0)) | join(": ") | select(length>0)] | join("; ")' <<<"$marker_json" 2>/dev/null || echo "")"
           [[ -n "$code_failure_excerpt" ]] || code_failure_excerpt="review scope violation"
           marker_detail="$(jq -r '.detail.reason // .reason // "review scope violation"' <<<"$marker_json" 2>/dev/null || echo "review scope violation")"
           scope_fp="$(printf '%s|%s|%s' "$head_sha" "$findings" "$offending_paths" | cksum | awk '{print $1}')"
@@ -8226,7 +8226,7 @@ stage_failure_decision() {
             --arg excerpt "$code_failure_excerpt" \
             --arg detail "$marker_detail" \
             --arg fingerprint "$scope_fp" \
-            '{class:"code-failure",failureKind:"review-scope-stop",codeFailureExcerpt:$excerpt,rationale:"review scope guard refused staged/committed paths",nextAction:"coding stage must either narrow the diff to the declared scope or widen the plan'\''s Scope In",attribution:"unattributed",detail:$detail,handoffReason:"",envelopeCause:"",envelopeModel:"",fingerprint:$fingerprint}'
+            '{class:"code-failure",failureKind:"review-scope-stop",codeFailureExcerpt:$excerpt,rationale:"review scope guard refused staged/committed paths",nextAction:"coding stage must either narrow the diff to the declared scope or widen the plan Scope In",attribution:"unattributed",detail:$detail,handoffReason:"",envelopeCause:"",envelopeModel:"",fingerprint:$fingerprint}'
           return 0
         fi
       fi
@@ -8440,14 +8440,14 @@ archive_review_scope_baseline() {
   local baseline_path="$feature_dir/.review-scope-baseline.json"
   local history_path="$feature_dir/.review-scope-baseline.history.jsonl"
   local timestamp baseline_content entry
-  [[ -f "$baseline_path" ]] || { log_info "No review-scope baseline to archive at $baseline_path"; return 0; }
+  [[ -f "$baseline_path" ]] || { log "No review-scope baseline to archive at $baseline_path"; return 0; }
   baseline_content="$(cat "$baseline_path" 2>/dev/null || true)"
-  [[ -n "$baseline_content" ]] || { log_info "Empty review-scope baseline at $baseline_path; nothing to archive"; rm -f "$baseline_path" 2>/dev/null || true; return 0; }
+  [[ -n "$baseline_content" ]] || { log "Empty review-scope baseline at $baseline_path — nothing to archive"; rm -f "$baseline_path" 2>/dev/null || true; return 0; }
   timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   if ! entry="$(printf '%s' "$baseline_content" | jq -c \
     --arg replacedAt "$timestamp" --arg reason "$reason" \
     '{replacedAt:$replacedAt,reason:$reason,baseline:.}' 2>/dev/null)"; then
-    log_warn "archive_review_scope_baseline: could not encode baseline at $baseline_path; leaving file in place"
+    log_warn "archive_review_scope_baseline: could not encode baseline at $baseline_path — leaving file in place"
     return 1
   fi
   printf '%s\n' "$entry" >>"$history_path" || {
@@ -8455,7 +8455,7 @@ archive_review_scope_baseline() {
     return 1
   }
   rm -f "$baseline_path" 2>/dev/null || true
-  log_info "Archived review-scope baseline to history and removed $baseline_path"
+  log "Archived review-scope baseline to history and removed $baseline_path"
   return 0
 }
 

@@ -1552,7 +1552,7 @@ This is a REQUIRED step — do not skip it or substitute your own review.
    - Make targeted fixes only — do not refactor unrelated code
    - Run the review scope guard immediately before committing:
      npx tsx $tools_dir/check-review-scope.ts --repo-dir .
-   - If the guard exits 1, the tool has already recorded a typed scope-stop finding at `.review-scope-stop.json` in the feature directory. Do NOT commit, do NOT wait, and do NOT retry — exit 1 immediately. The mill reads the stop and returns the task to coding with the offending paths in the next coding prompt.
+   - If the guard exits 1, preserve the index, report the violation, and stop — the tool has already recorded a typed scope-stop finding at `.review-scope-stop.json` in the feature directory. Do NOT commit, do NOT wait, and do NOT retry — exit 1 immediately. No review commit may be created until the guard passes. The mill reads the stop and returns the task to coding with the offending paths in the next coding prompt.
    - If the guard exits 2, scope could not be verified (tool/git failure — infrastructure, not a violation): capture the guard's stderr, note "review scope unverified (infrastructure)" in the commit message body and PR body, and proceed with the commit. Do not treat exit 2 as a scope violation.
    - If the guard exits 3, scope passed but no PR exists yet for this branch (the normal pre-PR state, not a violation): proceed exactly as for exit 0.
    - Commit fixes: git commit -m "fix: Address self-review findings (iteration N)"

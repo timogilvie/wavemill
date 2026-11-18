@@ -15,8 +15,8 @@ export const SCOPE_STOP_RECORD_GUARD: GuardSpec = {
   allowlistFile: 'tools/scope-stop-record-allowlist.txt',
   invariantPaths: [
     'shared/lib/scope-stop-record-guard.ts',
-    'tools/check-scope-stop-record.ts',
-    'tools/check-review-scope.ts',
+    'tools/check-scope-stop-record.ts', // install-paths: allow invariantPaths list, not an argv target
+    'tools/check-review-scope.ts', // install-paths: allow invariantPaths list, not an argv target
   ],
   patterns: [
     {
