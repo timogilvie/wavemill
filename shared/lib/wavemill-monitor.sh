@@ -1462,6 +1462,11 @@ finalize_challenge_execution_intent_before_coding() {
   # The launch lottery already decided challenge-vs-single. Finalization only
   # resolves that sealed decision against the now-available expanded route; it
   # never reruns the lottery and never substitutes a sealed challenger.
+  # HOK-3506: the plan-stage sealed-pair path below (awaiting_expanded_route
+  # materialisation) and the sealed-single path are golden-journey-covered by
+  # tests/journeys/planner-expanded-route-comparison.journey.sh (HOK-3451)
+  # and tests/fixtures/lifecycle/sealed_single_stays_single_through_plan_to_code.sh,
+  # not a new journey added by this change.
   local existing_intent
   # allow-task-field: legacy challengeIntent fallback for pre-challengeExecutionIntent state files
   existing_intent=$(read_state_value "" --arg i "$issue" '(.tasks[$i].challengeExecutionIntent // .tasks[$i].challengeIntent) // empty' 2>/dev/null || true)
@@ -1577,14 +1582,32 @@ finalize_challenge_execution_intent_before_coding() {
         save_task_state "$challenger_key" "$challenger_slug" "$challenger_branch" "$challenger_worktree" "$challenger_pr" "$challenger_status" "$challenger_agent" "$challenger_linear_issue"           "true" "$issue" "challenger" "$challenger_varied" "$challenger_planner" "$challenger_coder_model" "$challenger_reviewer" "$plan_depth" "$code_depth" "$review_mode" "$stage"
         state_mutate "$STATE_FILE"           '.tasks[$issue].challengerLaunched = true
            | .tasks[$issue].updated = (now | todate)'           --arg issue "$issue" >/dev/null 2>&1 || true
+
+        persist_challenge_execution_intent "$issue" "$challenger_key" "$feature_dir" "$enriched_intent"
+        FINALIZED_CHALLENGE_CODER="$primary_coder_model"
+        FINALIZED_CHALLENGE_STAGE="$stage"
+
+        log "status" "  $issue: Challenge intent finalized (sealed route, stage=$stage): $primary_varied vs $challenger_varied"
+        challenge_assert_arms_diverge "$issue" "$stage" "$primary_varied" "$challenger_varied" "$enriched_intent"
+      else
+        # The sealed decision resolved to a pair, but the challenger task
+        # never actually exists in state (a launch-time race/failure between
+        # sealing the pair and spawning its second task). Persisting a paired
+        # intent here would stamp a phantom pair under this PR's own target
+        # bug class, just via a different trigger than the deleted
+        # challenger_never_launched guard caught. Collapse to single instead.
+        local collapse_reason collapse_detail collapsed_intent
+        collapse_reason="challenger_task_missing"
+        collapse_detail="Sealed pair resolved to materialize, but no challenger task exists in state"
+        collapsed_intent=$(echo "$enriched_intent" | jq -c           --arg reason "$collapse_reason"           --arg detail "$collapse_detail"           'del(.challenger)
+           | .noChallengeReason = $reason
+           | .challengeCollapseReason = $reason
+           | .challengeCollapseDetail = $detail' 2>/dev/null || echo "$enriched_intent")
+        persist_challenge_execution_intent "$issue" "" "$feature_dir" "$collapsed_intent"
+        log_warn "$issue → sealed challenge collapsed ($collapse_reason)"
+        FINALIZED_CHALLENGE_CODER=""
+        FINALIZED_CHALLENGE_STAGE=""
       fi
-
-      persist_challenge_execution_intent "$issue" "$challenger_key" "$feature_dir" "$enriched_intent"
-      FINALIZED_CHALLENGE_CODER="$primary_coder_model"
-      FINALIZED_CHALLENGE_STAGE="$stage"
-
-      log "status" "  $issue: Challenge intent finalized (sealed route, stage=$stage): $primary_varied vs $challenger_varied"
-      challenge_assert_arms_diverge "$issue" "$stage" "$primary_varied" "$challenger_varied" "$enriched_intent"
       ;;
   esac
 }
