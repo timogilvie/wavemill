@@ -8207,10 +8207,13 @@ stage_failure_decision() {
   if [[ "$stage" == "review" ]]; then
     local scope_stop_file="$feature_dir/.review-scope-stop.json"
     if [[ -f "$scope_stop_file" ]]; then
-      # Read the marker and check if it's valid
-      local marker_json head_sha findings offending_paths code_failure_excerpt marker_detail scope_fp
-      if marker_json="$(marker_read "$scope_stop_file" 2>/dev/null)" && [[ -n "$marker_json" ]]; then
-        if ! marker_is_stale "$scope_stop_file" "$(git rev-parse HEAD 2>/dev/null || echo "")"; then
+      # Read the marker and check if it's valid. An empty current head would
+      # pass "" to marker_is_stale; fall through to generic classification in
+      # that case rather than compare against a blank.
+      local marker_json head_sha findings offending_paths code_failure_excerpt marker_detail scope_fp current_head
+      current_head="$(git rev-parse HEAD 2>/dev/null || true)"
+      if [[ -n "$current_head" ]] && marker_json="$(marker_read "$scope_stop_file" 2>/dev/null)" && [[ -n "$marker_json" ]]; then
+        if ! marker_is_stale "$scope_stop_file" "$current_head"; then
           # Valid scope stop marker found, synthesize code-failure decision.
           head_sha="$(jq -r '.headSha // empty' <<<"$marker_json" 2>/dev/null || echo "")"
           findings="$(jq -c '.detail.findings // []' <<<"$marker_json" 2>/dev/null || echo "[]")"
@@ -8535,15 +8538,16 @@ _dispatch_failed_stage_recovery() {
       fi
     fi
     
-    # Archive review scope baseline when returning to coding from a scope stop
-    if [[ "$stage" == "review" && "$action" == "remediate" ]]; then
-      local scope_stop_file="$feature_dir/.review-scope-stop.json"
-      if [[ -f "$scope_stop_file" ]]; then
-        archive_review_scope_baseline "$feature_dir" "scope stop remediation"
-      fi
-    fi
-    
+    # Archive the review scope baseline only AFTER the coding relaunch
+    # succeeds — a transient launch failure must not discard the previously
+    # approved baseline.
     if _stage_failure_coding_relaunch "$issue" "$feature_dir" "$win" "$failure_kind" "$failure_class" "$attempts" "$limit" " (code remediation)"; then
+      if [[ "$stage" == "review" && "$action" == "remediate" ]]; then
+        local scope_stop_file="$feature_dir/.review-scope-stop.json"
+        if [[ -f "$scope_stop_file" ]]; then
+          archive_review_scope_baseline "$feature_dir" "scope stop remediation"
+        fi
+      fi
       agent_remediation_deliver "$feature_dir" "$issue" "$feature_dir/.${stage}-result.json" \
         "Repair the recorded ${stage} code failure: $remediation_message" "${stage}:${head}:${attempts}" --expires-on head,operator-event || true
       return 0
