@@ -1563,18 +1563,22 @@ finalize_challenge_execution_intent_before_coding() {
         return 0
       fi
 
-      local current_pr current_status current_agent current_linear_issue
-      current_pr=$(pass_task_field "$issue" pr)
-      current_status=$(pass_task_field "$issue" status)
-      current_agent=$(pass_task_field "$issue" agent)
-      current_linear_issue=$(pass_task_field "$issue" linearIssueId)
-      save_task_state "$issue" "$slug" "$branch" "$wt_dir" "$current_pr" "$current_status" "$current_agent" "$current_linear_issue"         "true" "$issue" "primary" "$primary_varied" "$primary_planner" "$primary_coder_model" "$primary_reviewer" "$plan_depth" "$code_depth" "$review_mode" "$stage"
-
       local challenger_slug challenger_branch challenger_worktree challenger_pr challenger_status challenger_agent challenger_linear_issue
       challenger_slug=$(pass_task_field "$challenger_key" slug 2>/dev/null || true)
       challenger_branch=$(pass_task_field "$challenger_key" branch 2>/dev/null || true)
       challenger_worktree=$(pass_task_field "$challenger_key" worktree 2>/dev/null || true)
       if [[ -n "$challenger_slug" && -n "$challenger_branch" && -n "$challenger_worktree" ]]; then
+        # Stamp the primary as paired only once the challenger task is
+        # confirmed to exist — stamping it first and collapsing after (the
+        # prior ordering) left a phantom pair on the primary's own task row
+        # whenever the challenger turned out to be missing (review finding).
+        local current_pr current_status current_agent current_linear_issue
+        current_pr=$(pass_task_field "$issue" pr)
+        current_status=$(pass_task_field "$issue" status)
+        current_agent=$(pass_task_field "$issue" agent)
+        current_linear_issue=$(pass_task_field "$issue" linearIssueId)
+        save_task_state "$issue" "$slug" "$branch" "$wt_dir" "$current_pr" "$current_status" "$current_agent" "$current_linear_issue"           "true" "$issue" "primary" "$primary_varied" "$primary_planner" "$primary_coder_model" "$primary_reviewer" "$plan_depth" "$code_depth" "$review_mode" "$stage"
+
         challenger_pr=$(pass_task_field "$challenger_key" pr)
         challenger_status=$(pass_task_field "$challenger_key" status)
         challenger_agent=$(pass_task_field "$challenger_key" agent)
