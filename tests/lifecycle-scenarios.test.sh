@@ -222,6 +222,7 @@ for fn in \
   challenge_varied_stage_model \
   challenge_result_stage_for_launch \
   challenge_stage_for_launch_env \
+  challenge_selection_health_varied_model \
   challenge_abort_for_unresolvable_varied_model \
   challenge_guard_varied_model_resolvable \
   challenge_pre_review_route_preflight \
@@ -619,8 +620,9 @@ JSON
     linear_summary=$(printf "%s" "$LINEAR_CALLS" | tr "\n" ";")
     eval_summary=$(printf "%s" "$POST_MERGE_EVAL_CALLS" | tr "\n" ";")
     migration_summary=$(printf "%s" "$SAVE_MIGRATION_CALLS" | tr "\n" ";")
+    save_task_summary=$(printf "%s" "$SAVE_TASK_CALLS" | tr "\n" ";")
     gh_view_count=$(wc -c < "$SCENARIO_DIR/.gh_pr_view_count" 2>/dev/null | tr -d " " || printf "0")
-    printf "scenario=%s\nscenario_dir=%s\nwt_dir=%s\nfeature_dir=%s\nphase=%s\nattention=%s\nactive_count=%s\nstage_calls=%s\nphase_calls=%s\ncoding_launches=%s\nreview_launches=%s\nready_launches=%s\ngh_pr_view_calls=%s\ncleanup_count=%s\ncleanup_calls=%s\nlinear_calls=%s\npost_merge_eval_calls=%s\nsave_migration_calls=%s\nlogs=%s\n" \
+    printf "scenario=%s\nscenario_dir=%s\nwt_dir=%s\nfeature_dir=%s\nphase=%s\nattention=%s\nactive_count=%s\nstage_calls=%s\nphase_calls=%s\ncoding_launches=%s\nreview_launches=%s\nready_launches=%s\ngh_pr_view_calls=%s\ncleanup_count=%s\ncleanup_calls=%s\nlinear_calls=%s\npost_merge_eval_calls=%s\nsave_migration_calls=%s\nsave_task_calls=%s\nlogs=%s\n" \
       "$SCENARIO_NAME" \
       "$SCENARIO_DIR" \
       "$WT_DIR" \
@@ -639,6 +641,7 @@ JSON
       "$linear_summary" \
       "$eval_summary" \
       "$migration_summary" \
+      "$save_task_summary" \
       "$log_summary"
   '
 }

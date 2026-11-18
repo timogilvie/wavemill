@@ -1432,7 +1432,8 @@ export function resolveReviewStageChallengePin(input: {
 // enriches it with the expanded route without ever rerolling the sealed choice.
 // ────────────────────────────────────────────────────────────────
 
-export interface SealedChallengeDecision {
+export interface SealedChallengePairDecision {
+  kind: 'pair';
   pairId: string;
   issueId?: string;
   /** The single stage this pair varies; sealed at selection, never re-sampled. */
@@ -1446,6 +1447,24 @@ export interface SealedChallengeDecision {
   /** The challenger's varied-stage model — the experiment. This is immutable. */
   challengerVariedModel: string;
   challengerVariedAgent?: string;
+}
+
+export interface SealedChallengeSingleDecision {
+  kind: 'single';
+  pairId: string;
+  issueId?: string;
+  /** Why the launch lottery chose a single-model run instead of a pair. */
+  noChallengeReason: string;
+  /** The primary arm as sealed at launch; kept for attribution and replay. */
+  primary?: ChallengeRuntimeSideIntent | ChallengeSideIntent;
+}
+
+export type SealedChallengeDecision = SealedChallengePairDecision | SealedChallengeSingleDecision;
+
+export function isSealedChallengePairDecision(
+  decision: SealedChallengeDecision | null | undefined,
+): decision is SealedChallengePairDecision {
+  return decision?.kind === 'pair';
 }
 
 export type ExpandedRouteCollapseReason =
@@ -1472,7 +1491,12 @@ export interface ExpandedRouteCollapseResult {
   detail: string;
 }
 
-export type ExpandedRouteResolution = ExpandedRouteMaterializeResult | ExpandedRouteCollapseResult;
+export interface ExpandedRouteSingleResult {
+  status: 'single';
+  reason: string;
+}
+
+export type ExpandedRouteResolution = ExpandedRouteMaterializeResult | ExpandedRouteCollapseResult | ExpandedRouteSingleResult;
 
 /**
  * Read one stage's {model, agent} from either side shape.
@@ -1511,14 +1535,32 @@ function sideKey(side: ChallengeSideIntent | ChallengeRuntimeSideIntent | undefi
 export function sealChallengeDecision(
   intent: ChallengeExecutionIntent | null | undefined,
 ): SealedChallengeDecision | undefined {
-  if (!intent || !clean(intent.pairId) || !intent.primary || !intent.challenger) return undefined;
+  if (!intent || !clean(intent.pairId) || !intent.primary) return undefined;
+  const pairId = clean(intent.pairId);
+  const issueId = clean(intent.issueId);
   const stage = stageFromIntent(intent);
   const primaryVaried = readSideStageRoute(intent.primary, stage);
+
+  // HOK-3506: a single-model launch is also a one-shot decision. Sealing it
+  // lets finalization read it back through --resolve-sealed without rerunning
+  // the lottery or manufacturing a phantom pair.
+  if (!intent.challenger) {
+    if (!intent.noChallengeReason) return undefined;
+    return {
+      kind: 'single',
+      pairId,
+      ...(issueId ? { issueId } : {}),
+      noChallengeReason: intent.noChallengeReason,
+      ...(intent.primary ? { primary: intent.primary } : {}),
+    };
+  }
+
   const challengerVaried = readSideStageRoute(intent.challenger, stage);
   if (!challengerVaried.model) return undefined;
   return {
-    pairId: clean(intent.pairId),
-    ...(clean(intent.issueId) ? { issueId: clean(intent.issueId) } : {}),
+    kind: 'pair',
+    pairId,
+    ...(issueId ? { issueId } : {}),
     selectedStage: stage,
     ...(intent.decisionSource ? { decisionSource: intent.decisionSource } : {}),
     ...(intent.selectionPath ? { selectionPath: intent.selectionPath } : {}),
@@ -1537,11 +1579,11 @@ export function sealChallengeDecision(
  * candidate (HOK-3065 immutability invariant).
  */
 export function sealedSelectionViolations(
-  sealed: SealedChallengeDecision,
+  sealed: SealedChallengePairDecision,
   candidate: ChallengeExecutionIntent | null | undefined,
 ): string[] {
   const candidateSeal = sealChallengeDecision(candidate);
-  if (!candidateSeal) return ['sealed_intent_incomplete'];
+  if (!candidateSeal || candidateSeal.kind !== 'pair') return ['sealed_intent_incomplete'];
   const violations: string[] = [];
   if (candidateSeal.pairId !== sealed.pairId) violations.push('pairId');
   if (candidateSeal.selectedStage !== sealed.selectedStage) violations.push('selectedStage');
@@ -1579,11 +1621,17 @@ export function resolveSealedDecisionAgainstExpandedRoute(input: {
 }): ExpandedRouteResolution {
   const sealedDecision = sealChallengeDecision(input.sealed);
   const intent = input.sealed;
-  if (!sealedDecision || !intent || !intent.primary || !intent.challenger) {
+  if (!sealedDecision || !intent || !intent.primary) {
     return {
       status: 'collapse',
       reason: 'sealed_intent_incomplete',
-      detail: 'Sealed intent is missing a pair id or one of its two sides.',
+      detail: 'Sealed intent is missing a pair id or its primary side.',
+    };
+  }
+  if (sealedDecision.kind === 'single') {
+    return {
+      status: 'single',
+      reason: sealedDecision.noChallengeReason,
     };
   }
   const stage = sealedDecision.selectedStage;

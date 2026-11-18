@@ -759,7 +759,14 @@ function resolveSealedAndPrint(input: {
     console.log(JSON.stringify({
       status: 'collapse',
       reason: 'sealed_intent_incomplete',
-      detail: '--sealed-intent was missing or not a well-formed two-sided challenge intent.',
+      detail: '--sealed-intent was missing or not a well-formed challenge intent.',
+    }));
+    return;
+  }
+  if (decision.kind === 'single') {
+    console.log(JSON.stringify({
+      status: 'single',
+      reason: decision.noChallengeReason,
     }));
     return;
   }
