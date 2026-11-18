@@ -14,6 +14,11 @@
 # updateBranchWithBase: a merge of origin/<base> into the branch is clean for
 # this shape (the per-commit rebase is what conflicts), so the head moves, no
 # resolver agent launches, no budget is charged, and tend merges the new head.
+#
+# The fact re-runs Ready through HOK-3513's one invalidation
+# (readyVerdictInvalidation → invalidate_ready_verdict), decided in the
+# merge-queue tick. journey_init pins the merge queue off, so opt back in below
+# to exercise that path.
 set -euo pipefail
 source "$(dirname "$0")/harness.sh"
 
@@ -28,7 +33,16 @@ ISSUE="JRN-4"
 # environment at init.
 export FAKE_AGENT_SCRIPT_DIR
 FAKE_AGENT_SCRIPT_DIR="$(cd "$(dirname "$0")/fixtures/hok-3316/fake-agent" && pwd)"
+# Derive capabilities from the repo config: HOK-3513's one invalidation runs in
+# the merge-queue tick, gated on the session having a queue consumer (tend).
+# shellcheck disable=SC2034  # read by journey_init (harness.sh)
+JOURNEY_DERIVE_CAPABILITIES=1
 journey_init tend-rebase-conflict-single-comment
+export MERGE_QUEUE_ENABLED=true
+journey_write_config '{"mergeQueue":{"enabled":true}}'
+# The failed-Ready relaunch resolves the task's recorded coder model; pin one
+# the way an operator's `--coder-model` does (see ready-fail-remediate).
+export WAVEMILL_CODER_MODEL="claude-opus-4-7"
 fakes_linear_add_issue "$ISSUE" "Change that also regenerates a generated file" Todo
 # The generated file both PRs touch, present on the base before the task starts.
 fakes_repo_commit "$JOURNEY_INTEGRATION_BRANCH" "generated.txt" "generated: v0" "seed generated.txt"
