@@ -46,8 +46,7 @@ import {
 } from '../shared/lib/executed-model-resolver.ts';
 import {
   OWNERSHIP_STAGES,
-  readOwnershipRows,
-  rowsForStage,
+  readLatestStageLaunch,
   type OwnershipStage,
 } from '../shared/lib/session-ownership.ts';
 
@@ -134,19 +133,12 @@ function stageRunId(featureDir: string, stage: StageName, status: StageStatus, f
  */
 function latestLaunchAtFor(featureDir: string, stage: StageName): string | null {
   if (!(OWNERSHIP_STAGES as readonly string[]).includes(stage)) return null;
-  let rows;
   try {
-    rows = rowsForStage(readOwnershipRows(featureDir), stage as OwnershipStage);
+    // HOK-3447: canonical selector over lossless launch history.
+    return readLatestStageLaunch(featureDir, stage as OwnershipStage)?.launchedAt ?? null;
   } catch {
     return null;
   }
-  if (rows.length === 0) return null;
-  const latest = [...rows]
-    .map((row) => row.launchedAt)
-    .filter((at): at is string => typeof at === 'string')
-    .sort()
-    .pop();
-  return latest ?? null;
 }
 
 /**

@@ -13,15 +13,19 @@ import {
   executionStageForRow,
   exactRows,
   extractLaunchNonce,
+  getSdkMeteringProjection,
   groupByExecutionStage,
   groupByHarness,
   groupByKind,
   helperKind,
+  latestStageLaunch,
   launchNonceLine,
   locateOwnershipRows,
   nativeLaunchKind,
   ownershipStageRole,
   pendingSessionRef,
+  readLatestStageLaunch,
+  readLaunchHistory,
   readOwnershipRows,
   recordLaunch,
   rowsForStage,
@@ -87,8 +91,9 @@ describe('session-ownership record (HOK-3328)', () => {
     assert.throws(() => appendOwnershipRow(dir, { sessionRef: 'x', harness: 'claude-code', kind: 'reviewing' as never, model: 'm' }), /unknown kind/);
   });
 
-  // protects: one torn/garbage line hiding every other session of the task
-  it('skips malformed lines and keeps the earliest launch of a reused sessionRef', () => {
+  // protects: one torn/garbage line hiding every other session of the task,
+  // and (HOK-3447) a reused sessionRef hiding a later repair attempt.
+  it('skips malformed lines and preserves every launch of a reused sessionRef', () => {
     const dir = tempDir();
     appendOwnershipRow(dir, { sessionRef: 'wm-coding-HOK-1', harness: 'native', kind: 'native-arm', stage: 'coding', model: 'a', launchedAt: '2026-10-27T10:00:00.000Z' });
     appendFileSync(join(dir, SESSION_OWNERSHIP_FILE), '{"type":"launch","sessionRef":\nnot json\n');
@@ -96,8 +101,9 @@ describe('session-ownership record (HOK-3328)', () => {
     const result = locateOwnershipRows({ slug: 's', worktreePath: dirname(dirname(dir)) });
     assert.equal(result.rows.length, 0, 'a dir outside features/<slug> is not a candidate');
     const rows = readOwnershipRows(dir);
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].model, 'a');
+    assert.deepEqual(rows.map((row) => row.model), ['a', 'b'], 'both attempts survive; only metering deduplicates');
+    // The metering projection is the one place a legacy shared session is billed once.
+    assert.deepEqual(getSdkMeteringProjection(rows).map((row) => row.model), ['a']);
   });
 
   // protects: a Codex session staying pending (uncosted) after its thread id is known
@@ -262,3 +268,105 @@ describe('execution stage of a session (HOK-3415)', () => {
   });
 });
 
+
+describe('one launch identity (HOK-3447)', () => {
+  const row = (
+    sessionRef: string,
+    kind: SessionOwnershipRow['kind'],
+    launchedAt: string,
+    extra: Partial<SessionOwnershipRow> = {},
+  ): SessionOwnershipRow => ({
+    sessionRef,
+    harness: 'native',
+    kind,
+    ...(kind === 'native-arm' ? { stage: 'coding' as const } : {}),
+    model: 'm',
+    launchedAt,
+    attemptId: `${kind}@nohead#1`,
+    ...extra,
+  });
+
+  // protects: a repair launch that reused the deterministic runtime ref being
+  // collapsed into the launch it repaired (the HOK-3325 Ready stall).
+  it('latestStageLaunch returns the newest attempt even when every attempt shares a sessionRef', () => {
+    const history = [
+      row('wm-coding-HOK-1', 'coding', '2026-11-16T10:00:00.000Z', { model: 'initial' }),
+      row('wm-coding-HOK-1', 'ready-remediation', '2026-11-16T10:05:00.000Z', { model: 'repair-1' }),
+      row('wm-coding-HOK-1', 'ready-remediation', '2026-11-16T10:10:00.000Z', { model: 'repair-2' }),
+    ];
+    assert.equal(latestStageLaunch(history, 'ready-remediation')?.model, 'repair-2');
+    assert.equal(latestStageLaunch(history, 'coding')?.model, 'initial');
+    assert.equal(latestStageLaunch(history, 'review'), null);
+  });
+
+  // protects: interleaved stages picking the wrong launch, two launches in one
+  // second collapsing to the first, and a helper call answering "which launch".
+  it('latestStageLaunch selects per stage, breaks same-second ties by append order and skips helpers', () => {
+    const history = [
+      row('a', 'planning', '2026-11-16T10:00:00.000Z'),
+      row('b', 'coding', '2026-11-16T10:01:00.000Z'),
+      row('c', 'coding', '2026-11-16T10:01:00.000Z', { model: 'same-second-second-launch' }),
+      row('d', 'helper:json-code-review', '2026-11-16T10:02:00.000Z'),
+    ];
+    assert.equal(latestStageLaunch(history, 'planning')?.sessionRef, 'a');
+    assert.equal(latestStageLaunch(history, 'coding')?.model, 'same-second-second-launch');
+    assert.equal(latestStageLaunch(history, 'review'), null, 'a helper review call is not the review launch');
+  });
+
+  // protects: a native arm's stage being ignored by the one selector.
+  it('latestStageLaunch classifies a native arm by its recorded stage', () => {
+    const history = [row('arm', 'native-arm', '2026-11-16T10:00:00.000Z')];
+    assert.equal(latestStageLaunch(history, 'coding')?.sessionRef, 'arm');
+    assert.equal(latestStageLaunch(history, 'coding', { harnesses: ['claude-code', 'codex'] }), null);
+  });
+
+  // protects: the reader silently re-deduplicating a legacy file it shares with
+  // the metering path.
+  it('readLatestStageLaunch reads full on-disk history (legacy shared refs included)', () => {
+    const dir = tempDir();
+    appendOwnershipRow(dir, { sessionRef: 'legacy', harness: 'native', kind: 'ready-remediation', model: 'one', launchedAt: '2026-11-16T10:00:00.000Z' });
+    appendOwnershipRow(dir, { sessionRef: 'legacy', harness: 'native', kind: 'ready-remediation', model: 'two', launchedAt: '2026-11-16T10:05:00.000Z' });
+    assert.equal(readLatestStageLaunch(dir, 'ready-remediation')?.model, 'two');
+    assert.equal(readLatestStageLaunch(tempDir(), 'ready-remediation'), null, 'empty history is null');
+  });
+
+  // protects: legacy shared sessions being double-charged (REQ-F4).
+  it('getSdkMeteringProjection keeps exactly one (earliest) row per sessionRef', () => {
+    const history = [
+      row('A', 'coding', '2026-11-16T10:02:00.000Z'),
+      row('A', 'coding', '2026-11-16T10:00:00.000Z'),
+      row('A', 'ready-remediation', '2026-11-16T10:05:00.000Z'),
+      row('B', 'review', '2026-11-16T10:02:00.000Z'),
+    ];
+    assert.deepEqual(getSdkMeteringProjection(history).map((entry) => `${entry.sessionRef}@${entry.launchedAt}`), [
+      'A@2026-11-16T10:00:00.000Z',
+      'B@2026-11-16T10:02:00.000Z',
+    ]);
+  });
+
+  // HOK-3325 replay: the sanitised incident record (native coding + two
+  // repairs sharing one deterministic sessionRef). Pre-fix, the sessionRef
+  // dedupe hid every repair and disposition read the coding row.
+  it('HOK-3325 replay: the newest repair is the stage launch, and the shared ref is billed once', () => {
+    const fixture = join(dirname(fileURLToPath(import.meta.url)), '../../tests/fixtures/incident-replay/real/hok3325-ready-stall/ownership.jsonl');
+    const { rows } = readLaunchHistory([fixture]);
+    assert.equal(rows.length, 3, 'all three launches survive');
+    const repair = latestStageLaunch(rows, 'ready-remediation');
+    assert.equal(repair?.attemptId, 'ready-remediation@nohead#1794303600');
+    assert.equal(repair?.launchedAt, '2026-11-10T09:40:00.000Z');
+    assert.equal(latestStageLaunch(rows, 'coding')?.kind, 'native-arm');
+    assert.deepEqual(getSdkMeteringProjection(rows).map((entry) => entry.attemptId), ['native-arm@nohead#1794301200'],
+      'the legacy shared session is billed once, at its earliest launch');
+  });
+
+  // protects: two launches in one second sharing an attempt identity (REQ-F3).
+  it('buildAttemptId appends a per-launch token so same-second launches stay distinct', () => {
+    const at = new Date('2026-11-16T10:00:00Z');
+    assert.equal(buildAttemptId('coding', 'abcdef0123', at), 'coding@abcdef0#1794823200');
+    assert.equal(buildAttemptId('coding', 'abcdef0123', at, 'tok1'), 'coding@abcdef0#1794823200-tok1');
+    assert.notEqual(
+      buildAttemptId('coding', 'abcdef0123', at, 'tok1'),
+      buildAttemptId('coding', 'abcdef0123', at, 'tok2'),
+    );
+  });
+});

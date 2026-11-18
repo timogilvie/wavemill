@@ -101,7 +101,7 @@ import { resolveStageExecutionTruth } from '../executed-model-resolver.ts';
 import { equivalentOpenRouterModelIds } from '../openrouter-catalog.ts';
 import { getNativeContextManagementConfig, getNativePayloadCaptureConfig, getNativeReviewTimeoutConfig } from '../config.ts';
 import type { NormalizedPricing } from '../openrouter-catalog.ts';
-import { nativeLaunchKind, recordLaunch } from '../session-ownership.ts';
+import { buildAttemptId, nativeLaunchKind, newSessionRef, recordLaunch } from '../session-ownership.ts';
 import {
   buildExecutedIdentity,
   type ExecutedIdentity,
@@ -328,10 +328,13 @@ function makeTranscriptPath(repoDir: string, sessionId: string): string {
   return join(baseDir, `${sessionId}.jsonl`);
 }
 
-function makeSessionId(branch: string): string {
+function makeSessionId(branch: string, launchToken: string): string {
   const session = process.env.WAVEMILL_SESSION || 'manual-review';
   const safeBranch = branch.replace(/[^A-Za-z0-9._-]+/g, '-');
-  return `${session}-review-${safeBranch}`;
+  // HOK-3447: per-launch token — two review launches on one branch are two
+  // attempts, never one collapsed sessionRef. Placed before the phase so
+  // `parseDecisionSessionId` still reads `…-review-<branch>`.
+  return `${session}-${launchToken}-review-${safeBranch}`;
 }
 
 function registerNativeReviewRuntime(input: {
@@ -808,14 +811,22 @@ export async function runNativeReview(
     );
   }
 
-  const sessionId = makeSessionId(context.metadata.branch);
+  // HOK-3447: every review launch is its own attempt (distinct runtime ref,
+  // distinct attempt identity) so a re-review is never collapsed into the
+  // launch it replaced.
+  const launchToken = newSessionRef();
+  const sessionId = makeSessionId(context.metadata.branch, launchToken);
+  const launchedAt = new Date();
+  const launchKind = nativeLaunchKind();
   // HOK-3328: own the transcript's session before the loop starts.
   recordLaunch(options.featureDir, {
     sessionRef: sessionId,
     harness: 'native',
-    kind: nativeLaunchKind(),
+    kind: launchKind,
     stage: 'review',
     model: resolvedModelId,
+    launchedAt,
+    attemptId: buildAttemptId(launchKind, null, launchedAt, launchToken),
   });
   const transcriptPath = makeTranscriptPath(repoDir, sessionId);
   const transcriptWriter = new TranscriptWriter({

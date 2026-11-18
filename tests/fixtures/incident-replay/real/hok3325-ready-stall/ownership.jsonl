@@ -1,0 +1,3 @@
+{"schemaVersion":1,"type":"launch","sessionRef":"wavemill-coding-HOK-0000","harness":"native","kind":"native-arm","stage":"coding","model":"scripted:demo","launchedAt":"2026-11-10T09:00:00.000Z","attemptId":"native-arm@nohead#1794301200","cwd":"/worktree"}
+{"schemaVersion":1,"type":"launch","sessionRef":"wavemill-coding-HOK-0000","harness":"native","kind":"ready-remediation","model":"scripted:demo","launchedAt":"2026-11-10T09:20:00.000Z","attemptId":"ready-remediation@nohead#1794302400","cwd":"/worktree"}
+{"schemaVersion":1,"type":"launch","sessionRef":"wavemill-coding-HOK-0000","harness":"native","kind":"ready-remediation","model":"scripted:demo","launchedAt":"2026-11-10T09:40:00.000Z","attemptId":"ready-remediation@nohead#1794303600","cwd":"/worktree"}

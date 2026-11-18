@@ -132,7 +132,7 @@ import { reportPromptCacheHitRate } from './prompt-cache-detector.ts';
 import { getNativeContextManagementConfig, getNativePayloadCaptureConfig } from '../config.ts';
 import { equivalentOpenRouterModelIds, type NormalizedPricing } from '../openrouter-catalog.ts';
 import { logPromptUsage } from '../prompt-registry.ts';
-import { nativeLaunchKind, recordLaunch } from '../session-ownership.ts';
+import { buildAttemptId, nativeLaunchKind, newSessionRef, recordLaunch } from '../session-ownership.ts';
 import type { ResourceRef } from '../resource-registry.ts';
 import {
   getBlockedCompletionPath,
@@ -1213,8 +1213,18 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       ? undefined
       : readyProvider?.certifiedIdentity;
     const transcriptPath = makeTranscriptPath(options.repoDir, options.session, options.issue);
+    // HOK-3447: every launch is its own attempt. A deterministic session id
+    // (`<session>-coding-<issue>`) made a repair share its ref with the launch
+    // it repaired, which the old sessionRef dedupe collapsed — the repair was
+    // invisible to disposition, progress and the model resolver. The token
+    // keeps the id recognizable and parseable (`…-<token>-coding-<issue>`)
+    // while making two launches in the same second distinct.
+    const launchToken = newSessionRef();
+    const codingNativeSessionId = `${options.session}-${launchToken}-coding-${options.issue}`;
+    const launchedAt = new Date();
+    const launchKind = nativeLaunchKind();
     const transcriptWriter = new TranscriptWriter({
-      sessionId: `${options.session}-coding-${options.issue}`,
+      sessionId: codingNativeSessionId,
       model: modelName,
       api: model.api,
       provider: model.provider,
@@ -1224,14 +1234,15 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
     });
 
     // Construct session stream configuration and create persistent writer
-    const codingNativeSessionId = `${options.session}-coding-${options.issue}`;
     // HOK-3328: own the transcript's session before the loop starts.
     recordLaunch(featureDir, {
       sessionRef: codingNativeSessionId,
       harness: 'native',
-      kind: nativeLaunchKind(),
+      kind: launchKind,
       stage: 'coding',
       model: requestedModelName,
+      launchedAt,
+      attemptId: buildAttemptId(launchKind, null, launchedAt, launchToken),
       cwd: options.wtDir,
     });
     const eventStreamPath = resolveSessionEventStreamPath(codingNativeSessionId, options.repoDir);

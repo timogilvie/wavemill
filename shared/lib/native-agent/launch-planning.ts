@@ -86,7 +86,7 @@ import {
 } from './planning-guards.ts';
 import { loadPricingTable } from '../pricing/model-pricing.ts';
 import { priceUsageUsd } from '../sdk-task-cost/price-overrides.ts';
-import { nativeLaunchKind, recordLaunch } from '../session-ownership.ts';
+import { buildAttemptId, nativeLaunchKind, newSessionRef, recordLaunch } from '../session-ownership.ts';
 
 const DEFAULT_HELPER_TIMEOUT_MS = 12 * 60 * 1000;
 const HELPER_STDERR_TAIL_CHARS = 2000;
@@ -729,8 +729,15 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       }
       : undefined;
     const transcriptPath = makeTranscriptPath(options.repoDir, options.session, options.issue);
+    // HOK-3447: every launch is its own attempt (see launch-coding.ts). The
+    // token keeps the id recognizable and parseable (`…-<token>-planning-…`)
+    // while making two launches in the same second distinct.
+    const launchToken = newSessionRef();
+    const planningNativeSessionId = `${options.session}-${launchToken}-planning-${options.issue}`;
+    const launchedAt = new Date();
+    const launchKind = nativeLaunchKind();
     const transcriptWriter = new TranscriptWriter({
-      sessionId: `${options.session}-planning-${options.issue}`,
+      sessionId: planningNativeSessionId,
       model: modelName,
       api: model.api,
       provider: model.provider,
@@ -740,14 +747,15 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
     });
 
     // Construct session stream configuration
-    const planningNativeSessionId = `${options.session}-planning-${options.issue}`;
     // HOK-3328: own the transcript's session before the loop starts.
     recordLaunch(featureDir, {
       sessionRef: planningNativeSessionId,
       harness: 'native',
-      kind: nativeLaunchKind(),
+      kind: launchKind,
       stage: 'planning',
       model: modelName,
+      launchedAt,
+      attemptId: buildAttemptId(launchKind, null, launchedAt, launchToken),
       cwd: options.wtDir,
     });
     const eventStreamPath = resolveSessionEventStreamPath(planningNativeSessionId, options.repoDir);

@@ -1434,8 +1434,12 @@ describe('native planning terminal synthesis (HOK-3465)', () => {
         assert.equal(stage.executionEvidence.status, 'direct');
         assert.equal(stage.executionEvidence.source, 'provider-response');
         const ownership = readFileSync(join(featureDir, '.session-ownership.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
-        assert.equal(ownership.filter(row => row.harness === 'native' && row.stage === 'planning').length, 1);
-        const events = readFileSync(join(resolveSessionEventsDir(wtDir), `synthesis-${boundary}-planning-HOK-3465.jsonl`), 'utf8');
+        const planningRows = ownership.filter(row => row.harness === 'native' && row.stage === 'planning');
+        assert.equal(planningRows.length, 1);
+        // HOK-3447: the stream is named by the launch's own runtime ref, which
+        // is unique per launch (never the deterministic session-phase-issue id).
+        assert.match(planningRows[0].sessionRef, new RegExp(`^synthesis-${boundary}-[0-9a-f-]{36}-planning-HOK-3465$`));
+        const events = readFileSync(join(resolveSessionEventsDir(wtDir), `${planningRows[0].sessionRef}.jsonl`), 'utf8');
         assert.match(events, /provider_tools/);
         assert.match(events, /"toolCount":0/);
       } finally { cleanup(wtDir); }

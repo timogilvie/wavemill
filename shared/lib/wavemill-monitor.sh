@@ -23039,16 +23039,26 @@ monitor_issue_state() {
       active_count=$((active_count + 1))
       return 0
     fi
-    if [[ "$remediation_disposition" == "settled" ]]; then
-      log "info" "$ISSUE → Ready remediation settled at ${current_head:0:7} ($remediation_disposition_reason); re-running Ready"
+    # HOK-3447: one publication path for a finished remediation. A settled
+    # agent at the launch head and one that advanced the worktree head are the
+    # same handoff to the controller: publish whatever the agent committed
+    # through the one seam and then run Ready's own check. The settled-only
+    # branch left an advanced repair's commit unpublished whenever Ready's own
+    # sync path could not carry it.
+    if [[ "$remediation_disposition" == "settled" || "$remediation_disposition" == "advanced" ]]; then
+      if [[ "$remediation_disposition" == "settled" ]]; then
+        log "info" "$ISSUE → Ready remediation settled at ${current_head:0:7} ($remediation_disposition_reason); re-running Ready"
+      else
+        log "info" "$ISSUE → Ready remediation advanced the worktree head to ${current_head:0:7} ($remediation_disposition_reason); re-running Ready after publication"
+      fi
       # HOK-3370: publish the remediation agent's commits through the one
       # seam before the controller re-runs Ready (HOK-3361 touch #1: the
       # remediation commit was never pushed, so Ready re-checked the same
       # red head until exhausted). A failure defers to Ready's own
       # sync-path publication and the HOK-3371 disposition.
-      local settled_publish_kind="remediation"
-      [[ -f "$ready_state_dir_path/.conflict-remediation.json" ]] && settled_publish_kind="conflict"
-      publish_stage_head "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$ready_state_dir_path" "$ISSUE" "ready" "$settled_publish_kind" \
+      local remediation_publish_kind="remediation"
+      [[ -f "$ready_state_dir_path/.conflict-remediation.json" ]] && remediation_publish_kind="conflict"
+      publish_stage_head "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$ready_state_dir_path" "$ISSUE" "ready" "$remediation_publish_kind" \
         || log_warn "$ISSUE → remediation head publication deferred to Ready: ${PUBLISH_STAGE_HEAD_DETAIL:-no detail}"
     fi
 
