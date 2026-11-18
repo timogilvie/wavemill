@@ -22,7 +22,7 @@ Provisional model-identity holds are enforced at read time through `shared/lib/m
 | `shared/lib/eval-schema.ts` | Canonical TypeScript schema and changelog | Schema `1.42.0` adds `pr_diff_unavailable` fast-fail records and `eval_fast_failed` eligibility diagnostics for HOK-2853. |
 | `shared/lib/eval-schema.json` | JSON Schema mirror for validator-style tests | Must stay in sync with `eval-schema.ts`, including additive optional fields. |
 | `shared/lib/eval.ts` | Builds judge-backed eval records | Owns the top-level `SCHEMA_VERSION`. |
-| `shared/lib/eval-record-builder.ts` | Pure metadata attachment helpers | `attachAttemptedModel()` follows the same null-safe no-op pattern as the other field helpers. |
+| `shared/lib/eval-record-builder.ts` | Pure metadata attachment helpers | `attachAttemptedModel()` and `attachAttemptLineage()` follow the same null-safe no-op pattern as the other field helpers. |
 | `shared/lib/eval-backfill.ts` | Historical rubric provenance backfill | Must parse strictly and rewrite atomically. |
 | `shared/lib/eval-persistence.ts` | Appends and reads `evals.jsonl` | Persistence failures should never corrupt prior records. |
 | `shared/lib/llm-cli.ts` | Emits fallback eval records on quota-triggered model swaps | Uses best-effort logging only after fallback events. |
