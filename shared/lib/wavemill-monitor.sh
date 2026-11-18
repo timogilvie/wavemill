@@ -8446,7 +8446,7 @@ stage_failure_owned_by_bucket() {
 # The default retry for a failed stage (HOK-3176). Anything the failure policy
 # does not allowlist as terminal — including an unrecognised failure — is
 # relaunched under the stage-failure-<stage> bounded-retry bucket, keyed on
-# (worktree head, merge-base) per HOK-3103:
+# stage input per HOK-3491 (review/Ready retain head + merge-base):
 #   attempts 1..N-1  retry after exponential backoff;
 #   attempt N        one fresh relaunch: the failed run's envelope/handoff are
 #                    archived so the new run is classified on its own evidence;
@@ -8493,7 +8493,7 @@ archive_review_scope_baseline() {
 _dispatch_failed_stage_recovery() {
   local issue="$1" feature_dir="$2" stage="$3" win="$4" action="${6:-retry-stage}"
   local bucket="stage-failure-$stage" decision failure_class failure_kind detail next_action
-  local head base limit disposition attempts retry_phase fresh="" artifact
+  local head base retry_identity retry_key limit disposition attempts retry_phase fresh="" artifact
 
   case "$stage" in
     planning) retry_phase="routing" ;;
@@ -8524,10 +8524,12 @@ _dispatch_failed_stage_recovery() {
   next_action="$(jq -r '.nextAction' <<<"$decision")"
 
   head="$(phase_launch_head "$feature_dir")"
-  base="$(phase_launch_base "$feature_dir")"
+  retry_identity="$(stage_failure_retry_key "$issue" "$feature_dir" "$stage")"
+  retry_key="$(jq -r .head <<<"$retry_identity")"
+  base="$(jq -r .base <<<"$retry_identity")"
   limit="${WAVEMILL_STAGE_FAILURE_MAX_ATTEMPTS:-3}"
   [[ "$limit" =~ ^[0-9]+$ ]] || limit=3
-  attempts="$(bounded_retry_increment "$feature_dir" "$bucket" "$head" "$base")"
+  attempts="$(bounded_retry_increment "$feature_dir" "$bucket" "$retry_key" "$base")"
   if (( attempts >= limit )); then
     fresh=" (fresh relaunch)"
     for artifact in ".${stage}-failure-envelope.json" ".coding-failure-handoff.json" ".${stage}-failure-decision.json"; do
@@ -8627,7 +8629,7 @@ _dispatch_failed_stage_recovery() {
 _monitor_claim_failed_stage_action() {
   local issue="$1" feature_dir="$2" stage="$3" context="${4:-}"
   [[ -n "$context" ]] || context='{}'
-  local decision_json head base retry_verdict run_id evidence_id snapshot_file result original_result failure_class contract_available="null"
+  local decision_json head base retry_identity retry_key retry_verdict run_id evidence_id snapshot_file result original_result failure_class contract_available="null"
   local limit="${WAVEMILL_STAGE_FAILURE_MAX_ATTEMPTS:-3}"
   [[ "$limit" =~ ^[0-9]+$ ]] || limit=3
 
@@ -8636,7 +8638,11 @@ _monitor_claim_failed_stage_action() {
   failure_class="$(jq -r '.class // "retryable"' <<<"$decision_json" 2>/dev/null || echo retryable)"
   head="$(phase_launch_head "$feature_dir")"
   base="$(phase_launch_base "$feature_dir")"
-  retry_verdict="$(bounded_retry_gate "$feature_dir" "stage-failure-$stage" "$head" "$limit" "" "" "$base")"
+  retry_identity="$(stage_failure_retry_key "$issue" "$feature_dir" "$stage")"
+  retry_key="$(jq -r .head <<<"$retry_identity")"
+  local retry_base
+  retry_base="$(jq -r .base <<<"$retry_identity")"
+  retry_verdict="$(bounded_retry_gate "$feature_dir" "stage-failure-$stage" "$retry_key" "$limit" "" "" "$retry_base")"
   run_id="${recovery_control_run_id:-$(task_run_id "$issue" 2>/dev/null || true)}"
   evidence_id="$(jq -r '.fingerprint // empty' <<<"$decision_json" 2>/dev/null || true)"
   [[ -n "$evidence_id" ]] || evidence_id="${stage}:${head:-unknown}:${run_id:-legacy}"
@@ -8932,6 +8938,28 @@ check_stage_aborted() {
   [[ -f "$feature_dir/.workflow-aborted" ]] && return 0
 
   return 1
+}
+
+# One input identity for stage-failure admission AND accounting (HOK-3491).
+# Planning/coding produce HEAD; their own commits cannot buy more retries.
+# Reuse the recorded launch contract and run identity, never mint another field.
+# A legacy row without either holds one stable unknown-input allowance; it must
+# not fall back to its changing output. The non-SHA prefix also prevents an
+# exhausted companion from expiring against the worktree's unrelated HEAD.
+# Review/Ready keep separate head/base arguments so bounded-retry preserves its
+# existing "missing git information never resets" behavior.
+stage_failure_retry_key() {
+  local issue="$1" feature_dir="$2" stage="$3" key
+  case "$stage" in
+    planning|coding)
+      key="$(jq -r --arg issue "$issue" '
+        .tasks[$issue] | "input:\(.runId // "legacy"):\(.lifecycle.launchContract.baseSha // "unknown")"
+      ' "$STATE_FILE" 2>/dev/null || true)"
+      jq -cn --arg key "$key" '{head:$key,base:""}'
+      ;;
+    *) jq -cn --arg head "$(phase_launch_head "$feature_dir")" \
+         --arg base "$(phase_launch_base "$feature_dir")" '{head:$head,base:$base}' ;;
+  esac
 }
 
 # Resolve the worktree HEAD for a feature dir (…/<wt>/features/<slug>).

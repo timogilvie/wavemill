@@ -1,0 +1,14 @@
+{
+  "issue": "HOK-3491",
+  "source": "https://linear.app/hokusai/issue/HOK-3491",
+  "occurredOn": "2026-11-15",
+  "affectedTask": "HOK-3382_c",
+  "evidenceKind": "sanitized sequence transcribed from owning issue; not a raw transcript",
+  "launchInput": "25cc3cb9",
+  "outputCommits": ["1e70f61d", "dd790dfe"],
+  "events": ["failure", "output", "failure", "failure", "failure", "output", "failure", "failure", "failure", "failure"],
+  "expectedRelaunches": 3,
+  "historicalRelaunchesReported": 8,
+  "relaunchesVisibleInTranscribedSequence": 7,
+  "unknowns": ["incident-time harness manifest", "provider-confirmed executed model", "exact metered cost"]
+}
