@@ -45,20 +45,11 @@ export interface ReviewGateEvidence {
   verdict?: string;
   findings: ReviewGateFinding[];
   artifact: { kind: 'review-result' | 'pre-pr-gate'; identity: string };
-  /** Plan-declared out-of-scope paths that may be explicitly refreshed into the baseline. */
-  planScopeAllowlist?: Array<{ path: string; reason: string; source: string }>;
 }
 
 export interface AgentRemediationPayload {
   /** The finding that triggered this delivery. */
   finding: ReviewGateFinding;
-  /** Suggested corrective action(s) for the agent. */
-  suggestions: Array<{
-    action: 'revert' | 'refresh-baseline';
-    path: string;
-    command?: string;
-    reason: string;
-  }>;
 }
 
 export interface ReviewGateRemediationDecision {
@@ -211,33 +202,8 @@ export function dispositionFromReviewArtifactSignals(
 
 function buildRemediationPayload(
   finding: ReviewGateFinding,
-  planAllowlist: Array<{ path: string; reason: string; source: string }>,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _planAllowlist: Array<{ path: string; reason: string; source: string }>,
 ): AgentRemediationPayload {
-  const suggestions: AgentRemediationPayload['suggestions'] = [];
-
-  if (finding.category === 'scope-violation' && finding.offendingPath) {
-    const isInPlanScope = planAllowlist.some(
-      (entry) => entry.path === finding.offendingPath,
-    );
-
-    if (isInPlanScope) {
-      suggestions.push({
-        action: 'refresh-baseline',
-        path: finding.offendingPath,
-        command: `npx tsx tools/write-review-scope-baseline.ts --refresh --repo-dir . --reason "..."`,
-        reason: `This path is declared in the plan's Scope allow-list; refresh the baseline with the reason.`,
-      });
-    } else {
-      suggestions.push({
-        action: 'revert',
-        path: finding.offendingPath,
-        reason: 'This path is not in the plan scope; revert the change.',
-      });
-    }
-  }
-
-  return {
-    finding,
-    suggestions,
-  };
+  return { finding };
 }

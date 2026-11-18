@@ -8202,6 +8202,43 @@ stage_failure_decision() {
   fingerprint="$(printf '%s|%s|%s|%s' "$detail" "$is_challenge" \
     "$(cat "$feature_dir/.${stage}-failure-envelope.json" 2>/dev/null || true)" \
     "$(cat "$feature_dir/.coding-failure-handoff.json" 2>/dev/null || true)" | cksum | awk '{print $1}')"
+
+  # Review-specific early branch for scope stop classification
+  if [[ "$stage" == "review" ]]; then
+    local scope_stop_file="$feature_dir/.review-scope-stop.json"
+    if [[ -f "$scope_stop_file" ]]; then
+      # Read the marker and check if it's valid
+      local marker_json head_sha findings offending_paths code_failure_excerpt
+      if marker_json="$(marker_read "$scope_stop_file" 2>/dev/null)" && [[ -n "$marker_json" ]]; then
+        if ! marker_is_stale "$scope_stop_file" "$(git rev-parse HEAD 2>/dev/null || echo "")"; then
+          # Valid scope stop marker found, synthesize code-failure decision
+          head_sha="$(jq -r '.headSha // empty' <<<"$marker_json" 2>/dev/null || echo "")"
+          findings="$(jq -c '.detail.findings // []' <<<"$marker_json" 2>/dev/null || echo "[]")"
+          offending_paths="$(jq -c '.detail.offendingPaths // []' <<<"$marker_json" 2>/dev/null || echo "[]")"
+          
+          # Build code failure excerpt from findings
+          code_failure_excerpt=""
+          local path msg
+          while IFS= read -r finding; do
+            path="$(jq -r '.offendingPath // empty' <<<"$finding" 2>/dev/null || echo "")"
+            msg="$(jq -r '.message // empty' <<<"$finding" 2>/dev/null || echo "")"
+            if [[ -n "$path" && -n "$msg" ]]; then
+              code_failure_excerpt="${code_failure_excerpt}${code_failure_excerpt:+; }$path: $msg"
+            elif [[ -n "$path" ]]; then
+              code_failure_excerpt="${code_failure_excerpt}${code_failure_excerpt:+; }$path"
+            fi
+          done < <(jq -c '.[]' <<<"$findings" 2>/dev/null || true)
+          
+          # Return early with code-failure decision
+          printf '{"class":"code-failure","failureKind":"review-scope-stop","codeFailureExcerpt":"%s","rationale":"review scope guard refused staged/committed paths","nextAction":"coding stage must either narrow the diff to the declared scope or widen the plan'\''s Scope In","attribution":"unattributed","detail":"%s","handoffReason":"","envelopeCause":"","envelopeModel":"","fingerprint":"%s"}\n' \
+            "${code_failure_excerpt:-"review scope violation"}" \
+            "$(jq -r '.detail // "review scope violation"' <<<"$marker_json" 2>/dev/null || echo "review scope violation")" \
+            "$(printf '%s|%s|%s' "$head_sha" "$findings" "$offending_paths" | cksum | awk '{print $1}')"
+          return 0
+        fi
+      fi
+    fi
+  fi
   if cached="$(jq -ce --arg f "$fingerprint" 'select(.fingerprint == $f)' "$cache" 2>/dev/null)"; then
     printf '%s\n' "$cached"
     return 0
@@ -8461,9 +8498,35 @@ _dispatch_failed_stage_recovery() {
   [[ "$action" == "remediate" || "$stage" == "coding" || "$stage" == "ready" ]] || clear_stage_result "$feature_dir" "$stage"
 
   if [[ "$action" == "remediate" && "$stage" != "ready" ]]; then
+    # Check for review scope stop marker and customize remediation message
+    local remediation_message="$detail"
+    if [[ "$stage" == "review" ]]; then
+      local scope_stop_file="$feature_dir/.review-scope-stop.json"
+      if [[ -f "$scope_stop_file" ]]; then
+        local marker_json
+        if marker_json="$(marker_read "$scope_stop_file" 2>/dev/null)" && [[ -n "$marker_json" ]]; then
+          if ! marker_is_stale "$scope_stop_file" "$(git rev-parse HEAD 2>/dev/null || echo "")"; then
+            # Valid scope stop marker found, use custom message
+            local offending_paths reason
+            offending_paths="$(jq -r '.detail.offendingPaths | join(", ") // "unknown paths"' <<<"$marker_json" 2>/dev/null || echo "unknown paths")"
+            reason="$(jq -r '.reason // "review scope violation"' <<<"$marker_json" 2>/dev/null || echo "review scope violation")"
+            remediation_message="The reviewer refused the current head on scope: $offending_paths. Either narrow coding's diff to the declared scope, or extend the plan's Scope In / Files to Modify. Reason: $reason"
+          fi
+        fi
+      fi
+    fi
+    
+    # Archive review scope baseline when returning to coding from a scope stop
+    if [[ "$stage" == "review" && "$action" == "remediate" ]]; then
+      local scope_stop_file="$feature_dir/.review-scope-stop.json"
+      if [[ -f "$scope_stop_file" ]]; then
+        archive_review_scope_baseline "$feature_dir" "scope stop remediation"
+      fi
+    fi
+    
     if _stage_failure_coding_relaunch "$issue" "$feature_dir" "$win" "$failure_kind" "$failure_class" "$attempts" "$limit" " (code remediation)"; then
       agent_remediation_deliver "$feature_dir" "$issue" "$feature_dir/.${stage}-result.json" \
-        "Repair the recorded ${stage} code failure: $detail" "${stage}:${head}:${attempts}" --expires-on head,operator-event || true
+        "Repair the recorded ${stage} code failure: $remediation_message" "${stage}:${head}:${attempts}" --expires-on head,operator-event || true
       return 0
     fi
     return 2
@@ -24875,3 +24938,31 @@ while :; do
     poll_sleep "$POLL_SECONDS"
   fi
 done
+
+# Archive the current review scope baseline and clear it for regeneration.
+# Called when returning to coding from a scope stop.
+archive_review_scope_baseline() {
+  local feature_dir="$1" reason="$2"
+  local baseline_path="$feature_dir/.review-scope-baseline.json"
+  local history_path="$feature_dir/.review-scope-baseline.history.jsonl"
+  local timestamp
+  timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  
+  if [[ -f "$baseline_path" ]]; then
+    # Read the existing baseline
+    local baseline_content
+    baseline_content="$(cat "$baseline_path" 2>/dev/null || true)"
+    if [[ -n "$baseline_content" ]]; then
+      # Archive it to history
+      printf '{"replacedAt":"%s","reason":"%s","baseline":%s}\n' \
+        "$timestamp" "$reason" "$baseline_content" >> "$history_path" 2>/dev/null || true
+      # Remove the current baseline
+      rm -f "$baseline_path" 2>/dev/null || true
+      log_info "Archived review-scope baseline to history and removed $baseline_path"
+      return 0
+    fi
+  fi
+  
+  log_info "No review-scope baseline to archive at $baseline_path"
+  return 0
+}

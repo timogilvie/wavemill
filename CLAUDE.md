@@ -26,6 +26,8 @@ Shared tooling for Claude and Codex workflows:
 
 **Guards cap new invariants (HOK-3236).** A "never do X" rule lives in its own file under `docs/invariants/<name>.md`, with one index line here naming the rule, its guard, and the file path. A PR that adds a new invariant adds the file, its index line, and its guard (`tools/check-<name>.ts`, built on `tools/lib/source-guard.ts` with `invariantDocs` set to the new file, wired into `test:preflight`) in the same PR; a rule that cannot be enforced mechanically does not get an invariant file. `source-guard.ts` provides the shared semantics: tracked files only, invariant source auto-excluded, whole-line comments skipped, `// allow-<name>: <reason>` on the line or the line above, and a ratcheting allowlist (`<path> [<count>]  # reason`) that only shrinks.
 
+- **Scope stop record (HOK-3457)** — Every review scope-guard refusal must record a typed `.review-scope-stop.json` finding through `writeMarker` before exiting. Guard: `tools/check-scope-stop-record.ts`. → [docs/invariants/scope-stop-record.md](docs/invariants/scope-stop-record.md)
+
 All business logic lives in `shared/lib/` for reusability across CLI tools, commands, and workflows:
 
 #### Issue Expansion
