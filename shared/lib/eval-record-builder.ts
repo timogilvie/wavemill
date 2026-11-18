@@ -70,7 +70,11 @@ import type {
   ChallengeExecutionIntent,
   ReviewExecutedIdentitySet,
 } from './challenge-execution-contract.ts';
-import { projectChallengeIntentForPersistence, sealChallengeDecision } from './challenge-execution-contract.ts';
+import {
+  isSealedChallengePairDecision,
+  projectChallengeIntentForPersistence,
+  sealChallengeDecision,
+} from './challenge-execution-contract.ts';
 import { applyChallengeOverride } from './route-override-record.ts';
 import {
   reportableWorkflowCostUsd,
@@ -564,7 +568,7 @@ export function attachRouteProvenance(
     return;
   }
   const provenance = toEvalRouteProvenance(routeProvenance ?? {});
-  if (seal && record.challengeSide && seal.kind === 'pair') {
+  if (record.challengeSide && isSealedChallengePairDecision(seal)) {
     const withChallenge = applyChallengeOverride(
       provenance.stageRoutes,
       seal,
