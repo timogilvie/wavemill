@@ -17,7 +17,6 @@ import {
   pendingSessionRef,
   recordLaunch,
 } from '../session-ownership.ts';
-import { mintRunId, mintStageAttemptId } from '../attempt-identity.ts';
 import {
   DEFAULT_RESERVED_OUTPUT_TOKENS,
   policyKindFor,

@@ -116,7 +116,7 @@ session_ownership_append() {
      + (if $runId == "" then {} else {runId: $runId} end)
      + (if $stageAttemptId == "" then {} else {stageAttemptId: $stageAttemptId} end)
      + (if $retryOf == "" then {} else {retryOf: $retryOf} end)
-     + (if $parentRunId == "" then {} else {parentRunId: $parentRunId} end)")" || return 1
+     + (if $parentRunId == "" then {} else {parentRunId: $parentRunId} end)')" || return 1
 
   mkdir -p "$state_dir" 2>/dev/null || return 1
   # A single short append: concurrent launchers never interleave lines.

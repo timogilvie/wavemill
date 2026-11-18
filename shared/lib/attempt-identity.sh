@@ -33,7 +33,7 @@
 #       row does not decide Linear by itself.
 #
 #   mint_stage_attempt_id
-#       Prints a UUIDv7 for a new stage attempt (HOK-3476). Falls back to
+#       Prints a random UUID (v4) for a new stage attempt (HOK-3476). Falls back to
 #       openssl rand if uuidgen is unavailable. Used by session_ownership_append
 #       and agent adapters.
 #
@@ -44,7 +44,7 @@ if [[ -n "${WAVEMILL_ATTEMPT_IDENTITY_SH_LOADED:-}" ]]; then
 fi
 WAVEMILL_ATTEMPT_IDENTITY_SH_LOADED=1
 
-# HOK-3476: Mint a stage attempt id (UUIDv7) for one launch.
+# HOK-3476: Mint a stage attempt id (random UUID v4) for one launch.
 mint_stage_attempt_id() {
   # Try uuidgen first (macOS, some Linux distros)
   if command -v uuidgen >/dev/null 2>&1; then

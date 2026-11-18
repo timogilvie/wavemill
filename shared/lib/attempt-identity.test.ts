@@ -15,7 +15,7 @@ describe('attempt-identity (HOK-3476)', () => {
     assert.equal(id1, 'HOK-123:test-epoch:1793107539');
   });
 
-  it('mintStageAttemptId creates UUIDv7 identifiers', () => {
+  it('mintStageAttemptId creates unique UUID identifiers', () => {
     const id1 = mintStageAttemptId();
     const id2 = mintStageAttemptId();
     assert.notEqual(id1, id2);

@@ -31,7 +31,7 @@ export type { ReadyRemediationDecision } from './native-agent/workflow-tools/rea
 import type { ReviewExecutedIdentitySet } from './challenge-execution-contract.ts';
 import type { MergeQueueState } from './merge-queue.ts';
 export type { ReviewExecutedIdentitySet, ExecutedIdentity, ExecutedIdentityRole } from './challenge-execution-contract.ts';
-import { readLatestStageLaunch } from './session-ownership.ts';
+import { readLatestStageLaunch, resolveLineageForStageResult } from './session-ownership.ts';
 import { isSameRunId, runIdStartedAt } from './attempt-identity.ts';
 import { challengeModelIdsEquivalent } from './challenge-comparison.ts';
 import { acquireStateLockSync, releaseStateLock } from './state-lock.ts';

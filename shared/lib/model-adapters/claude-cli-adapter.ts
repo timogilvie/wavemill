@@ -14,7 +14,6 @@ import { getEffectiveRegistry, getModel } from '../model-registry.ts';
 import { DEEPSEEK_BASE_URL } from '../deepseek-provider.ts';
 import { escapeShellArg } from '../shell-utils.ts';
 import { helperKind, newSessionRef, recordLaunch } from '../session-ownership.ts';
-import { mintRunId, mintStageAttemptId } from '../attempt-identity.ts';
 import {
   claudeCliErrorFromStdout,
   parseClaudeCliOutput,

@@ -17,16 +17,16 @@ Every launch mints explicit, joinable run and stage-attempt identity before exec
 ### Identity Fields
 
 - `runId`: Task run identity in format `<issue>:<runEpoch>:<launchedAtEpochSeconds>` (preserved for backward compatibility)
-- `stageAttemptId`: UUIDv7 identifier for each stage attempt (new primary join key)
+- `stageAttemptId`: random UUID (v4) identifier for each stage attempt (new primary join key)
 - `parentRunId`: Parent run identity for retries
 - `retryOf`: Previous attempt this replaces
 
 ### Data Flow
 
 1. **Launch**: `mintRunId()` + `mintStageAttemptId()` create identifiers, passed to `recordLaunch()`
-2. **Ownership**: `session-ownership.ts` stores lineage in `.session-ownership.jsonl` 
+2. **Ownership**: `session-ownership.ts` stores lineage in `.session-ownership.jsonl`
 3. **Stage Results**: `stage-result.ts` resolves missing lineage by reading latest launch row via `resolveLineageForStageResult()`
-4. **Evaluation**: `eval-record-builder.ts` propagates lineage through `attachAttemptLineage()`
+4. **Evaluation**: `eval-record-builder.ts` carries an `attachAttemptLineage()` helper for the same null-safe attachment pattern as the other eval fields; no caller wires it into the eval pipeline yet (follow-up).
 
 ## Enforcement
 

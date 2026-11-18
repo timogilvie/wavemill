@@ -19,7 +19,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { TaskAttemptRef } from './sdk-task-cost/contract.js';
+import type { TaskAttemptRef } from './sdk-task-cost/contract.ts';
 
 /** Inputs of {@link mintRunId}. */
 export interface MintRunIdArgs {
@@ -39,7 +39,7 @@ export function mintRunId(args: MintRunIdArgs): string {
   return `${args.issue}:${args.runEpoch ?? ''}:${seconds}`;
 }
 
-/** Mint a stage attempt id (UUIDv7) for one launch. */
+/** Mint a stage attempt id (random UUID v4) for one launch. */
 export function mintStageAttemptId(): string {
   return randomUUID();
 }
