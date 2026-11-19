@@ -1,0 +1,11 @@
+{
+  "ok": false,
+  "reason": "model_disabled",
+  "detail": "The model is disabled and cannot launch the saved coding route.",
+  "contract": {
+    "model": "gpt-5.3-codex",
+    "provider": "openai",
+    "agent": "codex",
+    "stageRole": "coding"
+  }
+}

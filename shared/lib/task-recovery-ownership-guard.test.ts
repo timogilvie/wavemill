@@ -11,6 +11,11 @@ const patternsOf = (file: string, source: string) =>
   checkGuardSource(TASK_RECOVERY_OWNERSHIP_GUARD, file, source).map((finding) => finding.pattern);
 
 describe('task-recovery-ownership guard — HOK-3406 Observer migration', () => {
+  it('flags the wakeless saved-route wait and private stopped-state writer', () => {
+    assert.deepEqual(patternsOf('shared/lib/task-recovery-controller.ts', "wake: 'execution-contract-available'\n"), ['unproduced-contract-wait']);
+    assert.deepEqual(patternsOf('shared/lib/wavemill-monitor.sh', 'stopReason = "recovery_contract_unavailable"\n'), ['private-contract-refusal-stop']);
+  });
+
   it('flags a re-import of the deleted observer auto-fix engine', () => {
     assert.deepEqual(
       patternsOf('tools/observer.ts', "import { runObserverAutoFixes } from '../shared/lib/observer-auto-fix.ts';\n"),

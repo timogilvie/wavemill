@@ -34,7 +34,7 @@ function snapshot(overrides: Partial<RecoverySnapshot> = {}): RecoverySnapshot {
     attempt: { currentRunId: null, controlRunId: null },
     disposition: null,
     stageResult: { kind: 'missing' },
-    contractAvailable: null,
+    recoveryContract: null,
     outstandingEffect: null,
     wait: null,
     failure: null,
@@ -247,6 +247,8 @@ test('a retryable failure in backoff waits', () => {
 test('an exhausted retry budget escalates once, with an exhausted basis', () => {
   const d = decideTaskRecovery(snapshot({ stageResult: { kind: 'failed' }, failure: retryableFailure('exhausted') }));
   assert.equal(d.action, 'escalate');
+  assert.equal(d.controlBearing, true);
+  assert.equal(d.stage, 'coding');
   assert.equal(d.escalationBasis?.kind, 'exhausted');
 });
 
@@ -280,15 +282,22 @@ test('a recognised code failure is sent to remediation', () => {
   assert.equal(d.action, 'remediate');
 });
 
-test('a coding retry holds when no execution contract is available to replay', () => {
+test('a refused saved coding route escalates once with validator evidence', () => {
   const d = decideTaskRecovery(snapshot({
     stage: 'coding',
     stageResult: { kind: 'failed' },
-    contractAvailable: false,
+    recoveryContract: { ok: false, reason: 'model_disabled', detail: 'route cannot launch', contract: { model: 'routed-model' } },
     failure: retryableFailure('proceed'),
   }));
-  assert.equal(d.action, 'wait');
-  assert.equal(d.wait?.wake, 'execution-contract-available');
+  assert.equal(d.action, 'escalate');
+  assert.equal(d.escalationBasis?.kind, 'policy-terminal');
+  assert.equal(d.failureKind, 'recovery_contract_unavailable');
+  assert.match(d.rationale, /model_disabled: route cannot launch/);
+  assert.match(d.rationale, /model=routed-model/);
+  assert.equal(decideTaskRecovery(snapshot({
+    stage: 'coding', stageResult: { kind: 'failed' }, baseDrift: true,
+    recoveryContract: { ok: false, reason: 'model_disabled' }, failure: retryableFailure('proceed'),
+  })).action, 'escalate');
 });
 
 test('missing/contradictory evidence is never read as success', () => {
@@ -487,7 +496,7 @@ test('code remediation respects backoff, exhaustion, and the persisted coding co
   for (const [retry, action] of [['backoff', 'wait'], ['exhausted', 'escalate'], ['exhausted-quiet', 'escalate']] as const) {
     assert.equal(decideTaskRecovery(snapshot({stageResult:{kind:'failed'}, failure:{decision,retry}})).action, action);
   }
-  assert.equal(decideTaskRecovery(snapshot({contractAvailable:false, stageResult:{kind:'failed'}, failure:{decision,retry:'proceed'}})).action, 'wait');
+  assert.equal(decideTaskRecovery(snapshot({recoveryContract:{ok:false,reason:'disabled'}, stageResult:{kind:'failed'}, failure:{decision,retry:'proceed'}})).action, 'escalate');
 });
 
 test('Ready transition code faults and base drift select claimed operator or update actions', () => {

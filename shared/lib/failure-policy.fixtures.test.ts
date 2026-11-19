@@ -25,6 +25,12 @@ interface Fixture {
 }
 
 const HISTORICAL_FIXTURES: Fixture[] = [
+  {
+    name: 'HOK-3512: refused saved recovery route is terminal until an operator reroutes it',
+    evidence: { stage: 'coding', failureKind: 'recovery_contract_unavailable', detail: 'model_disabled: the saved model cannot launch' },
+    expectedClass: 'terminal',
+    expectedKind: 'recovery_contract_unavailable',
+  },
   // ── Native stage hook details (monitor `Native <stage> failed (...)`) ──
   {
     name: 'provider context overflow (400 maximum context length)',

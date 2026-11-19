@@ -35,7 +35,7 @@ test('terminal-count-shrinks: fewer distinct terminal codes than before HOK-3176
     `allowlist grew to ${TERMINAL_ALLOWLIST.length} (was ${TERMINAL_CODES_BEFORE_HOK_3176})`,
   );
   const allStage = TERMINAL_ALLOWLIST.filter((cause) => !cause.challengeOnly);
-  assert.equal(allStage.length, 9, 'all-stage terminals changed — update this pin deliberately');
+  assert.equal(allStage.length, 10, 'all-stage terminals changed — update this pin deliberately');
 });
 
 // protects: the one escalation step accepting an operator-decision code that is
@@ -99,6 +99,7 @@ for (const code of [
   'operator-gate',
   'coding-dirty-handoff',
   'task-budget-exhausted',
+  'recovery_contract_unavailable',
 ]) {
   test(`terminal:${code}`, () => {
     for (const challengeArm of [false, true]) {

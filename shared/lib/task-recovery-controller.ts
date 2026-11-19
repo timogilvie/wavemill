@@ -66,6 +66,9 @@ export interface RecoveryFailure {
   retry: BoundedRetryDecision;
 }
 
+export type RecoveryContractValidation = { ok: boolean; reason?: string; detail?: string;
+  contract?: { model?: string; agent?: string; provider?: string } | null };
+
 export type RecoveryDisposition = Pick<
   StageAgentDisposition,
   'kind' | 'reason' | 'evidenceConfidence' | 'waitingOn' | 'blockingPrompt'
@@ -97,7 +100,7 @@ export interface RecoverySnapshot {
   attempt: RecoveryAttempt;
     disposition: RecoveryDisposition | null;
   stageResult: RecoveryStageResult;
-    contractAvailable: boolean | null;
+    recoveryContract: RecoveryContractValidation | null;
   outstandingEffect: RecoveryOutstandingEffect | null;
     wait: RecoveryWait | null;
     failure: RecoveryFailure | null;
@@ -164,6 +167,12 @@ export function decideTaskRecovery(snapshot: RecoverySnapshot): RecoveryDecision
   // 3. Explicit human hold survives restart/retry.
   if (snapshot.wait?.owner === 'human') {
     return decision(stage, 'wait', `explicit human hold (${snapshot.wait.wake})`, { wait: snapshot.wait });
+  }
+
+  // A failed stage with a refused saved route is policy-terminal.
+  if (snapshot.stageResult.kind === 'failed' && snapshot.recoveryContract?.ok === false) {
+    const refusal = classifyFailure({ stage, failureKind: 'recovery_contract_unavailable' });
+    return decideFromFailure(snapshot, { decision: refusal, retry: 'proceed' });
   }
 
   // 6. A valid current completion is consumed, not rerun.
@@ -286,6 +295,17 @@ function decideFromFailure(snapshot: RecoverySnapshot, failure: RecoveryFailure)
   const { decision: fd, retry } = failure;
   const base: Partial<RecoveryDecision> = { failureKind: fd.failureKind, nextAction: fd.nextAction };
 
+  if (fd.class === 'terminal') {
+    const contract = fd.failureKind === 'recovery_contract_unavailable' ? snapshot.recoveryContract : null;
+    const validatorEvidence = contract?.ok === false
+      ? [contract.reason, contract.detail, contract.contract?.model ? `model=${contract.contract.model}` : undefined].filter(Boolean).join(': ')
+      : '';
+    return decision(stage, 'escalate', `allowlisted terminal cause ${fd.failureKind}: ${fd.cause?.reason ?? fd.rationale}${validatorEvidence ? ` (${validatorEvidence})` : ''}`, {
+      ...base,
+      escalationBasis: { kind: 'policy-terminal', decisionClass: 'terminal' },
+    });
+  }
+
   if (snapshot.baseDrift) {
     return decision(stage, 'remediate', 'update from the observed base before reevaluating Ready', { ...base, nextAction: 'update-base' });
   }
@@ -294,13 +314,6 @@ function decideFromFailure(snapshot: RecoverySnapshot, failure: RecoveryFailure)
       ...base, escalationBasis: { kind: 'operator-decision', code: 'transition-code-failure' },
     });
   }
-  if (fd.class === 'terminal') {
-    return decision(stage, 'escalate', `allowlisted terminal cause ${fd.failureKind}: ${fd.cause?.reason ?? fd.rationale}`, {
-      ...base,
-      escalationBasis: { kind: 'policy-terminal', decisionClass: 'terminal' },
-    });
-  }
-
   // retryable
   const bucket = fd.retryBucket ?? `stage-failure-${stage}`;
   if (retry === 'backoff') {
@@ -315,15 +328,6 @@ function decideFromFailure(snapshot: RecoverySnapshot, failure: RecoveryFailure)
       ...base,
       retryBucket: bucket,
       escalationBasis: { kind: 'exhausted', bucket },
-    });
-  }
-  // proceed: a coding replay requires a persisted execution contract; an
-  // unavailable contract holds under the same budget (never a model swap).
-  if (stage === 'coding' && snapshot.contractAvailable === false) {
-    return decision(stage, 'wait', 'coding retry requires a persisted execution contract to replay; holding until one is available', {
-      ...base,
-      retryBucket: bucket,
-      wait: { owner: 'tool', wake: 'execution-contract-available' },
     });
   }
   if (fd.class === 'code-failure') {
@@ -714,7 +718,7 @@ export async function runControllerCli(): Promise<void> {
       disposition: dispositionPayload,
       stageResult: result?.status === 'completed' || result?.status === 'awaiting_user'
         ? { kind: 'valid', status: result.status } : { kind: 'running' },
-      contractAvailable: null, outstandingEffect: null,
+      recoveryContract: null, outstandingEffect: null,
       wait: result?.status === 'awaiting_user' ? { owner: 'human', wake: 'operator-release' } : null, failure: null,
       reassessment,
     };

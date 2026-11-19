@@ -1,0 +1,24 @@
+# Inject one failed coding result, then make its saved route genuinely
+# unlaunchable so recovery has to use the controller's refusal outcome.
+if [[ ! -f "$FEATURE_DIR/.journey-refusal-injected" ]]; then
+  touch "$FEATURE_DIR/.journey-refusal-injected"
+  temp="$FEATURE_DIR/.phase-config.json.journey"
+  jq '.coding.model = "gpt-5.3-codex" | .coding.provider = "openai" | .coding.agent = "codex"' \
+    "$FEATURE_DIR/.phase-config.json" > "$temp"
+  mv "$temp" "$FEATURE_DIR/.phase-config.json"
+  echo "HOK-3512 injected coding failure with disabled saved route" >> "$FAKE_AGENT_LOG"
+  run_tool stage-result-cli.ts update "$FEATURE_DIR" coding --status failed \
+    --notes "Injected failed stage to exercise saved-route refusal"
+  exit 143
+fi
+
+if [[ ! -f "$FEATURE_DIR/.journey-bounded-retry-injected" ]] \
+   && [[ "$(jq -r '.coding.model // empty' "$FEATURE_DIR/.phase-config.json")" != "gpt-5.3-codex" ]]; then
+  touch "$FEATURE_DIR/.journey-bounded-retry-injected"
+  echo "HOK-3512 injected retryable coding failure after operator reroute" >> "$FAKE_AGENT_LOG"
+  run_tool stage-result-cli.ts update "$FEATURE_DIR" coding --status failed \
+    --notes "Injected retryable failure after saved-route reroute"
+  exit 143
+fi
+
+default_coding
