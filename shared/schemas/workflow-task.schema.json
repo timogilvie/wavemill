@@ -408,18 +408,6 @@
           "additionalProperties": true,
           "description": "Operator event that cleared status=error {command, seq, at}. Condition reconciler."
         },
-        "stopDetail": {
-          "type": "string",
-          "description": "Stop detail. Monitor."
-        },
-        "stopReason": {
-          "type": "string",
-          "description": "Why the monitor stopped the task. Monitor."
-        },
-        "stopSubReason": {
-          "type": "string",
-          "description": "Stop sub-reason. Monitor."
-        },
         "supersededAt": {
           "type": "string",
           "description": "When the arm was superseded. Startup preflight / challenge-pair-resolver.ts."
