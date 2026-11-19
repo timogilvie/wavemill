@@ -69,8 +69,18 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: npx tsx tools/check-consolidation.ts
 
+      # Every guard runs even when one fails. The record names the guards that
+      # failed; tools/report-guard-fires.ts tallies these artifacts.
       - name: Preflight checks (including test registration enforcement)
-        run: npm run test:preflight
+        run: npm run test:preflight -- --record preflight-guards.json
+
+      - name: Upload preflight guard record
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: preflight-guards
+          path: preflight-guards.json
+          if-no-files-found: ignore
 
   shell:
     name: Shell Tests (shard ${{ matrix.shard }}/3)

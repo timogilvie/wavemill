@@ -24,7 +24,7 @@ Shared tooling for Claude and Codex workflows:
 
 ### Shared Business Logic Modules
 
-**Guards cap new invariants (HOK-3236).** A "never do X" rule lives in a file under `docs/invariants/<name>.md`, with one index line naming the rule, guard and path. A PR adding an invariant adds the file, index line and guard (`tools/check-<name>.ts`, built on `tools/lib/source-guard.ts` with `invariantDocs` set, wired into `test:preflight`); a rule that cannot be enforced mechanically gets no file. `source-guard.ts` provides the semantics: tracked files only, invariant source auto-excluded, whole-line comments skipped, `// allow-<name>: <reason>` on the line or the line above, and a ratcheting allowlist (`<path> [<count>]  # reason`) that only shrinks.
+**Guards cap new invariants (HOK-3236).** A "never do X" rule lives in a file under `docs/invariants/<name>.md`, with one index line naming the rule, guard and path. A PR adding an invariant adds the file, index line and guard (`tools/check-<name>.ts`, built on `tools/lib/source-guard.ts` with `invariantDocs` set, listed in `tools/preflight-guards.txt`); a rule that cannot be enforced mechanically gets no file. `source-guard.ts` provides the semantics: tracked files only, invariant source auto-excluded, whole-line comments skipped, `// allow-<name>: <reason>` on the line or the line above, and a ratcheting allowlist (`<path> [<count>]  # reason`) that only shrinks.
 
 All business logic lives in `shared/lib/`, reusable across CLI tools, commands and workflows:
 
