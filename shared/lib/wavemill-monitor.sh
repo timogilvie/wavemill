@@ -9109,7 +9109,7 @@ coding_launch_refusal_limit() {
 coding_launch_refusal_is_transient() {
   local reason="${1:-}" certification="${2:-}"
   local transient_certifications=" missing-tsx missing-jq mktemp-failed resolver-failed malformed-json "
-  local deterministic_reasons=" uncertified no-native-capability native-unsupported lifecycle-blocked role-ineligible tool-support-insufficient context-window-insufficient codex-chatgpt-ineligible unknown-model "
+  local deterministic_reasons=" uncertified no-native-capability native-unsupported lifecycle-blocked role-ineligible tool-support-insufficient context-window-insufficient codex-chatgpt-ineligible unknown-model provider-disabled native-disabled "
   [[ -n "$certification" && "$transient_certifications" == *" $certification "* ]] && return 0
   [[ -n "$reason" && "$deterministic_reasons" == *" $reason "* ]] && return 1
   return 0

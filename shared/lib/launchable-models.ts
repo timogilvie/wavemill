@@ -104,6 +104,7 @@ function inferBlocker(input: {
   if (input.certificationRejection) return 'certification';
   if (!input.resolution.ok) {
     if (input.resolution.reason === 'role-ineligible') return 'role-ineligible';
+    if (input.resolution.reason === 'provider-disabled' || input.resolution.reason === 'native-disabled') return 'provider';
     if (input.resolution.reason === 'uncertified') return 'certification';
     if (input.resolution.reason === 'unknown-model') return 'missing-registry';
     if (input.resolution.reason === 'lifecycle-blocked' || input.resolution.reason === 'tool-support-insufficient' || input.resolution.reason === 'context-window-insufficient') return input.resolution.reason === 'context-window-insufficient' ? 'context-window' : 'retired';
