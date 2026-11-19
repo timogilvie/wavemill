@@ -31,6 +31,11 @@
  *   stage function that never consults the budget definition — our own budget
  *   abort must never be classified as a provider error.
  *
+ * One tracked-job exhaustion path (HOK-3505): every `bounded_retry_mark_exhausted`
+ * on a tracked async-job bucket must be followed by
+ * `escalate_operator_attention` within the same branch, or the bucket must be
+ * in QUIET_EXHAUSTION_BUCKETS. The guard scans `monitor-async-jobs.sh`.
+ *
  * Native stage time share (HOK-3380): "whose time was this" is derived once,
  * by `nativeStageTimeSplit` in shared/lib/native-agent/stage-time-split.ts.
  * Also caught:
@@ -42,6 +47,44 @@
  *   module.
  */
 import type { GuardSpec, StructuralMatch } from '../../tools/lib/source-guard.ts';
+
+/**
+ * Tracked async-job buckets where exhaustion is expected to degrade quietly
+ * rather than page an operator. Every other bucket that calls
+ * `bounded_retry_mark_exhausted` must follow up with
+ * `escalate_operator_attention` in the same branch (HOK-3505).
+ */
+/**
+ * Tracked async-job bucket values and their shell variable names where
+ * exhaustion is expected to degrade quietly rather than page an operator.
+ */
+export const QUIET_EXHAUSTION_BUCKETS: ReadonlySet<string> = new Set([
+  'in-flight-touch-set-job',
+]);
+
+const QUIET_BUCKET_VARS: ReadonlySet<string> = new Set([
+  'IN_FLIGHT_TOUCH_SET_JOB_BUCKET',
+]);
+
+function findUnescalatedExhaustion(source: string): StructuralMatch[] {
+  const lines = source.split('\n');
+  const matches: StructuralMatch[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!/\bbounded_retry_mark_exhausted\b/.test(lines[i])) continue;
+    if (/^\s*(?:#|\/\/|\*)/.test(lines[i])) continue;
+    const contextBefore = lines.slice(Math.max(0, i - 5), i + 1).join('\n');
+    const isQuietByLiteral = [...QUIET_EXHAUSTION_BUCKETS].some(b =>
+      contextBefore.includes(`"${b}"`) || contextBefore.includes(`'${b}'`));
+    const isQuietByVar = [...QUIET_BUCKET_VARS].some(v =>
+      contextBefore.includes(`$${v}`) || contextBefore.includes(`"$${v}"`));
+    if (isQuietByLiteral || isQuietByVar) continue;
+    const window = lines.slice(i, Math.min(lines.length, i + 10)).join('\n');
+    if (!/\bescalate_operator_attention\b/.test(window)) {
+      matches.push({ line: i + 1, detail: 'bounded_retry_mark_exhausted without escalate_operator_attention' });
+    }
+  }
+  return matches;
+}
 
 /** Native stage sources whose provider classification must follow the budget rule. */
 const NATIVE_STAGE_SOURCES = [
@@ -101,6 +144,11 @@ export const FAILURE_POLICY_GUARD: GuardSpec = {
     description: 'classifyProviderError over a raw transcript without the budget rule — read errors through finalProviderErrorMessage (HOK-3362)',
     paths: NATIVE_STAGE_SOURCES,
     find: findUngatedProviderClassification,
+  }, {
+    name: 'unescalated-tracked-job-exhaustion',
+    description: 'bounded_retry_mark_exhausted on a tracked-job bucket without escalate_operator_attention — add escalation or declare the bucket quiet in QUIET_EXHAUSTION_BUCKETS (HOK-3505)',
+    paths: ['shared/lib/monitor-async-jobs.sh'],
+    find: findUnescalatedExhaustion,
   }, {
     name: 'eval-retry-forfeit',
     description: 'eval retry exhaustion cannot create a model forfeit; use failure-policy',
@@ -172,6 +220,12 @@ export const FAILURE_POLICY_GUARD: GuardSpec = {
       description: 'operator attention is raised only by escalate_operator_attention / escalateOperatorAttention (shared/lib/operator-escalation.{sh,ts}, HOK-3360)',
       lang: 'both',
       re: /\bwrite_ready_attention_file\b|\b_operator_attention_write\b|\bwriteReadyAttention\b|\bwrite_transient_ready_attention_file\b|marker_write\s+"[^"]*\.needs-attention|path:\s*[^,}]*["']\.needs-attention["']/,
+    },
+    {
+      name: 'retired-task-inputs-failure-marker',
+      description: 'the .task-inputs-failure.json private marker and inputs_preparation_failed hook were removed (HOK-3505) — task-input exhaustion escalates through escalate_operator_attention',
+      lang: 'both',
+      re: /\.task-inputs-failure\.json\b|task_inputs_failure_marker\b|inputs_preparation_failed\b/,
     },
     {
       name: 'retired-transient-attention',

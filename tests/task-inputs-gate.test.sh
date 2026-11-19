@@ -86,6 +86,13 @@ write_stage_result() {
   jq -n --arg stage "$2" --arg status "$3" --arg notes "${6:-}" \
     '{stage: $stage, status: $status, notes: $notes}' > "$1/.${2}-result.json"
 }
+ESCALATION_DIR=""
+ESCALATION_MSG=""
+escalate_operator_attention() {
+  ESCALATION_DIR="$1"
+  ESCALATION_MSG="$4"
+  printf '%s\n' "$4" > "$1/.needs-attention"
+}
 JOB_RUNNING=0
 LAUNCHES="$TMP/launches.log"
 : > "$LAUNCHES"
@@ -214,18 +221,33 @@ check_eq "failure: launches capped at the retry limit" "$(launch_count)" "$ASYNC
 LOG_OUT=""
 rc=0; ensure_task_inputs_ready JRN-1 failing "$fd" win claude publish || rc=$?
 check_eq "failure: holds (never offers approval)" "$rc" "1"
-check_eq "failure: needs-user attention" "$ATTENTION" "needs-user"
-check_file "failure: evidence marker written" "$fd/.task-inputs-failure.json"
-check_contains "failure: evidence names the recovery detail" "$(jq -r '.detail' "$fd/.task-inputs-failure.json")" "expand-issue-exited-non-zero"
-check_contains "failure: next action is actionable" "$(jq -r '.nextAction' "$fd/.task-inputs-failure.json")" "wavemill expand JRN-1"
+check_file "failure: escalation marker written" "$fd/.needs-attention"
+check_contains "failure: escalation names the recovery command" "$ESCALATION_MSG" "wavemill expand JRN-1"
 check_file "failure: exhausted sentinel recorded" "$fd/.retry-expansion-recovery-job-exhausted"
-check_eq "failure: warning not repeated on later passes" "$(grep -c 'task-input preparation failed' <<<"$LOG_OUT" || true)" "0"
 check_no_file "failure: no binding recorded" "$fd/.plan-packet-hash"
 # The operator's fix (wavemill expand) lands a packet: the plan is offered.
 printf '## 1. Objective\nExpanded by the operator.\n' > "$fd/task-packet.md"
 rc=0; ensure_task_inputs_ready JRN-1 failing "$fd" win claude publish || rc=$?
 check_eq "failure recovered by operator expand: proceeds" "$rc" "0"
-check_no_file "failure recovered: evidence marker cleared" "$fd/.task-inputs-failure.json"
+
+# ── 4b. HOK-3409 replay: three timed-out expansions produce one inbox item ──
+echo "--- HOK-3409 replay ---"
+fd="$(new_feature hok3409 "raw issue text")"
+write_plan "$fd"
+: > "$LAUNCHES"
+ESCALATION_DIR="" ESCALATION_MSG=""
+for attempt in 1 2 3 4 5 6; do
+  ensure_task_inputs_ready HOK-3409 hok3409 "$fd" win claude publish >/dev/null 2>&1 || true
+  expansion_recovery_mark_result "$fd" "HOK-3409" "failed" "expand-issue-timed-out" "124" >/dev/null
+  mill_clock_advance_tick
+done
+LOG_OUT=""
+rc=0; ensure_task_inputs_ready HOK-3409 hok3409 "$fd" win claude publish || rc=$?
+check_eq "hok-3409: exhaustion holds" "$rc" "1"
+check_file "hok-3409: escalation marker (inbox item)" "$fd/.needs-attention"
+check_contains "hok-3409: escalation names recovery command" "$ESCALATION_MSG" "wavemill expand HOK-3409"
+check_no_file "hok-3409: no private marker (.task-inputs-failure.json)" "$fd/.task-inputs-failure.json"
+check_contains "hok-3409: warning mentions timed-out detail" "$LOG_OUT" "expand-issue-timed-out"
 
 # ── 5. agent-published request (native) and the handoff entry point ─────────
 echo "--- accept and handoff modes ---"

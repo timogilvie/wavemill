@@ -5937,14 +5937,11 @@ _plan_packet_needs_user() {
 #     (prepare_task_inputs_gate), never on the monitor hot path; planning
 #     holds at `running` meanwhile. A packet the controller regenerated after
 #     the planner wrote plan.md re-plans (HOK-3099) instead of being offered.
-#   * Failure is bounded (expansion-recovery-job bucket) and surfaced as a
-#     needs-user `inputs_preparation_failed` hook — never as awaiting_user.
+#   * Failure is bounded (expansion-recovery-job bucket) and escalated
+#     through escalate_operator_attention (HOK-3505) — never as awaiting_user.
 #
 # HOK-3099's handoff guard (enforce_plan_packet_binding) stays armed: a packet
 # that changes after the request still voids the approval and re-plans.
-
-# Evidence of a surfaced preparation failure (detail + next action).
-task_inputs_failure_marker() { printf '%s/.task-inputs-failure.json\n' "$1"; }
 
 # task_inputs_prepare <issue> <slug> <feature_dir>
 # Make the local packet + expansion handshake ready. Sets TASK_INPUTS_VIA
@@ -6007,35 +6004,6 @@ task_inputs_prepare() {
   esac
 }
 
-# Surface a preparation failure once per distinct detail: needs-user attention
-# every pass, one warn line and one `inputs_preparation_failed` hook with the
-# operator's next action. Planning stays `running`: no approval is offered.
-task_inputs_surface_failure() {
-  local issue="$1" feature_dir="$2" win="$3" current_agent="${4:-}" detail="$5"
-  local marker next_action hook_protocol
-  marker="$(task_inputs_failure_marker "$feature_dir")"
-
-  set_window_attention_state "$win" "needs-user"
-  if [[ -f "$marker" ]] && [[ "$(jq -r '.detail // ""' "$marker" 2>/dev/null)" == "$detail" ]]; then
-    return 0
-  fi
-  next_action="Run: wavemill expand $issue (writes $feature_dir/task-packet.md); the plan is offered for approval once inputs are ready."
-  jq -cn --arg issue "$issue" --arg detail "$detail" --arg next "$next_action" \
-    '{issue: $issue, detail: $detail, nextAction: $next, at: (now | todateiso8601)}' \
-    | write_json_artifact "$marker" || true
-  log_warn "$issue → task-input preparation failed before plan approval: $detail"
-
-  hook_protocol="$LIB_DIR/../hooks/wavemill-hook-protocol.sh"
-  if [[ -f "$hook_protocol" ]]; then
-    # shellcheck disable=SC1090
-    source "$hook_protocol" || true
-    if declare -F wavemill_hook_write >/dev/null 2>&1; then
-      WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$issue" \
-        wavemill_hook_write "blocked" "inputs_preparation_failed" "$detail" "${current_agent:-unknown}" "$next_action" "monitor" || true
-    fi
-  fi
-}
-
 # Take back an approval-ready (or approved) planning stage whose inputs are
 # not ready: planning returns to `running` so the publish gate owns it, and an
 # approval given before the inputs existed is discarded — it approved inputs
@@ -6077,11 +6045,11 @@ ensure_task_inputs_ready() {
       log "debug" "  $issue: [task-inputs] preparation pending, holding the approval request"
       set_window_attention_state "$win" "clear"
     else
-      task_inputs_surface_failure "$issue" "$feature_dir" "$win" "$current_agent" "$detail"
+      log_warn "$issue → task-input preparation failed before plan approval: $detail"
+      set_window_attention_state "$win" "needs-user"
     fi
     return 1
   fi
-  rm -f "$(task_inputs_failure_marker "$feature_dir")" 2>/dev/null || true
 
   declare -F plan_packet_record_binding >/dev/null 2>&1 || return 0
   recorded="$(plan_packet_recorded_packet_hash "$feature_dir")"

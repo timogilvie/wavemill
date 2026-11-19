@@ -2677,7 +2677,6 @@ cleanup_completed_task() {
         ;;
       *)
         set_task_lifecycle_disposition "$issue" "" "verification-required" "cleanup-decision-exhausted" "cleanup_completed_task" 2>/dev/null || true
-        declare -F set_window_attention_state >/dev/null 2>&1 && set_window_attention_state "$win" "needs-user"
         log_warn "  $issue cleanup decision retries exhausted; keeping task state"
         return 1
         ;;
