@@ -32,10 +32,29 @@ setup_coding_agent_exit_interrupted() {
   printf '{"stage":"coding","status":"running","startedAt":"%s","agent":"claude"}\n' "$started_at" \
     > "$FEATURE_DIR/.coding-result.json"
 
-  # No fresh hook heartbeat and no live descendant under the pane shell:
-  # the recorded owner is affirmatively gone (an idle shell only).
-  fresh_hook_state_for_issue() { printf '\n'; }
-  mill_pane_has_live_blocking_process() { return 1; }
+  # HOK-3426: a hard exit is a launcher-recorded, launch-scoped fact. The
+  # canonical disposition reads this ownership row and terminal-history entry;
+  # a surviving pane is deliberately irrelevant.
+  # shellcheck source=../../../shared/lib/session-ownership.sh
+  source "$(dirname "$COMMON_LIB")/session-ownership.sh"
+  session_ownership_append "$FEATURE_DIR" "coding-exit-1" "claude-code" "coding" "claude-opus-4-6" "" "$WT_DIR"
+  local exited_at
+  exited_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  jq -cn --arg at "$exited_at" \
+    '{archivedAt:$at,reason:"agent-exit",payload:{state:"error",event:"agent_exit",writer:"launcher",kind:"agent-exit",phase:"coding",timestamp:($at|fromdateiso8601),exitCode:143,recordedAt:$at}}' \
+    > "$FEATURE_DIR/.terminal-history.jsonl"
+  # The lifecycle harness extracts only the monitor loop adapters. Keep the
+  # one resulting stage write observable while the real disposition supplies
+  # the settled/agent-exited decision above.
+  _stage_stamp_settled_without_result() {
+    local issue="$1" feature_dir="$2" stage="$3" reason="$4" current_head="$5"
+    local artifacts
+    artifacts="$(jq -cn --arg stage "$stage" --arg reason "$reason" --arg head "$current_head" \
+      '{type:$stage,terminationClass:"interrupted",exitEvidence:{reason:$reason,observedHead:$head},lastDurableCommit:$head,validationState:"unknown",recoveryAction:"Relaunch the coding phase from the HOK-3176 stage-failure bucket."}')"
+    write_stage_result "$feature_dir" "$stage" failed "$CURRENT_AGENT" "$CODER_MODEL" \
+      "Interrupted: ${stage} agent settled without a result (${reason})" "$artifacts"
+    log_warn "$issue → ${stage} agent settled without a result (${reason}) - routing to stage-failure-${stage}"
+  }
   # Second iteration: no quarantine side effects; the real default retry runs.
   emit_challenge_stage_failure_quarantine() { return 0; }
 }
