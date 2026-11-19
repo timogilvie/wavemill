@@ -647,7 +647,7 @@ JSON
     # the extracted helper is callable here without pulling in the real tool.
     # HOK-3322: the Ready remediation disposition is the real decision, not a stub.
     npx() {
-      [[ "${2:-}" == */ready-remediation-disposition.ts || "${2:-}" == */task-recovery-controller.ts ]] || return 0
+      [[ "${2:-}" == */stage-agent-disposition.ts || "${2:-}" == */task-recovery-controller.ts ]] || return 0
       command npx "$@"
     }
     is_challenge_task() { [[ "${CHALLENGE_TASK:-false}" == "true" ]]; }

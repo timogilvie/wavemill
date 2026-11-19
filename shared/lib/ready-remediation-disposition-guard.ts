@@ -1,12 +1,25 @@
 // allow-ready-remediation-disposition: this is the invariant definition.
 // allow-stage-agent-disposition: this guard definition carries the stage-agent patterns.
-import type { GuardSpec } from '../../tools/lib/source-guard.ts';
+import type { GuardSpec, StructuralMatch } from '../../tools/lib/source-guard.ts';
+
+function findSplitProgressPredicate(source: string): StructuralMatch[] {
+  const lines = source.split(/\r?\n/);
+  const matches: StructuralMatch[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!/\bjq\s+-e\b/.test(lines[i])) continue;
+    const context = lines.slice(Math.max(0, i - 15), Math.min(lines.length, i + 16)).join('\n');
+    if (/task_progress_json/.test(context)
+      && /\.(?:agentIdle|stalled|agentProcessLive|terminalIdle|agentRecord\.state)\b/.test(context)) {
+      matches.push({ line: i + 1, detail: 'split-line or heredoc task-progress settlement predicate' });
+    }
+  }
+  return matches;
+}
 
 /**
  * HOK-3322 + HOK-3386: "is a stage's agent still in flight, or has it settled
  * without a result?" is decided only by:
  *
- *   - shared/lib/ready-remediation-disposition.ts (Ready remediation adapter)
  *   - shared/lib/stage-agent-disposition.ts (the one generalised decision)
  *   - shell: ready_remediation_disposition, stage_agent_disposition
  *
@@ -23,7 +36,6 @@ export const READY_REMEDIATION_DISPOSITION_GUARD: GuardSpec = {
   suppressionMarker: 'allow-ready-remediation-disposition',
   allowlistFile: 'tools/ready-remediation-disposition-allowlist.txt',
   invariantPaths: [
-    'shared/lib/ready-remediation-disposition.ts',
     'shared/lib/ready-remediation-disposition-guard.ts',
     'shared/lib/stage-agent-disposition.ts',
     'shared/lib/stage-agent-disposition.test.ts',
@@ -47,14 +59,24 @@ export const READY_REMEDIATION_DISPOSITION_GUARD: GuardSpec = {
       description: 'The ready-remediation bucket head is launch identity; read it through readReadyRemediationLaunch.' },
     // ── HOK-3386: stage-agent disposition ────────────────────────────────
     { name: 'private-task-progress-jq-filter', lang: 'sh',
-      re: /jq\s+-e[^\n]*\.(?:agentIdle|stalled|agentRecord\.state|terminal)\b/,
+      re: /jq\s+-e[\s\S]{0,500}\.(?:agentIdle|stalled|agentRecord\.state|terminal|agentProcessLive)\b/,
       description: 'Private jq filter over task_progress_json output; consume stage_agent_disposition instead (HOK-3386).' },
+    { name: 'private-progress-jq-heredoc', lang: 'sh',
+      re: /task_progress_json[\s\S]{0,600}<<['"]?[^\n]*\n[\s\S]{0,500}\.(?:agentIdle|stalled|agentProcessLive|terminalIdle)\b/,
+      description: 'Heredoc jq settlement predicate over task progress is private; consume stage_agent_disposition.' },
     { name: 'retired-coding-stage-stalled', lang: 'sh', re: /\bcoding_stage_stalled\b/,
       description: 'coding_stage_stalled was retired by HOK-3386; the shared stage-agent disposition owns the decision.' },
   ],
+  structuralChecks: [
+    {
+      name: 'split-private-task-progress-jq-filter',
+      description: 'Split-line and heredoc task-progress predicates must consume stage_agent_disposition',
+      find: findSplitProgressPredicate,
+    },
+  ],
   remediation: [
     'Ready remediation in-flight/completion is the stage-agent decision (HOK-3322, HOK-3386):',
-    '  TS: evaluateReadyRemediationDisposition (shared/lib/ready-remediation-disposition.ts) — Ready launch identity onto decideStageAgentDisposition',
+    '  TS: evaluateReadyRemediationDisposition (shared/lib/stage-agent-disposition.ts) — Ready launch identity and prompt mapping over the shared disposition',
     '  shell: ready_remediation_disposition <issue> <state_dir> <wt_dir> <current_head>',
     'Per-stage agent in-flight/settled decision (HOK-3386):',
     '  TS: evaluateStageAgentDisposition / decideStageAgentDisposition (shared/lib/stage-agent-disposition.ts)',

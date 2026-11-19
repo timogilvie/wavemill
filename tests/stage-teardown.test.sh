@@ -29,14 +29,14 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 # ── Stub every external dependency stage_agent_teardown degrades to via
 # declare -F. These shadow the real implementations (command -v finds shell
 # functions too), so the test never needs a real tmux server.
-PROGRESS_JSON='{}'
+DISPOSITION_KIND='in-flight'
 TERMINATE_CALLS=0
 KILL_CALLS=0
 RECORD_CALLS=""
 KILL_SUCCEEDS=1
 HAVE_TARGET=1
 
-task_progress_json() { printf '%s\n' "$PROGRESS_JSON"; }
+stage_agent_disposition() { printf '{"kind":"%s","reason":"fixture"}\n' "$DISPOSITION_KIND"; }
 agent_terminate_in_pane() { TERMINATE_CALLS=$((TERMINATE_CALLS + 1)); return 0; }
 _tmux_task_window_target() {
   [[ "$HAVE_TARGET" == "1" ]] || return 1
@@ -54,7 +54,7 @@ wavemill_hook_write_controller_termination() {
 source "$REPO_DIR/shared/lib/stage-teardown.sh"
 
 reset_state() {
-  PROGRESS_JSON='{}'
+  DISPOSITION_KIND='in-flight'
   TERMINATE_CALLS=0
   KILL_CALLS=0
   RECORD_CALLS=""
@@ -69,7 +69,7 @@ mkdir -p "$FEATURE_DIR"
 reset_state
 rm -f "$FEATURE_DIR/.coding-complete"
 touch "$FEATURE_DIR/.coding-complete"
-PROGRESS_JSON='{"agentIdle": false, "terminalIdle": false, "agentProcessLive": true}'
+DISPOSITION_KIND='in-flight'
 WAVEMILL_CODING_DIRTY_HANDOFF_GRACE_SECONDS=120
 rc=0
 stage_agent_teardown "HOK-T1" "$FEATURE_DIR" "completed-coding-pane-quarantine" --phase coding || rc=$?
@@ -82,7 +82,7 @@ fi
 
 # ── Case B: agent already idle → terminate + record + kill immediately ─────
 reset_state
-PROGRESS_JSON='{"agentIdle": true, "terminalIdle": false, "agentProcessLive": false}'
+DISPOSITION_KIND='settled'
 rc=0
 stage_agent_teardown "HOK-T2" "$FEATURE_DIR" "completed-coding-pane-quarantine" --phase coding || rc=$?
 if [[ "$rc" -eq 0 ]]; then pass "Case B: already-idle agent returns success (0)"; else fail "Case B: expected rc=0, got $rc"; fi
@@ -95,7 +95,7 @@ reset_state
 touch -t 202601010000 "$FEATURE_DIR/.coding-complete" 2>/dev/null \
   || touch -d '2026-01-01' "$FEATURE_DIR/.coding-complete" 2>/dev/null \
   || { touch "$FEATURE_DIR/.coding-complete"; }
-PROGRESS_JSON='{"agentIdle": false, "terminalIdle": false, "agentProcessLive": true}'
+DISPOSITION_KIND='in-flight'
 WAVEMILL_CODING_DIRTY_HANDOFF_GRACE_SECONDS=1
 rc=0
 stage_agent_teardown "HOK-T3" "$FEATURE_DIR" "completed-coding-pane-quarantine" --phase coding || rc=$?
@@ -110,7 +110,7 @@ fi
 reset_state
 rm -f "$FEATURE_DIR/.coding-complete"
 touch "$FEATURE_DIR/.coding-complete"
-PROGRESS_JSON='{"agentIdle": false, "terminalIdle": false, "agentProcessLive": true}'
+DISPOSITION_KIND='in-flight'
 WAVEMILL_CODING_DIRTY_HANDOFF_GRACE_SECONDS=120
 rc=0
 stage_agent_teardown "HOK-T4" "$FEATURE_DIR" "operator-abort" --no-settle || rc=$?
@@ -123,7 +123,7 @@ fi
 
 # ── --keep-window never kills the window, even when settled ─────────────────
 reset_state
-PROGRESS_JSON='{"agentIdle": true}'
+DISPOSITION_KIND='settled'
 rc=0
 stage_agent_teardown "HOK-T5" "$FEATURE_DIR" "completed-planning-reap" --no-settle --keep-window || rc=$?
 if [[ "$rc" -eq 0 && "$KILL_CALLS" -eq 0 ]]; then
@@ -134,7 +134,7 @@ fi
 
 # ── --no-record skips the record step ────────────────────────────────────────
 reset_state
-PROGRESS_JSON='{"agentIdle": true}'
+DISPOSITION_KIND='settled'
 rc=0
 stage_agent_teardown "HOK-T6" "$FEATURE_DIR" "pane-release" --no-settle --no-record || rc=$?
 if [[ "$rc" -eq 0 && -z "$RECORD_CALLS" ]]; then
@@ -154,7 +154,7 @@ reset_state
 rm -f "$FEATURE_DIR/.coding-complete"
 touch "$FEATURE_DIR/.coding-complete"
 WAVEMILL_CODING_DIRTY_HANDOFF_GRACE_SECONDS=120
-PROGRESS_JSON='{"agentIdle": false, "terminalIdle": false, "agentProcessLive": true}'
+DISPOSITION_KIND='in-flight'
 rc_t4=0
 stage_agent_teardown "HOK-3315" "$FEATURE_DIR" "completed-coding-pane-quarantine" --phase coding || rc_t4=$?
 rc_t10=0
@@ -166,7 +166,7 @@ else
 fi
 # The agent settles (its own Stop/idle record lands) before the grace runs
 # out — the very next tick tears down instead of waiting out the full grace.
-PROGRESS_JSON='{"agentIdle": true, "terminalIdle": false, "agentProcessLive": false}'
+DISPOSITION_KIND='settled'
 rc_settled=0
 stage_agent_teardown "HOK-3315" "$FEATURE_DIR" "completed-coding-pane-quarantine" --phase coding || rc_settled=$?
 if [[ "$rc_settled" -eq 0 && "$KILL_CALLS" -eq 1 && -n "$RECORD_CALLS" ]]; then
@@ -177,7 +177,7 @@ fi
 
 # ── A window-close failure (kill-window ran, target still present) → 1 ──────
 reset_state
-PROGRESS_JSON='{"agentIdle": true}'
+DISPOSITION_KIND='settled'
 KILL_SUCCEEDS=0
 rc=0
 stage_agent_teardown "HOK-T7" "$FEATURE_DIR" "aborted-arm" --no-settle || rc=$?
@@ -186,7 +186,7 @@ if [[ -n "$RECORD_CALLS" ]]; then pass "the record still ran before the failed k
 
 # ── Missing window target is idempotent success, still recorded ────────────
 reset_state
-PROGRESS_JSON='{"agentIdle": true}'
+DISPOSITION_KIND='settled'
 HAVE_TARGET=0
 rc=0
 stage_agent_teardown "HOK-T8" "$FEATURE_DIR" "challenge-cancel" --no-settle || rc=$?

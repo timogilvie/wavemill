@@ -49,6 +49,14 @@ describe('ready-remediation-disposition guard — HOK-3386 stage-agent patterns'
       patternsOf('a.sh', 'if jq -e ".stalled == true" <<<"$p" >/dev/null; then :; fi\n'),
       ['private-task-progress-jq-filter'],
     );
+    assert.deepEqual(
+      patternsOf('a.sh', 'progress="$(task_progress_json "$i")"\nprintf %s "$progress" | jq -e \'\n  .agentIdle == true and\n  .agentProcessLive == false\n\'\n'),
+      ['split-private-task-progress-jq-filter'],
+    );
+    assert.deepEqual(
+      patternsOf('a.sh', 'progress="$(task_progress_json "$i" <<EOF\nEOF\njq -e \'(.terminalIdle == true)\'\n'),
+      ['split-private-task-progress-jq-filter'],
+    );
   });
 
   // protects: coding_stage_stalled, the retired warn-only detector, being

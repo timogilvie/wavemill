@@ -23,7 +23,7 @@ import {
   readyDispositionFromStage,
   type ReadyRemediationKind,
   type ReadyRemediationProgress,
-} from './ready-remediation-disposition.ts';
+} from './stage-agent-disposition.ts';
 import { appendOwnershipRow } from './session-ownership.ts';
 import { decideStageAgentDisposition } from './stage-agent-disposition.ts';
 import type { StageResult } from './stage-result.ts';

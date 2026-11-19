@@ -9,7 +9,9 @@
 import { writeFileSync, renameSync } from 'node:fs';
 import { runTool } from '../shared/lib/tool-runner.ts';
 import {
+  evaluateReadyRemediationDisposition,
   evaluateStageAgentDisposition,
+  gatherReadyTaskProgress,
   gatherStageTaskProgress,
   type StageAgentStage,
 } from '../shared/lib/stage-agent-disposition.ts';
@@ -77,7 +79,18 @@ runTool({
       const session = args.session?.trim() || process.env.WAVEMILL_SESSION || 'wavemill';
       let progressCache: ReturnType<typeof gatherStageTaskProgress> | null = null;
       const getProgress = () => {
-        progressCache = gatherStageTaskProgress({
+        progressCache = stageArg === 'ready-remediation' || stageArg === 'conflict-resolution'
+          ? gatherReadyTaskProgress({
+            issue,
+            session,
+            worktree,
+            stateDir,
+            task: args['state-file'] ? readWorkflowState(args['state-file'])?.tasks?.[issue] : undefined,
+            readyResult: stageResult,
+            paneText: target ? termCapture(target, { lines: 200, timeoutMs: 3000 }) ?? undefined : undefined,
+            panePid: target ? termListPanes({ target, timeoutMs: 3000 })[0]?.pid ?? null : null,
+          })
+          : gatherStageTaskProgress({
           issue,
           session,
           worktree,
@@ -90,14 +103,21 @@ runTool({
         });
         return progressCache;
       };
-      const disposition = evaluateStageAgentDisposition({
+      const disposition = stageArg === 'ready-remediation' || stageArg === 'conflict-resolution'
+        ? evaluateReadyRemediationDisposition({
+          stateDir,
+          readyResult: stageResult,
+          currentHead,
+          getProgress,
+        })
+        : evaluateStageAgentDisposition({
         stateDir,
         stage: stageArg,
         stageResult,
         currentHead,
         launchHead,
         getProgress,
-      });
+        });
       if (progressCache) writeProgressCache(session, issue, progressCache);
       // HOK-3382: forward the shared stall fact additively so the recovery
       // controller reassesses from it instead of re-deriving progress. The
