@@ -19,11 +19,9 @@
 
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { providerForModel } from './execution-contract.ts';
-import { getEffectiveRegistry } from './model-registry.ts';
+import { writePersistedContract } from './execution-contract.ts';
 import { createLaunchabilityChecker } from './stage-launchability.ts';
 import { mutateJsonState } from './state-mutex.ts';
-import { appendRouteOverrideToFeatureDir } from './route-artifact.ts';
 import {
   findLaunchableSubstitute,
   routeWorkflowAuto,
@@ -157,15 +155,14 @@ export function readRoutingPrompt(featureDir: string): string {
 
 async function applyCoderSubstitution(input: {
   featureDir: string;
+  repoDir: string;
   issue: string;
   from: string;
   to: string;
-  agent: string;
-  provider: string;
   refusal: CoderLaunchRefusal;
   source: 'router' | 'deterministic';
   at: string;
-}): Promise<void> {
+}): Promise<string> {
   const substitution = {
     from: input.from,
     to: input.to,
@@ -175,23 +172,25 @@ async function applyCoderSubstitution(input: {
     at: input.at,
   };
 
-  const phaseConfigPath = join(input.featureDir, '.phase-config.json');
-  if (existsSync(phaseConfigPath)) {
-    await mutateJsonState<Record<string, unknown>>(phaseConfigPath, (current) => {
-      const coding = (current.coding && typeof current.coding === 'object' ? current.coding : {}) as Record<string, unknown>;
-      return {
-        ...current,
-        coding: {
-          ...coding,
-          model: input.to,
-          agent: input.agent,
-          provider: input.provider,
-          selectedAt: input.at,
-          launchSubstitution: substitution,
-        },
-      };
-    });
-  }
+  // HOK-3511: the one contract writer derives agent and provider from the
+  // substitute model, and (HOK-3363) appends the override to the route record,
+  // where the eval and the Hokusai contribution row read it.
+  const written = await writePersistedContract({
+    featureDir: input.featureDir,
+    repoDir: input.repoDir,
+    stages: [{
+      stageRole: 'coding',
+      model: input.to,
+      selectedAt: input.at,
+      extra: { launchSubstitution: substitution },
+    }],
+    routeOverride: {
+      source: 'launchability',
+      reason: input.refusal.reason,
+      ...(input.refusal.certification ? { certification: input.refusal.certification } : {}),
+      at: input.at,
+    },
+  });
 
   const routingCompletePath = join(input.featureDir, '.routing-complete');
   if (existsSync(routingCompletePath)) {
@@ -201,19 +200,11 @@ async function applyCoderSubstitution(input: {
     }));
   }
 
-  // HOK-3363: the substitution is an override of the routed coder; the route
-  // record is where the eval and the Hokusai contribution row read it.
-  await appendRouteOverrideToFeatureDir(input.featureDir, 'coder', input.to, {
-    source: 'launchability',
-    reason: input.refusal.reason,
-    ...(input.refusal.certification ? { certification: input.refusal.certification } : {}),
-    at: input.at,
-  });
-
   appendFileSync(
     join(input.featureDir, ROUTE_SUBSTITUTIONS_LOG),
     `${JSON.stringify({ issue: input.issue, role: 'coder', ...substitution })}\n`,
   );
+  return written.stages.coding?.agent ?? '';
 }
 
 /**
@@ -269,15 +260,12 @@ export async function rerouteRefusedCoder(opts: RerouteRefusedCoderOptions): Pro
     };
   }
 
-  const check = launchable(substitute, 'coding');
-  const agent = 'agent' in check ? check.agent : '';
-  await applyCoderSubstitution({
+  const agent = await applyCoderSubstitution({
     featureDir: opts.featureDir,
+    repoDir: opts.repoDir,
     issue: opts.issue,
     from,
     to: substitute,
-    agent,
-    provider: providerForModel(substitute, getEffectiveRegistry(opts.repoDir)),
     refusal: opts.refusal,
     source,
     at,
