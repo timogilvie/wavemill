@@ -1,0 +1,31 @@
+{
+  "planning": {
+    "model": "gpt-5.6-terra",
+    "provider": "openai",
+    "agent": "codex",
+    "stageRole": "planning",
+    "challengeSide": null,
+    "selectedAt": "2026-11-17T16:35:31Z",
+    "depth": "light"
+  },
+  "coding": {
+    "model": "kimi-k2.7-code",
+    "provider": "anthropic",
+    "agent": "claude",
+    "stageRole": "coding",
+    "challengeSide": null,
+    "selectedAt": "2026-11-17T16:35:39Z",
+    "depth": "light"
+  },
+  "review": {
+    "model": "claude-haiku-4-5-20251001",
+    "provider": "anthropic",
+    "agent": "claude",
+    "stageRole": "review",
+    "challengeSide": null,
+    "selectedAt": "2026-11-17T16:35:39Z",
+    "mode": "static"
+  },
+  "resolvedAt": "2026-11-17T16:35:31Z",
+  "forceModel": null
+}

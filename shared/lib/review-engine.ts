@@ -130,6 +130,9 @@ export function reviewContractFromToolReport(report: ReviewToolReport): {
     if (finding.verdict !== undefined) {
       mapped.evidence = `verification: ${finding.verdict}`;
     }
+    if (finding.dismissed !== undefined) mapped.dismissed = finding.dismissed;
+    if (finding.dismissalJustification !== undefined) mapped.dismissalJustification = finding.dismissalJustification;
+    if (finding.dismissalEvidence !== undefined) mapped.dismissalEvidence = finding.dismissalEvidence;
     return mapped;
   });
   const verdict = codeReviewFindings.some(isBlockingFinding) ? 'not_ready' : 'ready';
