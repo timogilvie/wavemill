@@ -287,7 +287,11 @@ async function runSingleCanaryAttempt(input: {
       evidenceDir = options.evidenceRoot ? join(options.evidenceRoot, sessionId) : join(workspace.tmpRoot, 'evidence');
       const runId = mintRunId({
         issue: 'CANARY',
-        runEpoch: process.env.WAVEMILL_RUN_EPOCH ?? '',
+        // HOK-3476: two canaries (e.g. `--all --phase workflow` certifying
+        // several models concurrently) share the constant issue and
+        // WAVEMILL_RUN_EPOCH; fold in this attempt's own sessionId so a
+        // same-second pair never mints the same runId.
+        runEpoch: `${process.env.WAVEMILL_RUN_EPOCH ?? ''}${sessionId}`,
         launchedAt: input.now(),
       });
       const stageAttemptId = mintStageAttemptId();

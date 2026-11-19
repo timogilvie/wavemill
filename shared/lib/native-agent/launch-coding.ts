@@ -1305,6 +1305,13 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       agent: 'native',
       model: modelName,
       intendedModel: requestedModelName,
+      // HOK-3476: stamp this attempt's own lineage on the first write, so a
+      // later completion write's startedAt-match in writeStageResult finds
+      // it already present instead of backfilling from a now-superseded
+      // launch row.
+      runId,
+      stageAttemptId,
+      ...retryLineage,
       // HOK-3143: do not claim the requested model executed before any provider
       // turn has returned. The stage result flips to the provider-reported id on
       // completion.

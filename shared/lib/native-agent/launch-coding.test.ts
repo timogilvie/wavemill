@@ -297,6 +297,13 @@ describe('launchNativeCoding', () => {
     assert.equal(stageResult?.artifacts?.type, 'coding');
     assert.equal(stageResult?.artifacts?.filesChanged, 1);
     assert.equal(stageResult?.artifacts?.commitCount, 1);
+    // protects: the completion write losing this attempt's lineage because
+    // the initial `running` write omitted it, so writeStageResult's backfill
+    // (skipped for status:'running') never had a chance to run, and the
+    // later startedAt-match branch just copied the missing lineage forward
+    // (HOK-3476 review finding).
+    assert.ok(stageResult?.runId, 'completed coding result should carry a runId');
+    assert.ok(stageResult?.stageAttemptId, 'completed coding result should carry a stageAttemptId');
   });
 
   it('fails before the provider when the prompt plus reserved output exceeds the model context window', async () => {
