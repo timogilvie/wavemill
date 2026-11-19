@@ -124,7 +124,22 @@ const DETERMINISTIC_REFUSAL_REASONS: ReadonlySet<string> = new Set<UnroutableRea
   'context-window-insufficient',
   'codex-chatgpt-ineligible',
   'unknown-model',
+  'provider-disabled',
+  'native-disabled',
 ]);
+
+const PROVIDER_ENABLEMENT_REFUSAL_REASONS: ReadonlySet<string> = new Set<UnroutableReason>([
+  'provider-disabled',
+  'native-disabled',
+]);
+
+/**
+ * True when the refusal is the repo config turning the model's provider or
+ * native execution off — no certification or retry can make it launchable.
+ */
+export function isProviderEnablementRefusal(result: StageLaunchability): boolean {
+  return result.ok === false && PROVIDER_ENABLEMENT_REFUSAL_REASONS.has(result.reason);
+}
 
 /**
  * True when a launch refusal will repeat identically on retry, so relaunching

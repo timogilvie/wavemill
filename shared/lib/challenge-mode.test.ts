@@ -1944,9 +1944,12 @@ function makeNativeTestRepo(
   process.env[GLOBAL_CERTIFICATION_ROOT_ENV] = join(repoDir, 'global-certifications');
   mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
   writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify({
-    ...(opts.patchCodingEnabled
-      ? { nativeAgent: { patchCoding: { enabled: true } } }
-      : {}),
+    // Native routes need native execution on (the launcher refuses them otherwise).
+    nativeAgent: {
+      enabled: true,
+      allowedPhases: ['planning', 'review'],
+      ...(opts.patchCodingEnabled ? { patchCoding: { enabled: true } } : {}),
+    },
     ...(opts.config || {}),
   }));
   if (opts.patchCodingEnabled) {

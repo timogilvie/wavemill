@@ -230,6 +230,7 @@ function makeRepoWithStageAwareData(
   writeJsonl(repoDir, '.wavemill/evals/aggregated-evals.jsonl', sources.aggregated || []);
   writeJsonl(repoDir, '.wavemill/evals/evals.jsonl', sources.local || []);
   writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify({
+    nativeAgent: { enabled: true },
     router: {
       enabled: true,
       mode: 'stage-aware',
