@@ -260,7 +260,7 @@ ready_cross_pr_revert_gate() {
         if bounded_retry_mark_exhausted "$state_dir" "$CROSS_PR_GUARD_JOB_BUCKET" \
           "Cross-PR revert guard job failed ${ASYNC_CHECK_JOB_RETRY_LIMIT} time(s) at ${head_sha:0:12}"; then
           escalate_operator_attention "$state_dir" exhausted "$CROSS_PR_GUARD_JOB_BUCKET" \
-            "Cross-PR revert guard exhausted at ${head_sha:0:12}" --head "$head_sha" || true
+            "Cross-PR revert guard exhausted at ${head_sha:0:12}" --head "$head_sha" --expires-on head,operator-event || true
         fi
       fi
       # Terminal for this head: surface the last crash through the inline
@@ -535,7 +535,7 @@ expanded_reroute_gate() {
         if bounded_retry_mark_exhausted "$feature_dir" "$EXPANDED_REROUTE_JOB_BUCKET" \
           "Expanded reroute job failed ${ASYNC_CHECK_JOB_RETRY_LIMIT} time(s) for packet ${packet_hash:0:12}"; then
           escalate_operator_attention "$feature_dir" exhausted "$EXPANDED_REROUTE_JOB_BUCKET" \
-            "Expanded reroute exhausted for packet ${packet_hash:0:12}" || true
+            "Expanded reroute exhausted for packet ${packet_hash:0:12}" --expires-on head,operator-event || true
         fi
       fi
       REROUTE_EXPANDED_LAST_REASON="routing_error"
@@ -607,7 +607,7 @@ prepare_task_inputs_gate() {
         if bounded_retry_mark_exhausted "$feature_dir" "$PREPARE_TASK_INPUTS_JOB_BUCKET" \
           "Task-input preparation: $PREPARE_TASK_INPUTS_LAST_DETAIL for input ${key:0:12}"; then
           escalate_operator_attention "$feature_dir" exhausted "$PREPARE_TASK_INPUTS_JOB_BUCKET" \
-            "Task-input preparation exhausted for $issue — run: wavemill expand $issue" || true
+            "Task-input preparation exhausted for $issue — run: wavemill expand $issue" --expires-on head,operator-event || true
         fi
       fi
       return 1
@@ -848,7 +848,7 @@ cleanup_decision_launch_job() {
         if bounded_retry_mark_exhausted "$state_dir" "$CLEANUP_DECISION_JOB_BUCKET" \
           "Cleanup-decision job failed ${ASYNC_CHECK_JOB_RETRY_LIMIT} time(s) at ${head_sha:0:12}"; then
           escalate_operator_attention "$state_dir" exhausted "$CLEANUP_DECISION_JOB_BUCKET" \
-            "Cleanup-decision exhausted for $issue at ${head_sha:0:12}" --head "$head_sha" || true
+            "Cleanup-decision exhausted for $issue at ${head_sha:0:12}" --head "$head_sha" --expires-on head,operator-event || true
         fi
       fi
       printf '\n'
