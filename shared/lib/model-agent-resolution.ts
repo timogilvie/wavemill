@@ -16,6 +16,7 @@ import {
 import type { CertificationPhase } from './native-agent/certification/schema.ts';
 import { evaluateNativeProviderGate } from './native-agent/certification/eligibility-gate.ts';
 import { resolveLaunchPriorityModel, type RoleEligibility } from './openrouter-catalog.ts';
+import { explainProviderEnablementRefusal } from './provider-enablement.ts';
 
 export type AgentResolutionPhase = 'planning' | 'coding' | 'review';
 
@@ -29,7 +30,11 @@ export type UnroutableReason =
   | 'context-window-insufficient'
   | 'role-ineligible'
   | 'uncertified'
-  | 'codex-chatgpt-ineligible';
+  | 'codex-chatgpt-ineligible'
+  /** The model's provider is turned off in the repo config (e.g. `providers.deepseek.enabled=false`). */
+  | 'provider-disabled'
+  /** The model needs a native agent and `nativeAgent.enabled` is not true. */
+  | 'native-disabled';
 
 export type AgentResolution =
   | { ok: true; agent: AgentType }
@@ -422,6 +427,27 @@ export function resolveModelAgent(opts: ResolveModelAgentOptions): AgentResoluti
         certificationStatus: 'unknown-model',
       }),
     };
+  }
+
+  // Provider / native enablement is a launch input (the launcher refuses a
+  // disabled provider), so it is part of this answer for every consumer: the
+  // router's launchability guard, the challenge pool and the doctor. Only
+  // repo-scoped resolutions read config; the global projection has none.
+  if (opts.repoDir) {
+    const disabled = explainProviderEnablementRefusal({
+      modelId,
+      agent: resolvedAgent,
+      vendor: capabilities?.vendor,
+      repoDir: opts.repoDir,
+    });
+    if (disabled) {
+      return {
+        ok: false,
+        reason: disabled.reason,
+        certificationStatus: `${disabled.surface}:off`,
+        diagnostic: `[agent-resolution] model=${modelId} phase=${opts.phase} provider=${disabled.provider} reason=${disabled.reason} certification=${disabled.surface}:off detail="${disabled.detail}"`,
+      };
+    }
   }
 
   if (resolvedAgent === 'codex' || resolvedAgent === 'claude') {

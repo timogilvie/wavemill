@@ -46,6 +46,7 @@ function makeRepo(config: Record<string, unknown> = {}): { repoDir: string; clea
   const repoDir = mkdtempSync(join(tmpdir(), 'challenge-scheduler-test-'));
   mkdirSync(join(repoDir, '.wavemill', 'evals'), { recursive: true });
   writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify({
+    nativeAgent: { enabled: true },
     router: {
       enabled: true,
     },

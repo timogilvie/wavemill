@@ -143,6 +143,7 @@ describe('model-router resolveAgent', () => {
     const repoDir = mkdtempSync(join(tmpdir(), 'model-router-native-provider-mismatch-'));
 
     try {
+      writeRepoConfig(repoDir, { nativeAgent: { enabled: true } });
       writeGlobalCertification(repoDir, 'openrouter', 'z-ai/glm-5.3');
 
       assert.equal(

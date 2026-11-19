@@ -81,7 +81,7 @@ describe('HOK-3500 route-agent mismatch replay (HOK-3511)', () => {
       configVersion: CANONICAL_CONFIG_TEMPLATE.configVersion,
       providers: CANONICAL_CONFIG_TEMPLATE.providers,
       router: { availableModels: CANONICAL_CONFIG_TEMPLATE.router?.availableModels },
-      nativeAgent: { providers: { openrouter: {} } },
+      nativeAgent: { enabled: true, allowedPhases: ['planning', 'coding', 'review'], providers: { openrouter: {} } },
     }), 'utf-8');
     process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
     process.env[GLOBAL_CERTIFICATION_ROOT_ENV] = join(scratch, 'cert-root');
