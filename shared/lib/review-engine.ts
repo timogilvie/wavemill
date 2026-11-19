@@ -243,6 +243,8 @@ interface JudgeConfig {
 
 interface Config {
   judge: JudgeConfig;
+  /** `review.cliTimeoutMs`: per-call cap for CLI review calls, when configured. */
+  cliTimeoutMs?: number;
 }
 
 interface NativeReviewModule {
@@ -280,8 +282,10 @@ function loadConfig(repoDir: string): Config {
     );
   }
 
+  const cliTimeoutMs = config.review?.cliTimeoutMs;
   return {
     judge: { model: configModel, provider: configProvider },
+    ...(typeof cliTimeoutMs === 'number' && cliTimeoutMs > 0 ? { cliTimeoutMs } : {}),
   };
 }
 
@@ -1389,7 +1393,7 @@ export async function runReview(
 
   // Determine effective settings (options override config)
   const model = dispatch.model;
-  const timeout = options.timeout || DEFAULT_TIMEOUT_MS;
+  const timeout = options.timeout || reviewEngineDeps.loadConfig(repoDir).cliTimeoutMs || DEFAULT_TIMEOUT_MS;
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
   const operatingMode = options.operatingMode ?? 'normal';
 

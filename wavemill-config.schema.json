@@ -3052,6 +3052,12 @@
                     "default": true,
                     "description": "Enable the self-review loop in workflow commands. When false, workflow proceeds directly from implementation to validation."
                 },
+                "cliTimeoutMs": {
+                    "type": "integer",
+                    "default": 300000,
+                    "minimum": 1,
+                    "description": "Per-call wall-clock cap in milliseconds for claude/codex CLI review calls made by tools/review-changes.ts. Defaults to 300000 (5 minutes). A large diff can need longer: a reviewer that explores the repository with tools can exceed 5 minutes on one call."
+                },
                 "nativeTimeoutMs": {
                     "type": "integer",
                     "default": 300000,
