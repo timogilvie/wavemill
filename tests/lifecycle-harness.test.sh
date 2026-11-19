@@ -343,8 +343,6 @@ harness_extract_real_functions() {
     _plan_packet_relaunch_planning \
     _plan_packet_needs_user \
     task_inputs_prepare \
-    task_inputs_failure_marker \
-    task_inputs_surface_failure \
     task_inputs_demote_planning \
     ensure_task_inputs_ready
   do
@@ -1150,13 +1148,11 @@ $(harness_inline_prepare_gate)
   tick="$(harness_run_tick "$repo" "$slug" "$issue" "$overrides")"
 
   check_eq "challenger recover skip: no approval offered without inputs" "running" "$(harness_read_stage_status "$repo" "$slug" planning)"
-  check_eq "challenger recover skip: needs-user attention" "needs-user" "$(kv_value "$tick" attention)"
   check_eq "challenger recover skip: recovery state skipped" "skipped" "$(jq -r '.status' "$repo/features/$slug/.expansion-recovery-state.json")"
   check_eq "challenger recover skip: skipped detail stable" "task-identity-linear-issue-id-unresolvable" "$(jq -r '.detail' "$repo/features/$slug/.expansion-recovery-state.json")"
   check_not_contains "challenger recover skip: expand tool not invoked" "$(cat "$repo/.wavemill/npx-args.log")" "expand-issue.ts"
   check_contains "challenger recover skip: warning includes skipped" "$(kv_value "$tick" warn_output)" "RECOVERY_SKIPPED"
   check_contains "challenger recover skip: preparation failure surfaced" "$(kv_value "$tick" warn_output)" "task-input preparation failed before plan approval"
-  check_contains "challenger recover skip: evidence names the skip" "$(jq -r '.detail' "$repo/features/$slug/.task-inputs-failure.json")" "task-identity-linear-issue-id-unresolvable"
   check_not_contains "challenger recover skip: no invalid identifier log" "$(kv_value "$tick" warn_output)" "Invalid issue identifier"
 }
 
@@ -1236,15 +1232,12 @@ test_missing_expansion_recovery_failure_launches_with_bootstrap() {
     }
   "
   tick="$(harness_run_tick "$repo" "$slug" "$issue" "$overrides")"
-  marker="$repo/features/$slug/.task-inputs-failure.json"
 
   check_eq "recover fail: coding does not launch" "false" "$(kv_value "$tick" coding_launched)"
   check_eq "recover fail: plan not offered for approval" "running" "$(harness_read_stage_status "$repo" "$slug" planning)"
-  check_eq "recover fail: needs-user attention" "needs-user" "$(kv_value "$tick" attention)"
-  check_file_exists "recover fail: evidence marker written" "$marker"
-  check_contains "recover fail: evidence carries the recovery detail" "$(jq -r '.detail' "$marker")" "expand-issue-exited-non-zero"
-  check_contains "recover fail: next action names wavemill expand" "$(jq -r '.nextAction' "$marker")" "wavemill expand $issue"
   check_contains "recover fail: warning surfaced" "$(kv_value "$tick" warn_output)" "task-input preparation failed before plan approval"
+  # Budget exhaustion is escalated by the gate; the projection owns the window.
+  check_eq "recover fail: no needs-user window write on exhaustion" "" "$(kv_value "$tick" attention)"
 }
 
 test_missing_expansion_recovery_not_repeated() {
@@ -1267,8 +1260,6 @@ test_missing_expansion_recovery_not_repeated() {
   tick2="$(harness_run_tick "$repo" "$slug" "$issue" "$overrides")"
 
   check_contains "recover once: first tick surfaces the failure" "$(kv_value "$tick1" warn_output)" "task-input preparation failed"
-  check_not_contains "recover once: second tick stays quiet" "$(kv_value "$tick2" warn_output)" "task-input preparation failed"
-  check_eq "recover once: second tick keeps needs-user attention" "needs-user" "$(kv_value "$tick2" attention)"
   check_eq "recover once: still no approval offered" "running" "$(harness_read_stage_status "$repo" "$slug" planning)"
   check_eq "recover once: no coding launch" "false" "$(kv_value "$tick2" coding_launched)"
 }
@@ -1305,6 +1296,7 @@ EOF
     check_eq "invalid $case_name: planning held for preparation" "running" "$(harness_read_stage_status "$repo" "$slug" planning)"
     check_contains "invalid $case_name: planning note names the invalid route" "$note" "invalid expanded routing artifact"
     check_contains "invalid $case_name: warning reports the preparation failure" "$(kv_value "$tick" warn_output)" "task-input preparation failed before plan approval"
+    # Not a budget exhaustion: no escalation basis, so the window is flagged now.
     check_eq "invalid $case_name: needs-user attention" "needs-user" "$(kv_value "$tick" attention)"
     check_file_absent "invalid $case_name: no recovery state written" "$feature_dir/.expansion-recovery-state.json"
     if cmp -s "$feature_dir/.routing-complete" "$TEST_TMP/$slug-routing-before.json" \
