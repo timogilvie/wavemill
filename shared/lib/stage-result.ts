@@ -1196,8 +1196,14 @@ export async function writeStageResult(
 ): Promise<void> {
   await fs.mkdir(featureDir, { recursive: true });
   
-  // Resolve missing lineage from the latest matching launch row (HOK-3476)
-  if ((result.runId === undefined || result.stageAttemptId === undefined) && result.status !== 'running' && result.startedAt) {
+  // Resolve missing lineage from the latest matching launch row (HOK-3476).
+  // The `ready` stage result has no single matching `ExecutionStage`: its
+  // launches land under the `ci-fix` / `conflict-resolution` /
+  // `ready-remediation` ownership kinds, each a distinct launch with no
+  // one-to-one mapping back to a single `.ready-result.json`. Rather than
+  // guess which kind owns this write, leave ready-stage lineage explicitly
+  // unresolved here — never fabricated.
+  if ((result.runId === undefined || result.stageAttemptId === undefined) && result.status !== 'running' && result.startedAt && result.stage !== 'ready') {
     // First try to get lineage from existing result file
     const launched = await readStageResult({ featureDir, stage: result.stage });
 

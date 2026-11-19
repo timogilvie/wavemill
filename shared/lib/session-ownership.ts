@@ -530,16 +530,26 @@ export function findStageLaunchByStartedAt(
   return rows.find((row) => stageLaunchForRow(row) === stage && Date.parse(row.launchedAt) === startedMs) ?? null;
 }
 
+/** The four lineage fields shared by a launch row and a written stage result (HOK-3476). */
+export interface LineageCarrier {
+  runId?: string | null;
+  stageAttemptId?: string | null;
+  parentRunId?: string | null;
+  retryOf?: string | null;
+}
+
 /**
- * Resolve lineage information for a stage result from a launch row (HOK-3476).
- * Returns undefined for legacy rows that lack stageAttemptId.
+ * Resolve lineage information from a launch row, or from an already-written
+ * stage result that owns the same attempt (HOK-3476). Both shapes carry the
+ * same four lineage fields; this just projects them. Returns undefined
+ * fields for legacy sources that lack them.
  */
-export function resolveLineageForStageResult(launchRow: SessionOwnershipRow) {
+export function resolveLineageForStageResult(source: LineageCarrier) {
   return {
-    runId: launchRow.runId,
-    stageAttemptId: launchRow.stageAttemptId,
-    parentRunId: launchRow.parentRunId,
-    retryOf: launchRow.retryOf,
+    runId: source.runId,
+    stageAttemptId: source.stageAttemptId,
+    parentRunId: source.parentRunId,
+    retryOf: source.retryOf,
   };
 }
 
