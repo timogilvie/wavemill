@@ -273,7 +273,6 @@ export function classifyArmFault(input: {
     case 'empty-model-turn':
     case 'provider-credit-exhausted':
     case 'provider-config-error':
-    case 'recovery_contract_unavailable':
     case 'openrouter-credits-exhausted':
       return 'harness-fault';
     // Our own policy stopped the run (mutation/network denial) or an operator/
@@ -285,6 +284,7 @@ export function classifyArmFault(input: {
       return 'harness-fault';
     case 'tool-use-unsupported':
     case 'varied_model_unresolvable':
+    case 'recovery_contract_unavailable':
       return 'selection-fault';
     case 'provider-rate-limited':
     case 'provider-quota-exhausted':

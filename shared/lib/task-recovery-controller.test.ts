@@ -247,6 +247,8 @@ test('a retryable failure in backoff waits', () => {
 test('an exhausted retry budget escalates once, with an exhausted basis', () => {
   const d = decideTaskRecovery(snapshot({ stageResult: { kind: 'failed' }, failure: retryableFailure('exhausted') }));
   assert.equal(d.action, 'escalate');
+  assert.equal(d.controlBearing, true);
+  assert.equal(d.stage, 'coding');
   assert.equal(d.escalationBasis?.kind, 'exhausted');
 });
 
@@ -280,11 +282,11 @@ test('a recognised code failure is sent to remediation', () => {
   assert.equal(d.action, 'remediate');
 });
 
-test('a refused coding contract escalates instead of entering a wakeless wait', () => {
+test('a refused saved coding route escalates once with validator evidence', () => {
   const d = decideTaskRecovery(snapshot({
     stage: 'coding',
     stageResult: { kind: 'failed' },
-    executionContract: {ok:false,reason:'contract_missing',detail:'persisted route missing'},
+    executionContract: { ok: false, reason: 'model_disabled', detail: 'route cannot launch', contract: { model: 'routed-model' } },
     failure: retryableFailure('proceed'),
   }));
   assert.equal(d.action, 'escalate');

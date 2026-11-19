@@ -19,3 +19,10 @@ Consumed by `shared/lib/stage-executor-replay.test.ts`: enrichment must carry
 models only, the one writer must persist the derived `native-openrouter`
 executor, and the incident's own `phase-config.json` — stale executor and all
 — must now validate with the derived agent.
+
+HOK-3512 preserves the original `agent_unsupported_for_model` capture above as
+historical provenance; HOK-3511 fixed that cause by deriving the executor from
+the saved model. `live-launch-refusal.json` is the replay input for the current
+failure: the saved `gpt-5.3-codex` route is refused by the real disabled-model
+validator as `model_disabled`. The incident replay test sends that validator
+result through `decideTaskRecovery` and verifies one policy-terminal claim.

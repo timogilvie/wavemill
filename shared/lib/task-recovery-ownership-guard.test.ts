@@ -11,6 +11,12 @@ const patternsOf = (file: string, source: string) =>
   checkGuardSource(TASK_RECOVERY_OWNERSHIP_GUARD, file, source).map((finding) => finding.pattern);
 
 describe('task-recovery-ownership guard — HOK-3406 Observer migration', () => {
+  it('flags the wakeless saved-route wait and private stopped-state writer', () => {
+    assert.deepEqual(patternsOf('shared/lib/task-recovery-controller.ts', "wake: 'execution-contract-available'\n"), ['unproduced-contract-wait']);
+    assert.deepEqual(patternsOf('shared/lib/wavemill-monitor.sh', 'stopReason = "recovery_contract_unavailable"\n'), ['private-contract-refusal-stop']);
+  });
+
+
   it('rejects the retired route-refusal boolean and private stop adapter', () => {
     for (const source of ['local contract_available=false', '_stop_task_recovery_contract_unavailable "$issue"']) {
       assert.deepEqual(patternsOf('shared/lib/wavemill-monitor.sh', `${source}\n`), ['private-route-refusal']);

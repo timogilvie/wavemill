@@ -142,8 +142,8 @@ export const TERMINAL_CODES_BEFORE_HOK_3176 = 29;
 export const TERMINAL_ALLOWLIST: readonly TerminalCause[] = Object.freeze([
   {
     code: 'recovery_contract_unavailable',
-    reason: 'the saved route was positively refused by validation; identical replay cannot change it until an operator changes the route',
-    faultClass: 'harness-fault',
+    reason: 'the validated saved route cannot launch; an operator must change or repair the route before replay',
+    faultClass: 'selection-fault',
     testRef: 'failure-policy.test.ts:terminal:recovery_contract_unavailable',
   },
   {

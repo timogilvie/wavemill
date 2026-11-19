@@ -101,6 +101,7 @@ for (const code of [
   'operator-gate',
   'coding-dirty-handoff',
   'task-budget-exhausted',
+  'recovery_contract_unavailable',
 ]) {
   test(`terminal:${code}`, () => {
     for (const challengeArm of [false, true]) {

@@ -67,6 +67,9 @@ export interface RecoveryFailure {
   retry: BoundedRetryDecision;
 }
 
+export type RecoveryContractValidation = { ok: boolean; reason?: string; detail?: string;
+  contract?: { model?: string; agent?: string; provider?: string } | null };
+
 export type RecoveryDisposition = Pick<
   StageAgentDisposition,
   'kind' | 'reason' | 'evidenceConfidence' | 'waitingOn' | 'blockingPrompt'
@@ -257,6 +260,15 @@ export function decideTaskRecovery(snapshot: RecoverySnapshot): RecoveryDecision
   // 5. Legitimate non-human wait.
   if (snapshot.wait && snapshot.failure === null) {
     return decision(stage, 'wait', `legitimate wait owned by ${snapshot.wait.owner} (${snapshot.wait.wake})`, { wait: snapshot.wait });
+  }
+
+  // A positively refused saved route is policy-terminal. A failed validator
+  // read is uncertainty, so keep the normal bounded retry decision instead.
+  if (snapshot.stageResult.kind === 'failed'
+      && snapshot.executionContract?.ok === false
+      && snapshot.executionContract.reason !== 'contract_read_failed') {
+    const refusal = classifyFailure({ stage, failureKind: 'recovery_contract_unavailable' });
+    return decideFromFailure(snapshot, { decision: refusal, retry: 'proceed' });
   }
 
   // 8. Classified failure → delegate to the failure authorities.

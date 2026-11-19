@@ -70,6 +70,10 @@ export const TASK_RECOVERY_OWNERSHIP_GUARD: GuardSpec = {
       lang: 'both',
       re: /\.recovery-claim\.json/,
     },
+    { name: 'unproduced-contract-wait', lang: 'both', re: /execution-contract-available/,
+      description: 'saved-route refusals cannot wait for an unproduced contract wake' },
+    { name: 'private-contract-refusal-stop', lang: 'both', re: /stopReason\s*[:=]\s*["']recovery_contract_unavailable["']/,
+      description: 'saved-route refusals must use the claimed escalation, not a stopped-state write' },
     {
       name: 'observer-auto-fix-import',
       description:

@@ -11,7 +11,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +25,9 @@ import {
 import { loadIncidentFixture } from './incident-fixture-converter.ts';
 import { classifyArmFault } from './arm-failure-taxonomy.ts';
 import { buildBudgetExhaustions } from './stage-eval-evidence.ts';
+import { claimRecoveryAction, decideTaskRecovery } from './task-recovery-controller.ts';
+import { classifyFailure } from './failure-policy.ts';
+import { validateContractLaunchable, type ExecutionContract } from './execution-contract.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -205,6 +208,52 @@ async function main(): Promise<void> {
     } catch (err: unknown) {
       failures.push({ fixture: 'native-harness-hang.json', reason: err instanceof Error ? err.message : String(err) });
       console.error(`  FAIL  native-harness-hang.json — ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // HOK-3512: HOK-3500's stored-agent refusal was repaired by HOK-3511, so
+  // preserve that source artifact and replay a currently valid launch refusal
+  // (a disabled saved model) through the real controller and atomic claim.
+  {
+    runs += 1;
+    const label = 'hok-3500-route-agent-mismatch/live-launch-refusal.json';
+    const dir = mkdtempSync(join(tmpdir(), 'wm-route-refusal-'));
+    try {
+      const recorded = JSON.parse(readFileSync(join(FIXTURES_DIR, 'hok-3500-route-agent-mismatch', 'live-launch-refusal.json'), 'utf8')) as { contract: ExecutionContract };
+      const refusal = { ...validateContractLaunchable({ contract: recorded.contract }), contract: recorded.contract };
+      if (refusal.reason !== 'model_disabled' || !('detail' in refusal)) throw new Error('fixture contract no longer exercises a launch refusal');
+      const snapshot = {
+        issue: 'HOK-3500_c', stage: 'coding' as const,
+        attempt: { currentRunId: null, controlRunId: null }, disposition: null,
+        stageResult: { kind: 'failed' as const }, executionContract: refusal,
+        outstandingEffect: null, wait: null,
+        failure: { decision: classifyFailure({ stage: 'coding', failureKind: 'native-stage-timeout' }), retry: 'proceed' as const },
+      };
+      const decision = decideTaskRecovery(snapshot);
+      const args = { stateDir: dir, decision, runId: null, evidenceId: 'saved-route-refusal' };
+      const first = claimRecoveryAction(args);
+      const duplicate = claimRecoveryAction(args);
+      const reason = decision.action !== 'escalate'
+        ? `expected controller escalation, got ${decision.action}`
+        : decision.escalationBasis?.kind !== 'policy-terminal'
+          ? 'expected policy-terminal escalation basis'
+          : !decision.rationale.includes('model_disabled') || !decision.rationale.includes('gpt-5.3-codex') || !decision.rationale.includes(refusal.detail ?? '')
+            ? 'validator reason or saved model was lost'
+            : !first.claimed || duplicate.claimed
+              ? 'expected exactly one claimed escalation'
+              : null;
+      if (reason) {
+        failures.push({ fixture: label, reason });
+        console.error(`  FAIL  ${label} — ${reason}`);
+      } else {
+        passed += 1;
+        console.log(`  PASS  ${label} — one policy-terminal claim; no retry dispatch`);
+      }
+    } catch (err: unknown) {
+      failures.push({ fixture: label, reason: err instanceof Error ? err.message : String(err) });
+      console.error(`  FAIL  ${label} — ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   }
 
