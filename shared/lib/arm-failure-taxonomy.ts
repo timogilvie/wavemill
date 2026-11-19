@@ -283,6 +283,8 @@ export function classifyArmFault(input: {
       return 'harness-fault';
     case 'tool-use-unsupported':
     case 'varied_model_unresolvable':
+    // HOK-3512: the saved route no longer passes launch validation.
+    case 'recovery_contract_unavailable':
       return 'selection-fault';
     case 'provider-rate-limited':
     case 'provider-quota-exhausted':

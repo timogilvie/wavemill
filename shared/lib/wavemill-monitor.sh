@@ -8594,7 +8594,7 @@ _dispatch_failed_stage_recovery() {
 _monitor_claim_failed_stage_action() {
   local issue="$1" feature_dir="$2" stage="$3" context="${4:-}"
   [[ -n "$context" ]] || context='{}'
-  local decision_json head base retry_verdict run_id evidence_id snapshot_file result original_result failure_class contract_available="null"
+  local decision_json head base retry_verdict run_id evidence_id snapshot_file result original_result failure_class contract_json
   local limit="${WAVEMILL_STAGE_FAILURE_MAX_ATTEMPTS:-3}"
   [[ "$limit" =~ ^[0-9]+$ ]] || limit=3
 
@@ -8608,12 +8608,12 @@ _monitor_claim_failed_stage_action() {
   evidence_id="$(jq -r '.fingerprint // empty' <<<"$decision_json" 2>/dev/null || true)"
   [[ -n "$evidence_id" ]] || evidence_id="${stage}:${head:-unknown}:${run_id:-legacy}"
 
-  if [[ "$stage" == "coding" ]]; then
-    if jq -e '.ok == true' <<<"$(recovery_contract_json "$issue" "$feature_dir" coding)" >/dev/null 2>&1; then
-      contract_available=true
-    else
-      contract_available=false
-    fi
+  # HOK-3512: the validator result reaches the controller intact (reason,
+  # detail, contract) — a refusal is decided there, never reduced here.
+  contract_json="$(jq -c '.contract // empty' <<<"$context")"
+  if [[ -z "$contract_json" ]]; then
+    contract_json=null
+    [[ "$stage" != "coding" ]] || contract_json="$(recovery_contract_json "$issue" "$feature_dir" coding)"
   fi
 
   original_result="$(read_stage_result "$feature_dir" "$stage" 2>/dev/null || true)"
@@ -8622,11 +8622,11 @@ _monitor_claim_failed_stage_action() {
   snapshot_file="$(mktemp "${TMPDIR:-/tmp}/wavemill-recovery.XXXXXX")" || return 1
   jq -cn --arg issue "$issue" --arg stage "$stage" --arg runId "$run_id" \
     --arg evidenceId "$evidence_id" --arg retry "$retry_verdict" --argjson failure "$decision_json" \
-    --argjson contractAvailable "$contract_available" --argjson context "$context" \
+    --argjson contract "$contract_json" --argjson context "$context" \
     --argjson originalResult "$original_result" '
       {issue:$issue, stage:$stage, evidence:{stageResult:$originalResult},
        attempt:{currentRunId:(if $runId == "" then null else $runId end), controlRunId:(if $runId == "" then null else $runId end)},
-       disposition:null, stageResult:{kind:"failed"}, contractAvailable:$contractAvailable,
+       disposition:null, stageResult:{kind:"failed"}, contract:$contract,
        outstandingEffect:null, wait:null, baseDrift:($context.baseDrift // false), failure:{decision:$failure,retry:$retry,source:($context.source // "ci")}}' >"$snapshot_file" || {
       rm -f "$snapshot_file"; return 1;
     }
@@ -9962,23 +9962,26 @@ _append_recovery_contract_trace() {
   printf '%s\n' "$line" >> "$feature_dir/trace.jsonl"
 }
 
-_stop_task_recovery_contract_unavailable() {
-  local issue="$1" phase="$2" feature_dir="$3" sub_reason="$4" detail="$5"
-  if [[ -f "${STATE_FILE:-}" ]] && jq -e --arg issue "$issue" '.tasks[$issue]? // empty' "$STATE_FILE" >/dev/null 2>&1; then
-    state_mutate "$STATE_FILE" \
-      '.tasks[$issue].status = "stopped"
-       | .tasks[$issue].stopReason = "recovery_contract_unavailable"
-       | .tasks[$issue].stopSubReason = $subReason
-       | .tasks[$issue].stopDetail = $detail
-       | .tasks[$issue].updated = (now | todate)' \
-      --arg issue "$issue" \
-      --arg subReason "$sub_reason" \
-      --arg detail "$detail" >/dev/null 2>&1 || true
-  fi
-  write_stage_result "$feature_dir" "$phase" "failed" "" "" "recovery_contract_unavailable: $sub_reason - $detail"
-  if declare -F wavemill_hook_write >/dev/null 2>&1; then
-    wavemill_hook_write "blocked" "recovery_contract_unavailable" "$detail" "" "$sub_reason" "monitor" || true
-  fi
+# HOK-3512: the window-lost and launch-surface paths hand a refused saved
+# route to the same controller decision and escalation executor as a failed
+# stage (`_maybe_retry_failed_stage_now`). The controller classifies it
+# through failure-policy and claims one escalation; this adapter never writes
+# a private stopped state, stage result or hook.
+_recovery_contract_refused() {
+  local issue="$1" phase="$2" feature_dir="$3" refusal="$4" context
+  log_warn "$issue → $phase saved route refused: $(jq -r '(.reason // "contract_unavailable") + " - " + (.detail // "")' <<<"$refusal" 2>/dev/null)"
+  _RESTORE_STATE="failed"
+  context="$(jq -cn --argjson contract "$refusal" '{contract:$contract}' 2>/dev/null)" || return 0
+  _maybe_retry_failed_stage_now "$issue" "$feature_dir" "$phase" "" "$context" >/dev/null 2>&1 || true
+}
+
+# A recovery launch surface that failed after validation is the same refusal,
+# carrying the replayed contract and the concrete step that failed.
+_recovery_launch_surface_refused() {
+  local issue="$1" phase="$2" feature_dir="$3" reason="$4" detail="$5" contract_payload="${6:-null}"
+  _recovery_contract_refused "$issue" "$phase" "$feature_dir" \
+    "$(jq -cn --arg reason "$reason" --arg detail "$detail" --argjson contract "${contract_payload:-null}" \
+      '{ok:false,reason:$reason,detail:$detail,contract:$contract}')"
 }
 
 # Prepare observable runtime surfaces before launching recovered work.
@@ -10100,20 +10103,6 @@ _restore_inflight_task_window_if_missing() {
     set_task_task_owned "$issue" "active" || true
   fi
 
-  # A prior resume may already have determined that this task has no valid
-  # recovery contract.  Its phase remains persisted for diagnosis, but it is
-  # terminal from the resume controller's perspective; retrying it every poll
-  # only produces a missing-window log storm.
-  if [[ -f "${STATE_FILE:-}" ]] \
-    && jq -e --arg issue "$issue" '
-      .tasks[$issue]
-      | select(.status == "stopped")
-      | select(.stopReason == "recovery_contract_unavailable")
-    ' "$STATE_FILE" >/dev/null 2>&1; then
-    _RESTORE_STATE="failed"
-    return 0
-  fi
-
   if _tmux_task_window_target "$SESSION" "$issue" "$slug" "${STATE_FILE:-}" "$wt_dir" >/dev/null 2>&1; then
     return 0
   fi
@@ -10143,14 +10132,10 @@ _restore_inflight_task_window_if_missing() {
     title=$(echo "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")
   fi
 
-  local contract_json contract_ok contract_payload reason detail
+  local contract_json contract_payload
   contract_json="$(recovery_contract_json "$issue" "$feature_dir" "$phase")"
-  contract_ok="$(printf '%s' "$contract_json" | jq -r '.ok // false' 2>/dev/null || echo "false")"
-  if [[ "$contract_ok" != "true" ]]; then
-    reason="$(printf '%s' "$contract_json" | jq -r '.reason // "contract_malformed"' 2>/dev/null || echo "contract_malformed")"
-    detail="$(printf '%s' "$contract_json" | jq -r '.detail // "Persisted recovery contract is unavailable."' 2>/dev/null || echo "Persisted recovery contract is unavailable.")"
-    _stop_task_recovery_contract_unavailable "$issue" "$phase" "$feature_dir" "$reason" "$detail"
-    _RESTORE_STATE="failed"
+  if [[ "$(jq -r '.ok // false' <<<"$contract_json" 2>/dev/null)" != "true" ]]; then
+    _recovery_contract_refused "$issue" "$phase" "$feature_dir" "$contract_json"
     return 0
   fi
 
@@ -10161,8 +10146,7 @@ _restore_inflight_task_window_if_missing() {
   provider="$(printf '%s' "$contract_payload" | jq -r '.provider // empty')"
 
   if ! _append_recovery_contract_trace "$feature_dir" "$issue" "$slug" "$phase" "$model" "$agent_cmd" "$contract_payload"; then
-    _stop_task_recovery_contract_unavailable "$issue" "$phase" "$feature_dir" "state_transition_failed" "failed to write recovery contract trace event"
-    _RESTORE_STATE="failed"
+    _recovery_launch_surface_refused "$issue" "$phase" "$feature_dir" "state_transition_failed" "failed to write recovery contract trace event" "$contract_payload"
     return 0
   fi
 
@@ -10178,8 +10162,7 @@ _restore_inflight_task_window_if_missing() {
       --arg agent "$agent_cmd" \
       --arg provider "$provider" \
       --arg stageRole "$phase" >/dev/null 2>&1; then
-      _stop_task_recovery_contract_unavailable "$issue" "$phase" "$feature_dir" "state_transition_failed" "failed to update workflow task state"
-      _RESTORE_STATE="failed"
+      _recovery_launch_surface_refused "$issue" "$phase" "$feature_dir" "state_transition_failed" "failed to update workflow task state" "$contract_payload"
       return 0
     fi
   fi
@@ -10190,8 +10173,7 @@ _restore_inflight_task_window_if_missing() {
       [[ -z "$depth" ]] && depth=$(get_task_meta "$issue" "planDepth")
       [[ -z "$depth" ]] && depth="light"
       if ! _prepare_recovery_phase_launch "$issue" "$slug" "planning" "$feature_dir" "$wt_dir" "$agent_cmd" "$model" "$contract_payload"; then
-        _stop_task_recovery_contract_unavailable "$issue" "$phase" "$feature_dir" "state_transition_failed" "failed to prepare recovery launch surfaces"
-        _RESTORE_STATE="failed"
+        _recovery_launch_surface_refused "$issue" "$phase" "$feature_dir" "state_transition_failed" "failed to prepare recovery launch surfaces" "$contract_payload"
         return 0
       fi
       launch_planning_phase "$issue" "$slug" "$title" "$wt_dir" "$branch" "$BASE_BRANCH" \
@@ -10202,8 +10184,7 @@ _restore_inflight_task_window_if_missing() {
       [[ -z "$depth" ]] && depth=$(get_task_meta "$issue" "codeDepth")
       [[ -z "$depth" ]] && depth="medium"
       if ! _prepare_recovery_phase_launch "$issue" "$slug" "coding" "$feature_dir" "$wt_dir" "$agent_cmd" "$model" "$contract_payload"; then
-        _stop_task_recovery_contract_unavailable "$issue" "$phase" "$feature_dir" "state_transition_failed" "failed to prepare recovery launch surfaces"
-        _RESTORE_STATE="failed"
+        _recovery_launch_surface_refused "$issue" "$phase" "$feature_dir" "state_transition_failed" "failed to prepare recovery launch surfaces" "$contract_payload"
         return 0
       fi
       launch_coding_phase "$issue" "$slug" "$title" "$wt_dir" "$branch" "$BASE_BRANCH" \
@@ -10215,8 +10196,7 @@ _restore_inflight_task_window_if_missing() {
       [[ -z "$review_mode" ]] && review_mode=$(get_task_meta "$issue" "reviewMode")
       [[ -z "$review_mode" ]] && review_mode="static"
       if ! _prepare_recovery_phase_launch "$issue" "$slug" "review" "$feature_dir" "$wt_dir" "$agent_cmd" "$model" "$contract_payload" "review"; then
-        _stop_task_recovery_contract_unavailable "$issue" "$phase" "$feature_dir" "state_transition_failed" "failed to prepare recovery launch surfaces"
-        _RESTORE_STATE="failed"
+        _recovery_launch_surface_refused "$issue" "$phase" "$feature_dir" "state_transition_failed" "failed to prepare recovery launch surfaces" "$contract_payload"
         return 0
       fi
       launch_review_phase "$issue" "$slug" "$title" "$wt_dir" "$branch" "$BASE_BRANCH" \
@@ -10231,8 +10211,7 @@ _restore_inflight_task_window_if_missing() {
 
   if [[ "$rc" -ne 0 ]]; then
     log_warn "$issue → Failed to relaunch $phase phase after resume (rc=$rc)"
-    _stop_task_recovery_contract_unavailable "$issue" "$phase" "$feature_dir" "launch_failed" "recovery launch command exited with status $rc"
-    _RESTORE_STATE="failed"
+    _recovery_launch_surface_refused "$issue" "$phase" "$feature_dir" "launch_failed" "recovery launch command exited with status $rc" "$contract_payload"
     return 0
   fi
 

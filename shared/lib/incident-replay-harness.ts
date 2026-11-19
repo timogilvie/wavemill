@@ -33,7 +33,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { classifyFailure, DEFAULT_RETRY_ATTEMPTS, type FailureStage } from './failure-policy.ts';
 import { createStateDirRetry, type StateDirRetry } from './bounded-retry.ts';
-import { decideTaskRecovery } from './task-recovery-controller.ts';
+import { decideTaskRecovery, type RecoveryContractValidation } from './task-recovery-controller.ts';
 import { createIncidentDraft, type IncidentLifecycle } from './wavemill-incident-model.ts';
 import { IncidentStore } from './wavemill-incident-store.ts';
 import { reconcileIncidentCycle } from './incident-reconcile-cycle.ts';
@@ -103,6 +103,8 @@ export interface IncidentReplayFixture {
     harnessHold?: { toolName: string; toolCallId: string; startedAt: string };
     /** ISO time of the newest agent-written progress; `null` = launch anchor only. */
     lastProgressAt?: string | null;
+    /** HOK-3512: the saved route's launch validation, passed to the controller intact. */
+    contract?: RecoveryContractValidation;
   };
   convergence: {
     mustMerge?: boolean;
@@ -316,6 +318,8 @@ export interface FaultModel {
   harnessHold?: { toolName: string; toolCallId: string; startedAt: string };
   /** ISO time of the newest agent-written progress, when the fixture names one. */
   lastProgressAt?: string | null;
+  /** HOK-3512: the saved route's launch validation, when the fixture records one. */
+  contract?: RecoveryContractValidation;
 }
 
 /**
@@ -337,6 +341,7 @@ export function faultModelFromFixture(fixture: IncidentReplayFixture): FaultMode
     ...(f.progressing !== undefined ? { progressing: f.progressing } : {}),
     ...(f.harnessHold ? { harnessHold: f.harnessHold } : {}),
     ...(f.lastProgressAt !== undefined ? { lastProgressAt: f.lastProgressAt } : {}),
+    ...(f.contract ? { contract: f.contract } : {}),
   };
 }
 
@@ -403,7 +408,6 @@ function replayRecoveryTick(
       attempt: { currentRunId: null, controlRunId: null },
       disposition: { kind: 'in-flight', reason: 'agent-working', evidenceConfidence: 'high', waitingOn: null, blockingPrompt: null },
       stageResult: { kind: 'running' },
-      contractAvailable: stage === 'coding' ? true : null,
       outstandingEffect: null,
       wait: null,
       failure: null,
@@ -420,7 +424,7 @@ function replayRecoveryTick(
       attempt: { currentRunId: null, controlRunId: null },
       disposition: null,
       stageResult: { kind: 'failed' },
-      contractAvailable: stage === 'coding' ? true : null,
+      contract: model.contract ?? null,
       outstandingEffect: null,
       wait: null,
       failure: { decision: failure, retry: verdict },
@@ -806,6 +810,7 @@ export async function runRealFixture(fixturePath: string): Promise<RealFixtureRu
         detail: fixture.failure.detail,
         survivesRelaunches: fixture.failure.survivesRelaunches,
         ...(fixture.failure.progressing !== undefined ? { progressing: fixture.failure.progressing } : {}),
+        ...(fixture.failure.contract ? { contract: fixture.failure.contract } : {}),
       },
       convergence: fixture.convergence,
     };

@@ -1,0 +1,106 @@
+{
+  "schemaVersion": "incident-fixture/1",
+  "chain": "hok3512_saved_route_refusal",
+  "incidents": [
+    "2026-11-17-HOK-FIXTURE-3500-route-agent-mismatch"
+  ],
+  "source": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "stage_marker_not_advanced",
+    "severity": "high",
+    "confidence": "high",
+    "recordedLifecycle": "resolved",
+    "recordedResolution": "operator_touch",
+    "occurrenceCount": 2,
+    "firstObservedAt": "2026-11-17T16:45:45Z",
+    "lastObservedAt": "2026-11-17T19:15:00Z",
+    "stateSnapshot": null,
+    "convertedBy": "HOK-3512 hand-sanitised .wavemill/incidents/2026-11-17-HOK-3500-route-agent-mismatch (recovery-contract-validate.json, task-row.json, task-recovery-job/job-result.json). The recorded agent_unsupported_for_model cause is repaired by HOK-3511; the replay keeps the recorded validator result as the refusal oracle.",
+    "observationsTruncated": false
+  },
+  "initialState": {
+    "task": {
+      "issue": "HOK-FIXTURE-3500",
+      "slug": "incident-hok3512-saved-route-refusal",
+      "phase": "coding",
+      "status": "active"
+    },
+    "jobs": []
+  },
+  "incident": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "stage_marker_not_advanced",
+    "severity": "high",
+    "confidence": "high",
+    "summary": "A retryable native-stage-timeout coding failure whose saved route then failed launch validation stayed coding/active for ~2.5h: the recovery controller waited on an execution-contract-available wake nothing produced, and the task-recovery job exited ok every pass.",
+    "operatorAction": "A refused saved route must escalate once through failure-policy and escalate_operator_attention, naming the stage, model and validator reason; reroute the stage to clear it.",
+    "metadata": {
+      "stage": "coding",
+      "failureKind": "native-stage-timeout",
+      "validatorReason": "agent_unsupported_for_model",
+      "jobResult": {
+        "ok": true,
+        "exitCode": 0,
+        "kind": "task-recovery"
+      }
+    }
+  },
+  "observations": [
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "workflow_state",
+          "source": "task-row.json",
+          "timestamp": "2026-11-17T16:45:45Z",
+          "redactedData": "phase=coding status=active; coding stage failed retryable native-stage-timeout at 13:11; recovery job exited {ok:true,exitCode:0}.",
+          "key": "saved-route-refusal:HOK-FIXTURE-3500"
+        }
+      ]
+    },
+    {
+      "absentCyclesBefore": 0,
+      "evidence": [
+        {
+          "type": "job_state",
+          "source": "task-recovery-job/job-result.json",
+          "timestamp": "2026-11-17T19:15:00Z",
+          "redactedData": "No relaunch, retry counter, hook change or inbox item after ~2.5h; operator found it by hand.",
+          "key": "saved-route-refusal:HOK-FIXTURE-3500"
+        }
+      ]
+    }
+  ],
+  "trailingAbsentCycles": 6,
+  "failure": {
+    "stage": "coding",
+    "failureKind": "native-stage-timeout",
+    "detail": "native-stage-timeout: native coding exhausted its model time budget",
+    "survivesRelaunches": "never",
+    "contract": {
+      "ok": false,
+      "reason": "agent_unsupported_for_model",
+      "detail": "Recovery contract for model kimi-k2.7-code is unavailable: current resolver supports agent native-openrouter, not persisted agent claude. Run wavemill reroute <task-id> --phase <planning|coding|review> to choose an audited replacement.",
+      "contract": {
+        "model": "kimi-k2.7-code",
+        "provider": "anthropic",
+        "agent": "claude"
+      }
+    }
+  },
+  "convergence": {
+    "mustEscalate": true,
+    "maxTickCount": 1,
+    "tickIntervalSeconds": 30
+  },
+  "journey": "saved-route-refusal",
+  "expected": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "stage_marker_not_advanced",
+    "occurrenceCount": 2,
+    "lifecycleWhilePresent": "observed",
+    "finalLifecycle": "resolved",
+    "resolutionReasonPrefix": "not re-observed",
+    "recurrences": 0
+  }
+}

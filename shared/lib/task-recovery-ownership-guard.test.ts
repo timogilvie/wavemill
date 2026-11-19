@@ -3,7 +3,8 @@ import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { checkGuardSource, formatGuardResult, runSourceGuard } from '../../tools/lib/source-guard.ts';
-import { TASK_RECOVERY_OWNERSHIP_GUARD } from './task-recovery-ownership-guard.ts';
+import { existsSync } from 'node:fs';
+import { RECOVERY_WAKE_PRODUCERS, TASK_RECOVERY_OWNERSHIP_GUARD, TASK_RECOVERY_WAKE_GUARD } from './task-recovery-ownership-guard.ts';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -56,5 +57,38 @@ describe('task-recovery-ownership guard — HOK-3406 Observer migration', () => 
   it('passes at HEAD', () => {
     const result = runSourceGuard(TASK_RECOVERY_OWNERSHIP_GUARD, repoRoot);
     assert.deepEqual(result.findings, [], formatGuardResult(TASK_RECOVERY_OWNERSHIP_GUARD, result));
+  });
+});
+
+describe('task-recovery-ownership guard — HOK-3512 one refusal outcome', () => {
+  const CONTROLLER = 'shared/lib/task-recovery-controller.ts';
+  const wakePatterns = (source: string) =>
+    checkGuardSource(TASK_RECOVERY_WAKE_GUARD, CONTROLLER, source).map((finding) => finding.pattern);
+
+  it('flags a controller wait whose wake has no producer (the deleted execution-contract-available hold)', () => {
+    assert.deepEqual(wakePatterns("      wait: { owner: 'tool', wake: 'execution-contract-available' },\n"), ['recovery-wakeless-wait']);
+  });
+
+  it('accepts produced wakes, including ternary alternatives', () => {
+    assert.deepEqual(wakePatterns("wait: { owner: 'backoff', wake: 'backoff-elapsed' },\n"), []);
+    assert.deepEqual(wakePatterns("wake: waiting.kind === 'background' ? 'background-work-complete' : 'operator-release',\n"), []);
+  });
+
+  it('names a real producer file for every declared wake', () => {
+    for (const [wake, producer] of Object.entries(RECOVERY_WAKE_PRODUCERS)) {
+      const path = producer.split(' ')[0]!;
+      assert.ok(existsSync(join(repoRoot, path)), `${wake} producer ${path} is missing`);
+    }
+  });
+
+  it('flags a private stopped write or raw hook for a contract refusal', () => {
+    assert.deepEqual(patternsOf('a.sh', '       | .tasks[$issue].stopReason = "recovery_contract_unavailable"\n'), ['contract-refusal-private-stop']);
+    assert.deepEqual(patternsOf('a.sh', '    wavemill_hook_write "blocked" "recovery_contract_unavailable" "$detail"\n'), ['contract-refusal-private-stop']);
+    assert.deepEqual(patternsOf('a.ts', "task.stopReason = 'recovery_contract_unavailable';\n"), ['contract-refusal-private-stop']);
+  });
+
+  it('passes at HEAD', () => {
+    const result = runSourceGuard(TASK_RECOVERY_WAKE_GUARD, repoRoot);
+    assert.deepEqual(result.findings, [], formatGuardResult(TASK_RECOVERY_WAKE_GUARD, result));
   });
 });

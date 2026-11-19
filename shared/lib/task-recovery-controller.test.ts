@@ -34,7 +34,6 @@ function snapshot(overrides: Partial<RecoverySnapshot> = {}): RecoverySnapshot {
     attempt: { currentRunId: null, controlRunId: null },
     disposition: null,
     stageResult: { kind: 'missing' },
-    contractAvailable: null,
     outstandingEffect: null,
     wait: null,
     failure: null,
@@ -280,15 +279,46 @@ test('a recognised code failure is sent to remediation', () => {
   assert.equal(d.action, 'remediate');
 });
 
-test('a coding retry holds when no execution contract is available to replay', () => {
-  const d = decideTaskRecovery(snapshot({
-    stage: 'coding',
-    stageResult: { kind: 'failed' },
-    contractAvailable: false,
-    failure: retryableFailure('proceed'),
-  }));
-  assert.equal(d.action, 'wait');
-  assert.equal(d.wait?.wake, 'execution-contract-available');
+// HOK-3512 (HOK-3500 incident): a refused saved route used to `wait` on an
+// `execution-contract-available` wake nothing produced — a silent, permanent
+// hold. It is now one claimed terminal escalation from failure-policy.
+const REFUSAL = {
+  ok: false,
+  reason: 'agent_unsupported_for_model',
+  detail: 'Recovery contract for model kimi-k2.7-code is unavailable: current resolver supports agent native-openrouter, not persisted agent claude.',
+  contract: { model: 'kimi-k2.7-code', agent: 'claude', provider: 'anthropic' },
+};
+
+test('a refused saved coding route escalates through failure-policy even when bounded retry says proceed', () => {
+  for (const retry of ['proceed', 'backoff', 'exhausted'] as const) {
+    const d = decideTaskRecovery(snapshot({
+      stage: 'coding',
+      stageResult: { kind: 'failed' },
+      contract: REFUSAL,
+      failure: retryableFailure(retry),
+    }));
+    assert.equal(d.action, 'escalate', retry);
+    assert.equal(d.controlBearing, true);
+    assert.equal(d.wait, undefined);
+    assert.equal(d.failureKind, 'recovery_contract_unavailable');
+    assert.deepEqual(d.escalationBasis, { kind: 'policy-terminal', decisionClass: 'terminal' });
+    assert.match(d.rationale, /saved coding route \(model kimi-k2\.7-code\)/);
+    assert.match(d.rationale, /agent_unsupported_for_model/);
+  }
+});
+
+test('the window-lost path (no failure evidence yet) selects the same refusal outcome', () => {
+  const failed = decideTaskRecovery(snapshot({ stageResult: { kind: 'failed' }, contract: REFUSAL, failure: retryableFailure('proceed') }));
+  const windowLost = decideTaskRecovery(snapshot({ stageResult: { kind: 'running' }, contract: REFUSAL }));
+  assert.deepEqual(
+    { action: windowLost.action, basis: windowLost.escalationBasis, kind: windowLost.failureKind, rationale: windowLost.rationale },
+    { action: failed.action, basis: failed.escalationBasis, kind: failed.failureKind, rationale: failed.rationale },
+  );
+});
+
+test('a launchable saved route keeps the retryable relaunch', () => {
+  const d = decideTaskRecovery(snapshot({ stageResult: { kind: 'failed' }, contract: { ok: true }, failure: retryableFailure('proceed') }));
+  assert.equal(d.action, 'retry-stage');
 });
 
 test('missing/contradictory evidence is never read as success', () => {
@@ -487,7 +517,7 @@ test('code remediation respects backoff, exhaustion, and the persisted coding co
   for (const [retry, action] of [['backoff', 'wait'], ['exhausted', 'escalate'], ['exhausted-quiet', 'escalate']] as const) {
     assert.equal(decideTaskRecovery(snapshot({stageResult:{kind:'failed'}, failure:{decision,retry}})).action, action);
   }
-  assert.equal(decideTaskRecovery(snapshot({contractAvailable:false, stageResult:{kind:'failed'}, failure:{decision,retry:'proceed'}})).action, 'wait');
+  assert.equal(decideTaskRecovery(snapshot({contract:REFUSAL, stageResult:{kind:'failed'}, failure:{decision,retry:'proceed'}})).action, 'escalate');
 });
 
 test('Ready transition code faults and base drift select claimed operator or update actions', () => {
