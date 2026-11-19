@@ -25,7 +25,7 @@ export JOURNEY_PAIR_TICK_BUDGET=190
 
 JOURNEY_PRIMARY_CODING_CONTRACT=""
 JOURNEY_PRIMARY_ROUTING_CODER=""
-JOURNEY_PRIMARY_EXECUTED_CODER=""
+JOURNEY_PRIMARY_ROUTE_RECORD_CODER=""
 
 # The primary (the scripted loser) is retired with its worktree retained, but
 # record its route state while it is live so the assertions cannot race reaping.
@@ -42,9 +42,9 @@ journey_pair_tick_hook() {
   local routing_coder
   routing_coder="$(jq -r '.coder // ""' "$fd/.routing-complete" 2>/dev/null || true)"
   [[ -n "$routing_coder" ]] && JOURNEY_PRIMARY_ROUTING_CODER="$routing_coder"
-  local executed
-  executed="$(jq -r '.stageRoutes.coder.executed // ""' "$fd/.post-expansion-route.json" 2>/dev/null || true)"
-  [[ -n "$executed" ]] && JOURNEY_PRIMARY_EXECUTED_CODER="$executed"
+  local record_coder
+  record_coder="$(jq -r '"\(.coder // "")|\(.stageRoutes.coder.overrides // [] | length)"' "$fd/.post-expansion-route.json" 2>/dev/null || true)"
+  [[ -n "$record_coder" ]] && JOURNEY_PRIMARY_ROUTE_RECORD_CODER="$record_coder"
 }
 
 journey_post_assertions() {
@@ -59,12 +59,15 @@ journey_post_assertions() {
   journey_assert "persisted coding contract is the flipped model with the derived executor" \
     test "$JOURNEY_PRIMARY_CODING_CONTRACT" = "$flipped/claude/anthropic"
 
-  # The route artifacts agree on the flipped coder (top-level role and the
-  # HOK-3363 stage-route record's executed model).
+  # The route artifacts agree on the flipped coder. The expanded decision
+  # itself named the flipped model, so the reseal writing that same model is
+  # NOT an override of the decision — the HOK-3363 record stays override-free
+  # (a reseal that moves a decided model appends one; pinned by
+  # tests/challenge-reseal-route-override.test.sh).
   journey_assert ".routing-complete coder follows the expanded route" \
     test "$JOURNEY_PRIMARY_ROUTING_CODER" = "$flipped"
-  journey_assert "stageRoutes.coder.executed is the coder that ran" \
-    test "$JOURNEY_PRIMARY_EXECUTED_CODER" = "$flipped"
+  journey_assert "route record decided the flipped coder with no spurious override" \
+    test "$JOURNEY_PRIMARY_ROUTE_RECORD_CODER" = "$flipped|0"
 
   # One scripted failure, one bounded-retry relaunch, zero operator touches.
   journey_assert "the scripted coding failure fired on the primary" \
