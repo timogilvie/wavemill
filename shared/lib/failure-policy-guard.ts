@@ -31,6 +31,11 @@
  *   stage function that never consults the budget definition — our own budget
  *   abort must never be classified as a provider error.
  *
+ * One tracked-job exhaustion path (HOK-3505): every `bounded_retry_mark_exhausted`
+ * on a tracked async-job bucket must be followed by
+ * `escalate_operator_attention` within the same branch, or the bucket must be
+ * in QUIET_EXHAUSTION_BUCKETS. The guard scans `monitor-async-jobs.sh`.
+ *
  * Native stage time share (HOK-3380): "whose time was this" is derived once,
  * by `nativeStageTimeSplit` in shared/lib/native-agent/stage-time-split.ts.
  * Also caught:
@@ -42,6 +47,69 @@
  *   module.
  */
 import type { GuardSpec, StructuralMatch } from '../../tools/lib/source-guard.ts';
+
+/**
+ * Tracked async-job buckets where exhaustion is expected to degrade quietly
+ * rather than page an operator, by bucket value and by the shell variable that
+ * holds it. Every other bucket that calls `bounded_retry_mark_exhausted` must
+ * follow up with `escalate_operator_attention <dir> exhausted <same bucket>`
+ * in the same branch (HOK-3505).
+ */
+export const QUIET_EXHAUSTION_BUCKETS: ReadonlySet<string> = new Set([
+  'in-flight-touch-set-job',
+]);
+
+const QUIET_BUCKET_VARS: ReadonlySet<string> = new Set([
+  'IN_FLIGHT_TOUCH_SET_JOB_BUCKET',
+]);
+
+/** Lines after an exhaustion mark that its escalation must appear within. */
+const ESCALATION_WINDOW_LINES = 10;
+
+/**
+ * Normalise a shell bucket argument so `"$X"`, `$X`, `${X}` compare equal
+ * (`var:X`) and `"lit"`, `'lit'`, `lit` compare equal (`lit:lit`).
+ */
+function normaliseBucketArg(token: string): string {
+  const unquoted = token.replace(/^["']|["']$/g, '');
+  const variable = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/.exec(unquoted);
+  return variable ? `var:${variable[1]}` : `lit:${unquoted}`;
+}
+
+function isQuietBucket(normalised: string): boolean {
+  if (normalised.startsWith('var:')) return QUIET_BUCKET_VARS.has(normalised.slice(4));
+  return QUIET_EXHAUSTION_BUCKETS.has(normalised.slice(4));
+}
+
+const SHELL_ARG = String.raw`("[^"]*"|'[^']*'|[^\s;|&]+)`;
+const MARK_EXHAUSTED_RE = new RegExp(String.raw`\bbounded_retry_mark_exhausted\s+${SHELL_ARG}\s+${SHELL_ARG}`);
+const ESCALATE_EXHAUSTED_RE = new RegExp(String.raw`\bescalate_operator_attention\s+${SHELL_ARG}\s+exhausted\s+${SHELL_ARG}`, 'g');
+
+function findUnescalatedExhaustion(source: string): StructuralMatch[] {
+  const lines = source.split('\n');
+  const matches: StructuralMatch[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*(?:#|\/\/|\*)/.test(lines[i])) continue;
+    if (!/\bbounded_retry_mark_exhausted\b/.test(lines[i])) continue;
+    const mark = MARK_EXHAUSTED_RE.exec(lines[i]);
+    if (!mark) {
+      matches.push({ line: i + 1, detail: 'bounded_retry_mark_exhausted bucket argument not found on the call line' });
+      continue;
+    }
+    const bucket = normaliseBucketArg(mark[2]);
+    if (isQuietBucket(bucket)) continue;
+    const window = lines.slice(i, Math.min(lines.length, i + ESCALATION_WINDOW_LINES)).join('\n');
+    const escalated = [...window.matchAll(ESCALATE_EXHAUSTED_RE)]
+      .some((call) => normaliseBucketArg(call[2]) === bucket);
+    if (!escalated) {
+      matches.push({
+        line: i + 1,
+        detail: `bounded_retry_mark_exhausted on ${mark[2]} without escalate_operator_attention <dir> exhausted ${mark[2]}`,
+      });
+    }
+  }
+  return matches;
+}
 
 /** Native stage sources whose provider classification must follow the budget rule. */
 const NATIVE_STAGE_SOURCES = [
@@ -101,6 +169,11 @@ export const FAILURE_POLICY_GUARD: GuardSpec = {
     description: 'classifyProviderError over a raw transcript without the budget rule — read errors through finalProviderErrorMessage (HOK-3362)',
     paths: NATIVE_STAGE_SOURCES,
     find: findUngatedProviderClassification,
+  }, {
+    name: 'unescalated-tracked-job-exhaustion',
+    description: 'bounded_retry_mark_exhausted on a tracked-job bucket without escalate_operator_attention — add escalation or declare the bucket quiet in QUIET_EXHAUSTION_BUCKETS (HOK-3505)',
+    paths: ['shared/lib/monitor-async-jobs.sh'],
+    find: findUnescalatedExhaustion,
   }, {
     name: 'eval-retry-forfeit',
     description: 'eval retry exhaustion cannot create a model forfeit; use failure-policy',
@@ -172,6 +245,12 @@ export const FAILURE_POLICY_GUARD: GuardSpec = {
       description: 'operator attention is raised only by escalate_operator_attention / escalateOperatorAttention (shared/lib/operator-escalation.{sh,ts}, HOK-3360)',
       lang: 'both',
       re: /\bwrite_ready_attention_file\b|\b_operator_attention_write\b|\bwriteReadyAttention\b|\bwrite_transient_ready_attention_file\b|marker_write\s+"[^"]*\.needs-attention|path:\s*[^,}]*["']\.needs-attention["']/,
+    },
+    {
+      name: 'retired-task-inputs-failure-marker',
+      description: 'the .task-inputs-failure.json private marker and inputs_preparation_failed hook were removed (HOK-3505) — task-input exhaustion escalates through escalate_operator_attention',
+      lang: 'both',
+      re: /\.task-inputs-failure\.json\b|task_inputs_failure_marker\b|inputs_preparation_failed\b/,
     },
     {
       name: 'retired-transient-attention',
