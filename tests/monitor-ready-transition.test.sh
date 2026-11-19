@@ -86,6 +86,7 @@ extract_function "$MONITOR_SCRIPT_FILE" "stage_failure_owned_by_bucket" >> "$MON
 extract_function "$MONITOR_SCRIPT_FILE" "stage_failure_decision" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "phase_launch_head" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "phase_launch_base" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "stage_failure_retry_key" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "_recovery_continuation_current" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "_maybe_retry_failed_stage_now" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "_monitor_claim_failed_stage_action" >> "$MONITOR_FUNC_FILE"

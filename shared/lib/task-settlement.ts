@@ -83,6 +83,7 @@ export const TASK_CONTROL_FIELDS: ReadonlySet<string> = new Set([
   'launchFailure',
   'retryFailure',
   'retryFailureDetail',
+  // Retired writer fields remain fenced on legacy rows; the wire schema is permissive.
   'stopReason',
   'stopSubReason',
   'stopDetail',

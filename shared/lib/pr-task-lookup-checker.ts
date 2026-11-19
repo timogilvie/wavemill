@@ -3,12 +3,13 @@
  *
  * Scans source files for inline `.tasks` iteration with resolver-shape
  * predicates (task.pr, task.branch, id === taskId) and reports findings
- * with file path, line number, and pattern name. Follows the
- * check-task-identity.ts architecture.
+ * with file path, line number, and pattern name. {@link PR_TASK_LOOKUP_GUARD}
+ * runs the scan on tools/lib/source-guard.ts, which supplies file listing,
+ * suppression and the ratcheting allowlist.
  */
 
-import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import type { GuardSpec } from '../../tools/lib/source-guard.ts';
 
 export interface PrTaskLookupFinding {
   file: string;
@@ -114,3 +115,27 @@ export function scanForPrTaskLookups(
 
   return findings;
 }
+
+export const PR_TASK_LOOKUP_GUARD: GuardSpec = {
+  name: 'pr-task-lookup',
+  findingNoun: 'ad-hoc PR-to-task lookup(s)',
+  suppressionMarker: 'allow-pr-task-lookup',
+  allowlistFile: 'tools/pr-task-lookup-allowlist.txt',
+  // The resolver and this scanner necessarily contain the forbidden shapes.
+  invariantPaths: ['shared/lib/pr-task-resolver.ts', 'shared/lib/pr-task-lookup-checker.ts'],
+  patterns: [],
+  structuralChecks: [{
+    name: 'inline-task-lookup',
+    description: 'single-task lookup inside a `.tasks` loop',
+    scopedPaths: ['shared/lib/', 'tools/'],
+    find: (sourceText, file) => scanForPrTaskLookups(file, sourceText)
+      .map(({ line, column, pattern }) => ({ line, column, detail: pattern })),
+  }],
+  remediation: [
+    'Every PR / task / branch single-task lookup must go through shared/lib/pr-task-resolver.ts',
+    '(resolvePrTask / resolveTaskLocation / resolveBranchTask) so misses emit one',
+    'structured log line.',
+  ],
+  tsExtensions: ['.ts', '.tsx', '.js', '.jsx'],
+  shellExtensions: [],
+};
