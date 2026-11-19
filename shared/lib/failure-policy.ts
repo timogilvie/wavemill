@@ -179,7 +179,7 @@ export const TERMINAL_ALLOWLIST: readonly TerminalCause[] = Object.freeze([
   {
     code: 'varied_model_unresolvable',
     reason: 'the varied challenge model can never pass launch preflight (HOK-2920)',
-    faultClass: 'harness-fault',
+    faultClass: 'selection-fault',
     testRef: 'failure-policy.test.ts:terminal:varied_model_unresolvable',
   },
   {
