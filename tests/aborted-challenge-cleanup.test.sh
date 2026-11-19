@@ -37,6 +37,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 cleanup_file="$tmp/aborted-cleanup.sh"
 {
+  cat "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh"
   printf '%s\n' 'WAVEMILL_GIT_REMOTE_TIMEOUT_DEFAULT=15'
   printf '%s\n' 'WAVEMILL_GIT_REMOTE_TIMEOUT_MIN=1'
   printf '%s\n' 'WAVEMILL_GIT_REMOTE_TIMEOUT_MAX=600'
@@ -72,15 +73,15 @@ cleanup_file="$tmp/aborted-cleanup.sh"
   extract_function "$COMMON_SCRIPT" "wavemill_branch_deletion_mode"
   printf '\n'
   printf '%s\n' 'WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT=".wavemill/observer-findings.jsonl"'
-  extract_function "$COMMON_SCRIPT" "wavemill_worktree_dirty_status"
+  extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_mill_owned_path"
+  printf '\n'
+  extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_mill_owned_dirty_line"
+  printf '\n'
+  extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_worktree_dirty_status"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_migrate_controller_observer_artifact"
   printf '\n'
-  extract_function "$COMMON_SCRIPT" "wavemill_discard_prompt_registry_artifact"
-  printf '\n'
-  # HOK-3160: safe_remove_task_worktree_and_branch also discards the
-  # generated-artifact allowlist; the monitor's cleanup paths rely on it.
-  extract_function "$COMMON_SCRIPT" "wavemill_discard_hok3160_generated_artifacts"
+  extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_discard_mill_owned_untracked"
   printf '\n'
   # HOK-3190: cleanup_aborted_challenge_arm reads state via pass_task_field;
   # provide the fallback form that falls through to the read_state_value stub.

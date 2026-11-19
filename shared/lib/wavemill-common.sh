@@ -72,6 +72,8 @@ WAVEMILL_INSTALL_DIR="$(cd "$COMMON_LIB_DIR/../.." && pwd)"
 export WAVEMILL_INSTALL_DIR
 # shellcheck source=state-lock.sh
 source "$COMMON_LIB_DIR/state-lock.sh"
+# Generated matcher/filter/discard twin of mill-owned-paths.ts.
+source "$COMMON_LIB_DIR/mill-owned-paths.sh"
 
 # Resolve an install-relative tool path. Honours a caller-set TOOLS_DIR so
 # test harnesses can inject fakes without disturbing the install.
@@ -1498,112 +1500,6 @@ _wavemill_record_cleanup_decision() {
     "$detail" "$extras" "$marker_subdir"
 }
 
-# HOK-2972: the one controller-owned artifact the observer writes inside a
-# task worktree. It is machine-generated with explicit provenance and must
-# never make a worktree "dirty" for cleanup or release-safety purposes. The
-# exclusion is exact: only an *untracked* file at this precise path is
-# ignored; every other tracked or untracked change - including anything else
-# under .wavemill/ - remains a cleanup blocker.
-WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT=".wavemill/observer-findings.jsonl"
-
-# Prompt-registry log that older native-agent runs wrote at the worktree root
-# (prompt usage was logged with the repo dir as the evals dir). It is
-# machine-generated telemetry, never task work, so an untracked copy or an
-# unstaged edit of a copy an agent accidentally committed must not retain a
-# terminal worktree. Exact root path and exact porcelain codes only.
-WAVEMILL_PROMPT_REGISTRY_ARTIFACT="prompt-registry.jsonl"
-
-# Porcelain status of a worktree with the HOK-3160 generated-artifact
-# allowlist excluded. Prints the filtered status; propagates git's failure
-# (non-zero, no output) so callers can keep treating an unreadable status as
-# dirty. Matches the TypeScript filter in shared/lib/worktree-dirty-status.ts
-# exactly: anything that gets past this filter must get past that one too.
-wavemill_worktree_dirty_status() {
-  local wt_dir="${1:-}" raw_status="" registry="${WAVEMILL_PROMPT_REGISTRY_ARTIFACT:-prompt-registry.jsonl}"
-  raw_status="$(git -C "$wt_dir" status --porcelain --untracked-files=all 2>/dev/null)" || return 1
-  # Each pattern is an extended-regex anchored at both ends; the leading two
-  # characters are the exact porcelain status code (two chars + one space).
-  # Any file whose porcelain line matches is tool-written cruft, not task work.
-  printf '%s\n' "$raw_status" \
-    | grep -v -E "^\\?\\? ${WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT//./\\.}$" \
-    | grep -v -E "^\\?\\? ${registry//./\\.}$" \
-    | grep -v -E "^ M ${registry//./\\.}$" \
-    | grep -v -E '^\?\? \.wavemill/audits/.+$' \
-    | grep -v -E '^\?\? features/[^/]+/\.review-result\.json$' \
-    | grep -v -E '^ M features/[^/]+/\.review-result\.json$' \
-    | grep -v -E '^\?\? features/[^/]+/\.needs-attention$' \
-    | grep -v -E '^\?\? features/[^/]+/\.terminal-history\.jsonl$' \
-    | grep -v -E '^ M features/[^/]+/\.terminal-history\.jsonl$' \
-    | grep -v -E '^\?\? features/[^/]+/\.ready-bypass-warned$' \
-    | grep -v -E '^\?\? features/[^/]+/\.coding-complete$' \
-    | grep -v -E '^\?\? features/[^/]+/\.workflow-aborted$' \
-    | grep -v -E '^\?\? features/[^/]+/\.coding-blocked-completion\.json$' \
-    | grep -v -E '^\?\? features/[^/]+/\.operator-events\.jsonl$' \
-    | grep -v -E '^\?\? features/[^/]+/\.condition-reconcile\.jsonl$' \
-    | grep -v -E '^\?\? features/[^/]+/\.ready-waiting-on\.json$' \
-    | grep -v -E '^ M features/[^/]+/\.operator-events\.jsonl$' \
-    | grep -v -E '^ M features/[^/]+/\.condition-reconcile\.jsonl$' \
-    | grep -v -x '' || true
-}
-
-# Discard the root prompt-registry log from a task worktree before it is
-# removed: delete an untracked copy, restore a tracked one. Nothing else in
-# the worktree is touched. Only runs against a valid task worktree.
-wavemill_discard_prompt_registry_artifact() {
-  local wt_dir="${1:-}" registry="${WAVEMILL_PROMPT_REGISTRY_ARTIFACT:-prompt-registry.jsonl}"
-  [[ -n "$wt_dir" && -f "$wt_dir/$registry" ]] || return 0
-  if git -C "$wt_dir" ls-files --error-unmatch -- "$registry" >/dev/null 2>&1; then
-    git -C "$wt_dir" checkout -- "$registry" 2>/dev/null || true
-  else
-    rm -f "$wt_dir/$registry" 2>/dev/null || true
-  fi
-}
-
-# HOK-3160: discard the generated-artifact allowlist entries from a task
-# worktree before it is removed. These paths are the exact set that the
-# dirty-status filter drops; without this helper `git worktree remove` would
-# refuse because the files are untracked. Only untracked files at the exact
-# allowlisted paths are touched; a tracked file keeps the normal cleanup
-# behaviour (`git worktree remove` restores it).
-wavemill_discard_hok3160_generated_artifacts() {
-  local wt_dir="${1:-}"
-  [[ -n "$wt_dir" && -d "$wt_dir" ]] || return 0
-
-  # `.wavemill/audits/**` — any untracked audit JSON or subdirectory.
-  if [[ -d "$wt_dir/.wavemill/audits" ]]; then
-    find "$wt_dir/.wavemill/audits" -mindepth 1 -not -type d 2>/dev/null | while IFS= read -r f; do
-      [[ -z "$f" ]] && continue
-      local rel="${f#${wt_dir}/}"
-      if ! git -C "$wt_dir" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
-        rm -f "$f" 2>/dev/null || true
-      fi
-    done
-    find "$wt_dir/.wavemill/audits" -mindepth 1 -type d -empty -delete 2>/dev/null || true
-  fi
-
-  # Trace-metadata siblings under features/<slug>/.
-  local file rel
-  for file in \
-    "$wt_dir"/features/*/.review-result.json \
-    "$wt_dir"/features/*/.needs-attention \
-    "$wt_dir"/features/*/.terminal-history.jsonl \
-    "$wt_dir"/features/*/.ready-bypass-warned \
-    "$wt_dir"/features/*/.coding-complete \
-    "$wt_dir"/features/*/.workflow-aborted \
-    "$wt_dir"/features/*/.coding-blocked-completion.json \
-    "$wt_dir"/features/*/.operator-events.jsonl \
-    "$wt_dir"/features/*/.condition-reconcile.jsonl \
-    "$wt_dir"/features/*/.ready-waiting-on.json; do
-    [[ -f "$file" ]] || continue
-    rel="${file#${wt_dir}/}"
-    if git -C "$wt_dir" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
-      git -C "$wt_dir" checkout -- "$rel" 2>/dev/null || true
-    else
-      rm -f "$file" 2>/dev/null || true
-    fi
-  done
-}
-
 # Migrate (or drop) the controller-owned observer artifact out of a task
 # worktree before that worktree is reaped. Appends its content to the
 # repository-level findings file when REPO_DIR is a different checkout so no
@@ -2527,8 +2423,11 @@ safe_remove_task_worktree_and_branch() {
       fi
     else
       wavemill_migrate_controller_observer_artifact "$wt_dir"
-      wavemill_discard_prompt_registry_artifact "$wt_dir"
-      wavemill_discard_hok3160_generated_artifacts "$wt_dir"
+      wavemill_discard_mill_owned_untracked "$wt_dir" || {
+        log_warn "  Could not discard declared mill output from task worktree: $wt_dir"
+        WAVEMILL_CLEANUP_OUTCOME="operation_failed"
+        return 20
+      }
       if wavemill_cleanup_run git -C "$REPO_DIR" worktree remove "$wt_dir" >>"${MILL_LOG_FILE:-/dev/null}" 2>/dev/null; then
         log "debug" "Removed worktree: $wt_dir"
       else

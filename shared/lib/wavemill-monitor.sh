@@ -6636,59 +6636,18 @@ blocked_completion_commit_matches_head() {
   return 1
 }
 
-# wavemill_owned_feature_artifact_path <normalized_path> <slug>
-# Returns 0 when the path is a Wavemill-owned artifact scoped to features/<slug>/.
+# Feature artifacts use the same generated inventory as cleanup and dirty checks.
 wavemill_owned_feature_artifact_path() {
-  local normalized_path="$1" slug="$2"
-  local artifact_prefix="features/$slug/"
-
-  if [[ "$normalized_path" == ${artifact_prefix}.* ]]; then
-    return 0
-  fi
-
-  # challenge-intent.json is the write-once challenger selection record.
-  case "$normalized_path" in
-    "${artifact_prefix}plan.md"|\
-    "${artifact_prefix}task-packet"*.md|\
-    "${artifact_prefix}challenge-intent.json"|\
-    "${artifact_prefix}selected-task.json"|\
-    "${artifact_prefix}trace.jsonl"|\
-    "${artifact_prefix}routing.jsonl")
-      return 0
-      ;;
-  esac
-
-  return 1
+  local normalized_path="${1:-}" slug="${2:-}"
+  [[ "$normalized_path" == "features/$slug/"* ]] && wavemill_mill_owned_path "$normalized_path"
 }
 
-# wavemill_owned_dirty_path <normalized_path> <slug>
-# Single source of truth for Wavemill-owned generated/runtime paths.
 wavemill_owned_dirty_path() {
-  local normalized_path="$1" slug="$2"
-
-  # Wavemill injects status hooks into this Claude-local settings file. Some
-  # repositories track it, so it must not prevent an otherwise committed task
-  # from advancing into review.
-  if [[ "$normalized_path" == ".claude/settings.local.json" ]]; then
-    return 0
+  local path="${1:-}" slug="${2:-}"
+  if [[ "$path" == features/* ]]; then
+    [[ "$path" == "features/$slug/"* ]] || return 1
   fi
-
-  if [[ "$normalized_path" == .wavemill/* ]]; then
-    return 0
-  fi
-
-  # This repository-local overlay is generated and consumed by Wavemill, but
-  # intentionally remains untracked so each session can carry local settings.
-  if [[ "$normalized_path" == ".wavemill-config.local.json" ]]; then
-    return 0
-  fi
-
-  # Root prompt registry updates are Wavemill-owned generated metadata.
-  if [[ "$normalized_path" == "prompt-registry.jsonl" ]]; then
-    return 0
-  fi
-
-  wavemill_owned_feature_artifact_path "$normalized_path" "$slug"
+  wavemill_mill_owned_path "$path"
 }
 
 blocked_completion_auto_allowed_dirty_path() {

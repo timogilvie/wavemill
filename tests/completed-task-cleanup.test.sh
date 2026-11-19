@@ -75,6 +75,7 @@ HELPERS_FILE="$TEST_TMP/tmux_helpers.sh"
 
 CLEANUP_FILE="$TEST_TMP/cleanup_completed_task.sh"
 {
+  cat "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh"
   printf '%s\n' 'WAVEMILL_GIT_REMOTE_TIMEOUT_DEFAULT=15'
   printf '%s\n' 'WAVEMILL_GIT_REMOTE_TIMEOUT_MIN=1'
   printf '%s\n' 'WAVEMILL_GIT_REMOTE_TIMEOUT_MAX=600'
@@ -116,13 +117,15 @@ CLEANUP_FILE="$TEST_TMP/cleanup_completed_task.sh"
   extract_function "$COMMON_SCRIPT" "_wavemill_record_cleanup_decision"
   printf '\n'
   printf '%s\n' 'WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT=".wavemill/observer-findings.jsonl"'
-  extract_function "$COMMON_SCRIPT" "wavemill_worktree_dirty_status"
+  extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_mill_owned_path"
+  printf '\n'
+  extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_mill_owned_dirty_line"
+  printf '\n'
+  extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_worktree_dirty_status"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_migrate_controller_observer_artifact"
   printf '\n'
-  extract_function "$COMMON_SCRIPT" "wavemill_discard_prompt_registry_artifact"
-  printf '\n'
-  extract_function "$COMMON_SCRIPT" "wavemill_discard_hok3160_generated_artifacts"
+  extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_discard_mill_owned_untracked"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "write_terminal_task_history_record"
   printf '\n'

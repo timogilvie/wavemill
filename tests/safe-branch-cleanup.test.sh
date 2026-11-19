@@ -34,6 +34,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 helper_file="$tmp/safe-cleanup-helper.sh"
 {
+  cat "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh"
   printf '%s\n' 'WAVEMILL_GIT_REMOTE_TIMEOUT_DEFAULT=15'
   printf '%s\n' 'WAVEMILL_GIT_REMOTE_TIMEOUT_MIN=1'
   printf '%s\n' 'WAVEMILL_GIT_REMOTE_TIMEOUT_MAX=600'
@@ -79,13 +80,15 @@ helper_file="$tmp/safe-cleanup-helper.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_remove_orphan_task_dir"
   printf '\n'
-  extract_function "$COMMON_SCRIPT" "wavemill_worktree_dirty_status"
+  extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_mill_owned_path"
+  printf '\n'
+  extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_mill_owned_dirty_line"
+  printf '\n'
+  extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_worktree_dirty_status"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_migrate_controller_observer_artifact"
   printf '\n'
-  extract_function "$COMMON_SCRIPT" "wavemill_discard_prompt_registry_artifact"
-  printf '\n'
-  extract_function "$COMMON_SCRIPT" "wavemill_discard_hok3160_generated_artifacts"
+  extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_discard_mill_owned_untracked"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_fetch_pr_terminal_evidence"
   printf '\n'
@@ -467,9 +470,9 @@ case_prompt_registry_untracked_cleaned() {
   assert_absent "$wt"
 }
 
-# A copy an agent accidentally committed to the base, then appended to again,
-# shows as an unstaged modification; that alone must not retain either.
-case_prompt_registry_tracked_modified_cleaned() {
+# A tracked modification remains task work even when its path is known as
+# legacy telemetry; only untracked telemetry is migrated and discarded.
+case_prompt_registry_tracked_modified_retained() {
   local repo branch wt out
   repo="$(setup_repo prompt-registry-tracked)"
   printf '{"templateName":"old"}\n' > "$repo/prompt-registry.jsonl"
@@ -482,9 +485,10 @@ case_prompt_registry_tracked_modified_cleaned() {
   printf '{"templateName":"new"}\n' >> "$wt/prompt-registry.jsonl"
 
   out="$(run_helper "$repo" "$wt" "$branch")"
-  assert_contains "$out" "rc=0" "prompt-registry-tracked return"
-  branch_exists "$repo" "$branch" && fail "prompt-registry-tracked branch was retained"
-  assert_absent "$wt"
+  assert_contains "$out" "rc=10" "prompt-registry-tracked return"
+  assert_contains "$out" "outcome=retain_dirty" "prompt-registry-tracked outcome"
+  branch_exists "$repo" "$branch" || fail "prompt-registry-tracked branch was deleted"
+  assert_exists "$wt/prompt-registry.jsonl"
 }
 
 # The exclusion is exact: real work next to the registry log still retains.
@@ -1023,7 +1027,7 @@ case_dirty_worktree_retained
 case_observer_artifact_only_cleaned
 case_observer_artifact_plus_user_file_retained
 case_prompt_registry_untracked_cleaned
-case_prompt_registry_tracked_modified_cleaned
+case_prompt_registry_tracked_modified_retained
 case_prompt_registry_plus_user_file_retained
 case_squash_pr_head_deleted
 case_pr_head_mismatch_retained

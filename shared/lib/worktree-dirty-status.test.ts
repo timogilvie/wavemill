@@ -7,41 +7,44 @@ import test from 'node:test';
 import {
   filterWorktreeDirtyStatus,
   readWorktreeDirtyStatus,
-  WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT,
-  WAVEMILL_PROMPT_REGISTRY_ARTIFACT,
 } from './worktree-dirty-status.ts';
+const OBSERVER = '.wavemill/observer-findings.jsonl';
+const REGISTRY = 'prompt-registry.jsonl';
 
 // HOK-3088 unit coverage for the shared at-risk predicate. The filter must
 // match the shell helper `wavemill_worktree_dirty_status` in wavemill-common.sh
 // exactly - anything that leaks past the filter here will silently disagree
 // with cleanup's dirty_worktree refusal and with the shell safety guards.
 
-test('filter drops the exact controller-owned artifacts and nothing else', () => {
+test('filter drops untracked controller-owned artifacts and nothing else', () => {
   const raw = [
-    `?? ${WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT}`,
-    `?? ${WAVEMILL_PROMPT_REGISTRY_ARTIFACT}`,
-    ` M ${WAVEMILL_PROMPT_REGISTRY_ARTIFACT}`,
+    `?? ${OBSERVER}`,
+    `?? ${REGISTRY}`,
+    ` M ${REGISTRY}`,
     ' M src/app.ts',
     '?? tools/new-tool.ts',
     '?? tests/new-fixture.ts',
   ].join('\n');
   const filtered = filterWorktreeDirtyStatus(raw);
   assert.deepEqual(filtered, [
+    ` M ${REGISTRY}`,
     ' M src/app.ts',
     '?? tools/new-tool.ts',
     '?? tests/new-fixture.ts',
   ]);
 });
 
-test('filter keeps a staged prompt-registry.jsonl edit (shell filter drops only the exact "?? " / " M " forms)', () => {
+test('filter keeps all tracked prompt-registry edits', () => {
   const raw = [
-    `M  ${WAVEMILL_PROMPT_REGISTRY_ARTIFACT}`,
-    `?? some/other/${WAVEMILL_PROMPT_REGISTRY_ARTIFACT}`,
+    `M  ${REGISTRY}`,
+    ` M ${REGISTRY}`,
+    `?? some/other/${REGISTRY}`,
   ].join('\n');
   const filtered = filterWorktreeDirtyStatus(raw);
   assert.deepEqual(filtered, [
-    `M  ${WAVEMILL_PROMPT_REGISTRY_ARTIFACT}`,
-    `?? some/other/${WAVEMILL_PROMPT_REGISTRY_ARTIFACT}`,
+    `M  ${REGISTRY}`,
+    ` M ${REGISTRY}`,
+    `?? some/other/${REGISTRY}`,
   ]);
 });
 
@@ -52,7 +55,7 @@ test('filter treats empty and trailing-blank porcelain output as clean', () => {
 
 test('filter keeps every non-controller change under .wavemill/', () => {
   const raw = [
-    `?? ${WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT}`,
+    `?? ${OBSERVER}`,
     '?? .wavemill/evals/artifacts/HOK-3056/notes.md',
     ' M .wavemill/registry/session.jsonl',
   ].join('\n');
@@ -128,8 +131,9 @@ test('readWorktreeDirtyStatus reports clean when only the excluded controller ar
   const dir = makeGitRepo();
   try {
     mkdirSync(join(dir, '.wavemill'), { recursive: true });
-    writeFileSync(join(dir, WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT), '{"finding":"ignored"}\n');
-    writeFileSync(join(dir, WAVEMILL_PROMPT_REGISTRY_ARTIFACT), '{"prompt":"ignored"}\n');
+    mkdirSync(join(dir, '.wavemill'), { recursive: true });
+    writeFileSync(join(dir, OBSERVER), '{"finding":"ignored"}\n');
+    writeFileSync(join(dir, REGISTRY), '{"prompt":"ignored"}\n');
     const result = readWorktreeDirtyStatus({ worktree: dir });
     assert.equal(result.state, 'clean');
     assert.deepEqual(result.lines, []);
@@ -142,7 +146,8 @@ test('readWorktreeDirtyStatus reports dirty when the observer artifact sits next
   const dir = makeGitRepo();
   try {
     mkdirSync(join(dir, '.wavemill'), { recursive: true });
-    writeFileSync(join(dir, WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT), '{"finding":"ignored"}\n');
+    mkdirSync(join(dir, '.wavemill'), { recursive: true });
+    writeFileSync(join(dir, OBSERVER), '{"finding":"ignored"}\n');
     writeFileSync(join(dir, 'src.ts'), 'real change\n');
     const result = readWorktreeDirtyStatus({ worktree: dir });
     assert.equal(result.state, 'dirty');
@@ -166,7 +171,7 @@ test('filter drops .wavemill/audits/* untracked files (HOK-3160 Class B)', () =>
   assert.deepEqual(filterWorktreeDirtyStatus(raw), ['?? src/real-change.ts']);
 });
 
-test('filter drops features/<slug>/.review-result.json and trace-metadata siblings (HOK-3160 Class B)', () => {
+test('filter drops only untracked features/<slug> mill artifacts', () => {
   const raw = [
     '?? features/some-slug/.review-result.json',
     ' M features/some-slug/.review-result.json',
@@ -179,7 +184,11 @@ test('filter drops features/<slug>/.review-result.json and trace-metadata siblin
     '?? features/some-slug/.coding-blocked-completion.json',
     '?? features/some-slug/user-notes.md',
   ].join('\n');
-  assert.deepEqual(filterWorktreeDirtyStatus(raw), ['?? features/some-slug/user-notes.md']);
+  assert.deepEqual(filterWorktreeDirtyStatus(raw), [
+    ' M features/some-slug/.review-result.json',
+    ' M features/some-slug/.terminal-history.jsonl',
+    '?? features/some-slug/user-notes.md',
+  ]);
 });
 
 test('filter does NOT drop arbitrary files under .wavemill/ outside the audits allowlist', () => {
