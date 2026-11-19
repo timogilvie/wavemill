@@ -5690,15 +5690,23 @@ executed_stage_result_present() {
     "$result_file" >/dev/null 2>&1
 }
 
-# Map an agent id to the phase-config provider label.
-phase_config_provider_for_agent() {
-  case "${1:-}" in
-    native-openrouter) printf '%s\n' "native-openrouter" ;;
-    native-openai) printf '%s\n' "native-openai" ;;
-    claude) printf '%s\n' "anthropic" ;;
-    codex) printf '%s\n' "openai" ;;
-    *) printf '\n' ;;
-  esac
+# HOK-3511: the one shell writer of .phase-config.json stage blocks. Wraps
+# `recovery-contract.ts write` (writePersistedContract), which derives agent
+# and provider from each stage's model with the repo's effective registry —
+# shell callers pass models only, never an agent or provider. Prints the
+# per-stage JSON ({stages: {planning|coding|review: {model, agent?, provider?,
+# selectedAt, refusal?}}}).
+#
+# Usage: phase_config_write_stages <feature_dir> [write flags...]
+#   e.g. --planner M --plan-depth D --coder M --code-depth D --reviewer M \
+#        --review-mode X --challenge-side S --skip-stages plan,implementation \
+#        --keep-selected-at --reset --replace --force-model X \
+#        --override-source challenge --pair-id P --side S --reason R
+phase_config_write_stages() {
+  local feature_dir="${1:?phase_config_write_stages requires a feature dir}"
+  shift
+  wavemill_run_tool "recovery-contract.ts" write \
+    --feature-dir "$feature_dir" --repo "${REPO_DIR:-$PWD}" --json "$@"
 }
 
 # HOK-3156 fail-closed check: after a challenge arm's route is written, assert
@@ -5747,9 +5755,7 @@ challenge_route_drift_check() {
 
 apply_expanded_route_if_present() {
   local feature_dir="$1" issue="$2" slug="$3" worktree_dir="$4" state_file="${5:-${STATE_FILE:-}}"
-  local route_file routing_file phase_config_file planner_model plan_depth coder_model code_depth reviewer_model review_mode
-  local planner_agent="" coder_agent="" reviewer_agent=""
-  local planner_provider="" coder_provider="" reviewer_provider=""
+  local route_file routing_file planner_model plan_depth coder_model code_depth reviewer_model review_mode
   local active_route="" bootstrap_route="" expanded_route="" route_changed="false" source="expanded"
   local challenge_intent_file="" challenge_intent_tmp="" challenge_side=""
 
@@ -5771,7 +5777,6 @@ apply_expanded_route_if_present() {
   fi
 
   routing_file="$feature_dir/.routing-complete"
-  phase_config_file="$feature_dir/.phase-config.json"
 
   if [[ -f "$routing_file" && ! -f "$feature_dir/.initial-route.json" ]]; then
     cp "$routing_file" "$feature_dir/.initial-route.json"
@@ -5973,69 +5978,16 @@ apply_expanded_route_if_present() {
 
   ensure_phase_config_state_file "$feature_dir"
 
-  # HOK-3100: `agent_resolve_batch_agent_for_role` lives in agent-adapters.sh
-  # alongside `agent_resolve_models_for_roles`, but the two are independent
-  # functions. Guard both explicitly so a build that defines only one does
-  # not silently call the undefined sibling.
-  if declare -F agent_resolve_models_for_roles >/dev/null 2>&1 \
-     && declare -F agent_resolve_batch_agent_for_role >/dev/null 2>&1; then
-    if agent_resolve_models_for_roles "$planner_model" "$coder_model" "$reviewer_model"; then
-      :
-    fi
-    planner_agent="$(agent_resolve_batch_agent_for_role "planner")"
-    coder_agent="$(agent_resolve_batch_agent_for_role "coder")"
-    reviewer_agent="$(agent_resolve_batch_agent_for_role "reviewer")"
-  elif declare -F agent_resolve_from_model >/dev/null 2>&1; then
-    [[ -n "$planner_model" ]] && planner_agent="$(agent_resolve_from_model "$planner_model" "planning" || true)"
-    [[ -n "$coder_model" ]] && coder_agent="$(agent_resolve_from_model "$coder_model" "coding" || true)"
-    [[ -n "$reviewer_model" ]] && reviewer_agent="$(agent_resolve_from_model "$reviewer_model" "review" || true)"
-  fi
-
-  planner_provider="$(phase_config_provider_for_agent "$planner_agent")"
-  coder_provider="$(phase_config_provider_for_agent "$coder_agent")"
-  reviewer_provider="$(phase_config_provider_for_agent "$reviewer_agent")"
-
-  # Executed stages keep their phase-config entry (launchRoute, selectedAt,
-  # agent) exactly as launched (HOK-3156 fix #2).
-  if ! state_mutate "$phase_config_file" \
-    '($executedStages | split(",")) as $executed
-     | (if ($executed | index("plan")) != null then . else
-         .planning.model = $plannerModel
-         | .planning.agent = $plannerAgent
-         | .planning.provider = $plannerProvider
-         | .planning.stageRole = "planning"
-         | .planning.selectedAt = (.planning.selectedAt // .resolvedAt // (now | todateiso8601))
-         | .planning.depth = $planDepth
-       end)
-     | (if ($executed | index("implementation")) != null then . else
-         .coding.model = $coderModel
-         | .coding.agent = $coderAgent
-         | .coding.provider = $coderProvider
-         | .coding.stageRole = "coding"
-         | .coding.selectedAt = (.coding.selectedAt // .resolvedAt // (now | todateiso8601))
-         | .coding.depth = $codeDepth
-       end)
-     | .review.model = $reviewerModel
-     | .review.agent = $reviewerAgent
-     | .review.provider = $reviewerProvider
-     | .review.stageRole = "review"
-     | .review.selectedAt = (.review.selectedAt // .resolvedAt // (now | todateiso8601))
-     | .review.mode = $reviewMode
-     | .resolvedAt = (if (.resolvedAt // "") == "" then (now | todateiso8601) else .resolvedAt end)
-     | .forceModel = (.forceModel // null)' \
-    --arg plannerModel "$planner_model" \
-    --arg plannerAgent "$planner_agent" \
-    --arg plannerProvider "$planner_provider" \
-    --arg planDepth "$plan_depth" \
-    --arg coderModel "$coder_model" \
-    --arg coderAgent "$coder_agent" \
-    --arg coderProvider "$coder_provider" \
-    --arg codeDepth "$code_depth" \
-    --arg reviewerModel "$reviewer_model" \
-    --arg reviewerAgent "$reviewer_agent" \
-    --arg reviewerProvider "$reviewer_provider" \
-    --arg executedStages "$executed_stages" \
-    --arg reviewMode "$review_mode"; then
+  # HOK-3511: one writer call. writePersistedContract derives each stage's
+  # agent and provider from its model (effective registry); executed stages
+  # are skipped so their phase-config entry stays exactly as launched
+  # (HOK-3156 fix #2). --keep-selected-at preserves each block's selectedAt.
+  local -a write_args=(--keep-selected-at)
+  [[ -n "$executed_stages" ]] && write_args+=(--skip-stages "$executed_stages")
+  [[ -n "$planner_model" ]] && write_args+=(--planner "$planner_model" --plan-depth "$plan_depth")
+  [[ -n "$coder_model" ]] && write_args+=(--coder "$coder_model" --code-depth "$code_depth")
+  [[ -n "$reviewer_model" ]] && write_args+=(--reviewer "$reviewer_model" --review-mode "$review_mode")
+  if ! phase_config_write_stages "$feature_dir" "${write_args[@]}" >/dev/null; then
     log "warn" "expanded route invalid: $route_file (failed to update .phase-config.json)"
     active_route="$(route_lifecycle_route_id "$routing_file" 2>/dev/null || true)"
     log_route_lifecycle "expansion_failed" "issue=$issue" "reason=invalid_artifact" "active_route=\"${active_route}\""

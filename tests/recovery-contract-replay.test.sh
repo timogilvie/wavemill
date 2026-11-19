@@ -81,10 +81,12 @@ cat > "$tmpdir/challenge-intent.json" <<'EOF'
 EOF
 
 review_contract_json="$(node "$REPO_DIR/tools/recovery-contract.ts" read --feature-dir "$tmpdir" --stage review --challenge-side challenger --json)"
+# HOK-3511: the intent supplies the model only; the stored expectedStageAgent
+# is never carried into the contract — validation derives the executor.
 if jq -e '
   .ok == true
   and .contract.model == "kimi-k3"
-  and .contract.agent == "native-openrouter"
+  and .contract.agent == ""
   and .contract.stageRole == "review"
   and .contract.challengeSide == "challenger"
 ' <<<"$review_contract_json" >/dev/null 2>&1; then

@@ -2,14 +2,13 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { runTool } from '../shared/lib/tool-runner.ts';
-import { resolveModelAgent } from '../shared/lib/model-agent-resolution.ts';
+import { resolveStageExecutor } from '../shared/lib/model-agent-resolution.ts';
 import { isChallengerTaskId } from '../shared/lib/task-identity.ts';
 import { readWorkflowState } from '../shared/lib/workflow-state.ts';
 import { appendRouteOverrideToFeatureDir } from '../shared/lib/route-artifact.ts';
 import type { RouteStageRole } from '../shared/lib/route-override-record.ts';
 import {
   appendRerouteAudit,
-  providerForModel,
   readPersistedContract,
   validateContractLaunchable,
   writeChallengeEvidenceInvalid,
@@ -55,8 +54,10 @@ function readStateTask(repoDir: string, taskId: string): { featureDir: string; a
   };
 }
 
+// HOK-3511: the agent is no longer an operator choice, so only the model
+// decides whether a reroute changed anything.
 function materialChange(before: ExecutionContract | null, after: ExecutionContract): boolean {
-  return !before || before.model !== after.model || before.agent !== after.agent || before.provider !== after.provider;
+  return !before || before.model !== after.model;
 }
 
 await runTool({
@@ -65,8 +66,7 @@ await runTool({
   positional: { name: 'task-id', description: 'Task id to reroute', required: true },
   options: {
     phase: { type: 'string', description: 'Phase to reroute: planning, coding, review' },
-    model: { type: 'string', description: 'Replacement model' },
-    agent: { type: 'string', description: 'Replacement agent' },
+    model: { type: 'string', description: 'Replacement model (agent and provider are derived from it)' },
     'challenge-side': { type: 'string', description: 'Challenge side: primary or challenger' },
     'feature-dir': { type: 'string', description: 'Feature directory override' },
     repo: { type: 'string', description: 'Repository directory', default: process.cwd() },
@@ -89,16 +89,13 @@ await runTool({
     if (!before && !args.model) throw new Error(`no existing contract; --model is required to establish one`);
 
     const model = args.model ?? before!.model;
-    let agent = args.agent ?? before?.agent;
-    if (!agent) {
-      const resolved = resolveModelAgent({ model, phase, repoDir });
-      if (!resolved.ok) throw new Error(resolved.diagnostic);
-      agent = resolved.agent;
-    }
+    // HOK-3511: the executor is derived from the model, never chosen or kept.
+    const executor = resolveStageExecutor({ model, stage: phase, repoDir });
+    if (!executor.ok) throw new Error(executor.diagnostic);
     const after: ExecutionContract = {
       model,
-      agent,
-      provider: providerForModel(model),
+      agent: executor.agent,
+      provider: executor.provider,
       stageRole: phase,
       challengeSide: challengeSide ?? before?.challengeSide ?? null,
       selectedAt: new Date().toISOString(),
@@ -110,7 +107,16 @@ await runTool({
     }
 
     const changed = materialChange(before, after);
-    await writePersistedContract({ featureDir: stateTask.featureDir, contract: after });
+    await writePersistedContract({
+      featureDir: stateTask.featureDir,
+      repoDir,
+      stages: [{
+        stageRole: phase,
+        model,
+        ...(after.challengeSide ? { challengeSide: after.challengeSide } : {}),
+        selectedAt: after.selectedAt,
+      }],
+    });
     await appendRerouteAudit({ featureDir: stateTask.featureDir, before, after, noop: !changed });
     if (changed && after.challengeSide) {
       await writeChallengeEvidenceInvalid(stateTask.featureDir, 'operator_reroute');

@@ -17,6 +17,19 @@ This note documents the current Wavemill routing lifecycle and the runtime contr
 - No change to challenge-mode pairing semantics or operator overrides such as `FORCE_MODEL`.
 - No change to the underlying routing policy or expanded-route cache keying.
 
+## Rules
+
+Stage route ownership — plan of record (see the Linear doc "Stage route ownership — plan of record"):
+
+1. **Every override of a decided stage model reaches the route record.** A write that replaces a stage's decided model appends a typed override to `stageRoutes` through `appendRouteOverrideToFeatureDir` (HOK-3363); a same-model write is a no-op. The reseal, the launch reroutes, and `reroute-task` all append.
+2. **One stage executor.** "Which agent and provider run this model?" is answered only by `resolveStageExecutor` (`shared/lib/model-agent-resolution.ts`): (model, stage, effective registry) → `{agent, provider}`. The provider is a function of the resolved agent, never a second model lookup (HOK-3511).
+3. **Writers and the challenge intent carry models only.** Every `.phase-config.json` stage block is written by `writePersistedContract` (shell: `phase_config_write_stages`), which derives the executor itself. An enriched challenge intent names models; agents in an intent are read-tolerated legacy data, never written and never trusted.
+4. **A stage that executed keeps the route it ran with.** Re-routing (expanded route, reseal) never rewrites an executed stage's recorded model, depth, or `selectedAt` (HOK-3156 fix #2).
+5. **Recovery re-derives.** `readValidatedContract` derives the agent and provider from the persisted model with the launcher's resolver and registry, and validates only that the model can launch for the stage. A stored agent is never compared against the resolver; the `agent_unsupported_for_model` class does not exist.
+6. **A saved route that genuinely cannot launch gets one refusal outcome.** Owned by HOK-3512 ("One refusal outcome for a saved route"); until then the launch gate owns the outcome and the writer records the model with no executor.
+
+Guard: `tools/check-stage-executor.ts` → [docs/invariants/stage-executor.md](invariants/stage-executor.md).
+
 ## Scoring Format Requirement
 
 Route artifacts used for Wavemill router benchmark scoring must be strict JSON files. Runtime readers may remain lenient and classify malformed artifacts as `invalid_route`, but benchmark inputs are only scoreable when the artifact parses as JSON and contains the required route fields.
@@ -74,7 +87,7 @@ Resume uses persisted execution state plus cache-aware expanded reroute when nee
 | `features/<slug>/.post-expansion-route.json` | `tools/prompts/planning-phase.md`, `shared/lib/wavemill-common.sh::apply_expanded_route_if_present`, archived by `archive_stage_artifacts()` | write + read + archive | planning completion, coding handoff, resume, eval provenance | Preferred expanded-packet route snapshot captured after task-packet expansion. |
 | `.wavemill/state/expanded-route-cache.json` | `shared/lib/expanded-route-cache.ts`, `shared/lib/route-batch.ts::routeExpandedPackets` | read + write | planning handoff, coding resume | Operating-mode-gated cache of expanded routing decisions keyed by packet hash and input version. |
 | `features/<slug>/.expanded-route.json` | legacy/manual producers, `shared/lib/wavemill-common.sh::apply_expanded_route_if_present` | read | coding handoff, resume | Backward-compatible fallback expanded-route artifact when `.post-expansion-route.json` is absent. |
-| `features/<slug>/.phase-config.json` | `shared/lib/wavemill-mill.sh::write_phase_config`, `read_phase_config`, resume helpers, `shared/lib/wavemill-common.sh::apply_expanded_route_if_present` | read + write | planning handoff, coding, review, resume | Resolved per-stage execution settings used by downstream phase launches. Rewritten from the authoritative execution route before coding begins. |
+| `features/<slug>/.phase-config.json` | One writer: `writePersistedContract` (`shared/lib/execution-contract.ts`), reached from shell through `phase_config_write_stages` → `tools/recovery-contract.ts write` (callers: `write_phase_config`, `apply_expanded_route_if_present`, the challenge reseal and materialisers, the launch reroutes, `reroute-task`). Readers: `read_phase_config`, `readPersistedContract`, resume helpers | read + write | planning handoff, coding, review, resume | Resolved per-stage execution settings used by downstream phase launches. Agent and provider are derived from each stage's model at write time (HOK-3511), and re-derived at recovery. |
 | `.wavemill/workflow-state.json` | `save_task_state()`, `set_task_phase()`, `get_task_meta()`, resume helpers, `shared/lib/wavemill-common.sh::apply_expanded_route_if_present` | read + write | launch, phase transitions, resume, challenge | Durable task ledger for planner/coder/reviewer models, depths, review mode, challenge metadata, PR state, and active phase. Expanded-route promotion updates the execution fields in place. |
 | `.wavemill/evals/artifacts/<issue>/routing-complete.json` | `archive_stage_artifacts()`, `eval-context-gatherer.ts` | read + write | cleanup, post-run eval | Archived copy of the current feature-local routing decision used by eval context loading. |
 | `.wavemill/evals/artifacts/<issue>/initial-route.json` | `archive_stage_artifacts()` | read + write | cleanup, post-run eval provenance | Archived bootstrap snapshot retained for bootstrap-versus-expanded comparisons after worktree cleanup. |

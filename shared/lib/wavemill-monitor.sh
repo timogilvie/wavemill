@@ -1519,28 +1519,23 @@ finalize_challenge_execution_intent_before_coding() {
       code_depth=$(echo "$expanded_route_json" | jq -r '.codeDepth // "medium"' 2>/dev/null || echo "medium")
       review_mode=$(echo "$expanded_route_json" | jq -r '.reviewMode // "static"' 2>/dev/null || echo "static")
 
-      # Primary arm route from the enriched intent.
-      local primary_planner primary_planner_agent primary_coder_model primary_coder_agent primary_reviewer primary_reviewer_agent
+      # Primary arm route from the enriched intent. HOK-3511: the intent
+      # carries models only; agents are derived where the route is written.
+      local primary_planner primary_coder_model primary_reviewer
       primary_planner=$(echo "$enriched_intent" | jq -r '.primary.planner.model // empty' 2>/dev/null)
-      primary_planner_agent=$(echo "$enriched_intent" | jq -r '.primary.planner.agent // empty' 2>/dev/null)
       primary_coder_model=$(echo "$enriched_intent" | jq -r '.primary.coder.model // empty' 2>/dev/null)
-      primary_coder_agent=$(echo "$enriched_intent" | jq -r '.primary.coder.agent // empty' 2>/dev/null)
       primary_reviewer=$(echo "$enriched_intent" | jq -r '.primary.reviewer.model // empty' 2>/dev/null)
-      primary_reviewer_agent=$(echo "$enriched_intent" | jq -r '.primary.reviewer.agent // empty' 2>/dev/null)
 
       local primary_varied challenger_varied
       primary_varied=$(challenge_selection_health_varied_model "$stage" "$primary_planner" "$primary_coder_model" "$primary_reviewer")
 
       # Challenger arm route from the enriched intent.
-      local challenger_key challenger_planner challenger_planner_agent challenger_coder_model challenger_coder_agent challenger_reviewer challenger_reviewer_agent
+      local challenger_key challenger_planner challenger_coder_model challenger_reviewer
       challenger_key=$(echo "$enriched_intent" | jq -r '.challenger.key // empty' 2>/dev/null)
       [[ -n "$challenger_key" ]] || challenger_key="$(task_identity_challenger_key "$issue" 2>/dev/null || echo "")"
       challenger_planner=$(echo "$enriched_intent" | jq -r '.challenger.planner.model // empty' 2>/dev/null)
-      challenger_planner_agent=$(echo "$enriched_intent" | jq -r '.challenger.planner.agent // empty' 2>/dev/null)
       challenger_coder_model=$(echo "$enriched_intent" | jq -r '.challenger.coder.model // empty' 2>/dev/null)
-      challenger_coder_agent=$(echo "$enriched_intent" | jq -r '.challenger.coder.agent // empty' 2>/dev/null)
       challenger_reviewer=$(echo "$enriched_intent" | jq -r '.challenger.reviewer.model // empty' 2>/dev/null)
-      challenger_reviewer_agent=$(echo "$enriched_intent" | jq -r '.challenger.reviewer.agent // empty' 2>/dev/null)
 
       challenger_varied=$(challenge_selection_health_varied_model "$stage" "$challenger_planner" "$challenger_coder_model" "$challenger_reviewer")
 
@@ -1788,7 +1783,14 @@ challenge_reseal_primary_route() {
   local primary_issue="$1" feature_dir="$2" intent_json="$3" executed="${4:-}"
   [[ -n "$primary_issue" && -d "$feature_dir" ]] || return 1
 
-  local role stage phase state_key model agent provider changed=""
+  # HOK-3511: the reseal carries models only; the contract writer derives the
+  # agent and provider for each changed stage, and (HOK-3363) appends one
+  # `challenge` override to the route record per changed stage — before the
+  # top-level .routing-complete fields move, so the record seeds from the
+  # decided (pre-reseal) models.
+  local role stage phase state_key model changed=""
+  local -a write_args=(--keep-selected-at)
+  local -a changed_roles=() changed_models=() changed_state_keys=()
   for role in planner coder reviewer; do
     case "$role" in
       planner) stage="plan"; phase="planning"; state_key="plannerModel" ;;
@@ -1799,34 +1801,36 @@ challenge_reseal_primary_route() {
     model="$(jq -r --arg r "$role" '.primary[$r].model // ""' <<<"$intent_json" 2>/dev/null || true)"
     [[ -n "$model" ]] || continue
     [[ "$(read_phase_config "$feature_dir" "$phase" "model")" == "$model" ]] && continue
+    write_args+=("--$role" "$model")
+    changed_roles+=("$role")
+    changed_models+=("$model")
+    changed_state_keys+=("$state_key")
+    changed="${changed:+$changed,}$role"
+  done
+  [[ -n "$changed" ]] || return 0
 
-    agent="$(jq -r --arg r "$role" '.primary[$r].agent // ""' <<<"$intent_json" 2>/dev/null || true)"
-    if [[ -z "$agent" ]] && declare -F agent_resolve_from_model >/dev/null 2>&1; then
-      agent="$(agent_resolve_from_model "$model" "$phase" 2>/dev/null || true)"
-    fi
-    provider="$(phase_config_provider_for_agent "$agent")"
+  local pair_id
+  pair_id="$(jq -r '.pairId // ""' <<<"$intent_json" 2>/dev/null || true)"
+  [[ -n "$pair_id" ]] || pair_id="$primary_issue"
+  ensure_phase_config_state_file "$feature_dir"
+  phase_config_write_stages "$feature_dir" "${write_args[@]}" \
+    --override-source challenge --pair-id "$pair_id" --side primary \
+    --reason challenge_reseal >/dev/null 2>&1 || return 1
 
+  local i
+  for i in "${!changed_roles[@]}"; do
     if [[ -f "$feature_dir/.routing-complete" ]]; then
       state_mutate "$feature_dir/.routing-complete" '.[$role] = $model' \
-        --arg role "$role" --arg model "$model" >/dev/null 2>&1 || return 1
+        --arg role "${changed_roles[$i]}" --arg model "${changed_models[$i]}" >/dev/null 2>&1 || return 1
     fi
-    ensure_phase_config_state_file "$feature_dir"
-    state_mutate "$feature_dir/.phase-config.json" \
-      '.[$phase] = ((.[$phase] // {}) + {model: $model, stageRole: $phase}
-         + (if $agent != "" then {agent: $agent} else {} end)
-         + (if $provider != "" then {provider: $provider} else {} end))' \
-      --arg phase "$phase" --arg model "$model" --arg agent "$agent" --arg provider "$provider" >/dev/null 2>&1 || return 1
     if [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE}" ]]; then
       state_mutate "$STATE_FILE" \
         'if .tasks[$issue] != null then .tasks[$issue][$key] = $model else . end' \
-        --arg issue "$primary_issue" --arg key "$state_key" --arg model "$model" >/dev/null 2>&1 || true
+        --arg issue "$primary_issue" --arg key "${changed_state_keys[$i]}" --arg model "${changed_models[$i]}" >/dev/null 2>&1 || true
     fi
-    changed="${changed:+$changed,}$role"
   done
 
-  if [[ -n "$changed" ]]; then
-    log_route_lifecycle "challenge_primary_resealed" "issue=$primary_issue" "fields=$changed"
-  fi
+  log_route_lifecycle "challenge_primary_resealed" "issue=$primary_issue" "fields=$changed"
   return 0
 }
 
@@ -2090,31 +2094,19 @@ challenge_intent_files_valid() {
 }
 
 # HOK-3156 — point a review-stage challenger's own route artifacts at its
-# sealed reviewer. Planning/coding entries are left as inherited.
+# sealed reviewer. Planning/coding entries are left as inherited. HOK-3511:
+# the writer derives the reviewer's agent and provider from the model; the
+# caller passes no agent.
 #
-# Usage: challenge_write_review_arm_route <challenger_feature_dir> <reviewer_model> <reviewer_agent> <review_mode>
+# Usage: challenge_write_review_arm_route <challenger_feature_dir> <reviewer_model> <review_mode>
 challenge_write_review_arm_route() {
-  local feature_dir="$1" reviewer_model="$2" reviewer_agent="${3:-}" review_mode="${4:-}"
+  local feature_dir="$1" reviewer_model="$2" review_mode="${3:-}"
   [[ -n "$feature_dir" && -n "$reviewer_model" ]] || return 1
-  if [[ -z "$reviewer_agent" ]] && declare -F agent_resolve_from_model >/dev/null 2>&1; then
-    reviewer_agent="$(agent_resolve_from_model "$reviewer_model" "review" 2>/dev/null || true)"
-  fi
-  local provider
-  provider="$(phase_config_provider_for_agent "$reviewer_agent")"
 
   ensure_phase_config_state_file "$feature_dir"
-  state_mutate "$feature_dir/.phase-config.json" \
-    '.review = {
-       model: $model,
-       stageRole: "review",
-       challengeSide: "challenger",
-       selectedAt: (now | todateiso8601),
-       mode: (if $mode != "" then $mode else (.review.mode // "") end)
-     }
-     + (if $agent != "" then {agent: $agent} else {} end)
-     + (if $provider != "" then {provider: $provider} else {} end)' \
-    --arg model "$reviewer_model" --arg agent "$reviewer_agent" \
-    --arg provider "$provider" --arg mode "$review_mode" || return 1
+  local -a write_args=(--reviewer "$reviewer_model" --challenge-side challenger --reset)
+  [[ -n "$review_mode" ]] && write_args+=(--review-mode "$review_mode")
+  phase_config_write_stages "$feature_dir" "${write_args[@]}" >/dev/null || return 1
 
   if [[ -f "$feature_dir/.routing-complete" ]]; then
     state_mutate "$feature_dir/.routing-complete" \
@@ -2159,7 +2151,7 @@ challenge_materialize_challenger_arm() {
 
   local arm_key arm_slug arm_branch varied_stage
   local coder_model planner_model reviewer_model
-  local coder_agent planner_agent reviewer_agent
+  local coder_agent planner_agent
   local plan_depth code_depth review_mode
   arm_key=$(challenge_arm_read_field "$arm_json" '.key')
   arm_slug=$(challenge_arm_read_field "$arm_json" '.slug')
@@ -2170,7 +2162,6 @@ challenge_materialize_challenger_arm() {
   reviewer_model=$(challenge_arm_read_field "$arm_json" '.models.reviewer')
   coder_agent=$(challenge_arm_read_field "$arm_json" '.agents.coder')
   planner_agent=$(challenge_arm_read_field "$arm_json" '.agents.planner')
-  reviewer_agent=$(challenge_arm_read_field "$arm_json" '.agents.reviewer')
   plan_depth=$(challenge_arm_read_field "$arm_json" '.planDepth')
   code_depth=$(challenge_arm_read_field "$arm_json" '.codeDepth')
   review_mode=$(challenge_arm_read_field "$arm_json" '.reviewMode')
@@ -2204,7 +2195,6 @@ challenge_materialize_challenger_arm() {
       [[ -n "$reviewer_model" ]] && \
         log_warn "  $arm_key: arm record reviewer ($reviewer_model) differs from the sealed intent ($sealed_value) — using the sealed reviewer"
       reviewer_model="$sealed_value"
-      reviewer_agent="$(jq -r '.challenger.reviewer.agent // .challenger.expectedStageAgent // ""' <<<"$sealed_intent" 2>/dev/null || true)"
     fi
     sealed_value="$(jq -r '.challenger.expectedRoute.reviewMode // ""' <<<"$sealed_intent" 2>/dev/null || true)"
     [[ -n "$sealed_value" ]] && review_mode="$sealed_value"
@@ -2358,7 +2348,7 @@ challenge_materialize_challenger_arm() {
   # sealed reviewer so every relaunch, stage-result write and route stamp sees
   # the reviewer that actually runs. Planning and coding stay inherited: the
   # preflight above proved they match the challenger's sealed route.
-  challenge_write_review_arm_route "$challenger_feature_dir" "$reviewer_model" "$reviewer_agent" "$review_mode" || {
+  challenge_write_review_arm_route "$challenger_feature_dir" "$reviewer_model" "$review_mode" || {
     log_error "  $arm_key: failed to write the challenger's own review route"
     return 1
   }
@@ -2420,7 +2410,8 @@ challenge_materialize_challenger_arm() {
     "$planner_model" "$coder_model" "$reviewer_model" \
     "$plan_depth" "$code_depth" "$review_mode" \
     "$varied_stage" "review" "" "$arm_title"
-  challenge_set_varied_model "$arm_key" "$reviewer_model" "$reviewer_agent"
+  challenge_set_varied_model "$arm_key" "$reviewer_model" \
+    "$(read_phase_config "$challenger_feature_dir" "review" "agent")"
 
   # Register in monitor arrays so subsequent monitor_issue_state ticks find
   # the arm through the same lookup as any other task.
@@ -2445,7 +2436,10 @@ challenge_materialize_challenger_arm() {
   if declare -F agent_resolve_from_model >/dev/null 2>&1; then
     resolved_reviewer_agent="$(agent_resolve_from_model "$reviewer_launch_model" "review" 2>/dev/null || echo "")"
   fi
-  [[ -n "$resolved_reviewer_agent" ]] || resolved_reviewer_agent="${reviewer_agent:-$coder_agent}"
+  # HOK-3511: the fallback is the agent the contract writer derived, never one
+  # carried from the arm record or the intent.
+  [[ -n "$resolved_reviewer_agent" ]] || \
+    resolved_reviewer_agent="$(read_phase_config "$challenger_feature_dir" "review" "agent")"
 
   set_task_phase "$arm_key" "review"
   write_stage_result_with_history "$challenger_feature_dir" "review" "running" \
@@ -2698,20 +2692,12 @@ challenge_materialize_implementation_arm() {
       log_warn "  $arm_key: failed to stamp source=inherited on .planning-result.json"
     fi
   fi
+  # HOK-3511: the contract writer derives the coder's agent and provider from
+  # the model; the arm record's carried agent is never persisted.
   if [[ -f "$challenger_feature_dir/.phase-config.json" && -n "$coder_model" ]]; then
-    local coder_provider=""
-    if declare -F _provider_for_model >/dev/null 2>&1; then
-      coder_provider="$(_provider_for_model "$coder_model" 2>/dev/null || true)"
-    fi
-    tmp="$(mktemp)" && if jq --arg m "$coder_model" --arg a "$coder_agent" --arg d "$code_depth" --arg p "$coder_provider" \
-      '.coding = (((.coding // {}) | del(.agent, .provider)) + {model: $m, depth: $d}
-         + (if $a != "" then {agent: $a} else {} end)
-         + (if $p != "" then {provider: $p} else {} end))' \
-      "$challenger_feature_dir/.phase-config.json" > "$tmp" 2>/dev/null; then
-      mv "$tmp" "$challenger_feature_dir/.phase-config.json"
-    else
-      rm -f "$tmp"
-    fi
+    phase_config_write_stages "$challenger_feature_dir" \
+      --coder "$coder_model" --code-depth "$code_depth" >/dev/null || \
+      log_warn "  $arm_key: failed to write the challenger's own coding route"
   fi
 
   # Step 5: fork identity + descriptor. Only the plan is inherited.
@@ -2747,7 +2733,8 @@ challenge_materialize_implementation_arm() {
     "$planner_model" "$coder_model" "$reviewer_model" \
     "$plan_depth" "$code_depth" "$review_mode" \
     "implementation" "coding" "" "$arm_title"
-  challenge_set_varied_model "$arm_key" "$coder_model" "$coder_agent"
+  challenge_set_varied_model "$arm_key" "$coder_model" \
+    "$(read_phase_config "$challenger_feature_dir" "coding" "agent")"
   BRANCH_BY_ISSUE["$arm_key"]="$arm_branch"
   SLUG_BY_ISSUE["$arm_key"]="$arm_slug"
   state_mutate "$STATE_FILE" \
@@ -2764,7 +2751,10 @@ challenge_materialize_implementation_arm() {
   if declare -F agent_resolve_from_model >/dev/null 2>&1; then
     resolved_coder_agent="$(agent_resolve_from_model "$coder_launch_model" "coding" 2>/dev/null || echo "")"
   fi
-  [[ -n "$resolved_coder_agent" ]] || resolved_coder_agent="$coder_agent"
+  # HOK-3511: the fallback is the agent the contract writer derived, never one
+  # carried from the arm record.
+  [[ -n "$resolved_coder_agent" ]] || \
+    resolved_coder_agent="$(read_phase_config "$challenger_feature_dir" "coding" "agent")"
   if [[ -z "$resolved_coder_agent" ]]; then
     log_error "  $arm_key: cannot resolve a coding agent for $coder_launch_model — arm left for retry"
     return 1
@@ -3071,9 +3061,8 @@ challenge_materialize_expanded_route_arm() {
 
   # Challenger route: sealed varied planner + shared coder/reviewer. Depths come
   # from the primary's expanded phase-config (applied before finalize).
-  local challenger_planner challenger_planner_agent shared_coder shared_reviewer
+  local challenger_planner shared_coder shared_reviewer
   challenger_planner="$(echo "$enriched_intent" | jq -r '.challenger.planner.model // ""')"
-  challenger_planner_agent="$(echo "$enriched_intent" | jq -r '.challenger.planner.agent // ""')"
   shared_coder="$(echo "$enriched_intent" | jq -r '.challenger.coder.model // ""')"
   shared_reviewer="$(echo "$enriched_intent" | jq -r '.challenger.reviewer.model // ""')"
   if [[ -z "$challenger_planner" ]]; then
@@ -3191,8 +3180,11 @@ challenge_materialize_expanded_route_arm() {
   # Save the challenger's task-state entry and register it in the monitor maps.
   local linear_issue
   linear_issue="$(get_linear_issue_id "$primary_issue" 2>/dev/null || echo "$primary_issue")"
-  local planner_agent="$challenger_planner_agent"
-  [[ -n "$planner_agent" ]] || planner_agent="$(challenge_arm_read_field "$arm_json" '.agents.planner')"
+  # HOK-3511: the planner agent is the one the contract writer derived from
+  # the sealed planner model (write_phase_config above), never one carried
+  # from the intent or the arm record.
+  local planner_agent
+  planner_agent="$(read_phase_config "$challenger_feature_dir" "planning" "agent")"
   [[ -n "$planner_agent" ]] || planner_agent="${AGENT_CMD:-claude}"
   local arm_title
   arm_title=$(pass_task_field "$primary_issue" title)
@@ -3204,7 +3196,7 @@ challenge_materialize_expanded_route_arm() {
     "$challenger_planner" "$shared_coder" "$shared_reviewer" \
     "$plan_depth" "$code_depth" "$review_mode" \
     "$varied_stage" "" "" "$arm_title"
-  challenge_set_varied_model "$arm_key" "$challenger_planner" "$challenger_planner_agent"
+  challenge_set_varied_model "$arm_key" "$challenger_planner" "$planner_agent"
 
   BRANCH_BY_ISSUE["$arm_key"]="$arm_branch"
   SLUG_BY_ISSUE["$arm_key"]="$arm_slug"
@@ -9478,7 +9470,9 @@ _persist_phase() {
   mv "$tmp" "$feature_dir/.resolved-phase"
 }
 
-# Write .phase-config.json with resolved per-stage configuration.
+# Write .phase-config.json with resolved per-stage configuration. HOK-3511:
+# one contract-writer call derives every stage's agent and provider from its
+# model; this function carries models only.
 # Usage: write_phase_config <feature_dir> <planner_model> <coder_model> <reviewer_model> \
 #                           <plan_depth> <code_depth> <review_mode> [force_model]
 write_phase_config() {
@@ -9486,78 +9480,17 @@ write_phase_config() {
   local planner_model="$2" coder_model="$3" reviewer_model="$4"
   local plan_depth="$5" code_depth="$6" review_mode="$7"
   local force_model="${8:-}"
-  local now
-  now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
   mkdir -p "$feature_dir"
-  local tmp
-  tmp=$(mktemp) || { log_warn "write_phase_config: mktemp failed"; return 0; }
-
-  local force_model_json="null"
-  [[ -n "$force_model" ]] && force_model_json="\"$force_model\""
-
-  local planner_agent coder_agent reviewer_agent
-  if declare -F agent_resolve_models_for_roles >/dev/null 2>&1; then
-    if agent_resolve_models_for_roles "$planner_model" "$coder_model" "$reviewer_model"; then
-      :
-    fi
-    planner_agent="$(agent_resolve_batch_agent_for_role "planner")"
-    coder_agent="$(agent_resolve_batch_agent_for_role "coder")"
-    reviewer_agent="$(agent_resolve_batch_agent_for_role "reviewer")"
-  else
-    planner_agent="$(agent_resolve_from_model "$planner_model" "planning" || true)"
-    coder_agent="$(agent_resolve_from_model "$coder_model" "coding" || true)"
-    reviewer_agent="$(agent_resolve_from_model "$reviewer_model" "review" || true)"
-  fi
-
-  local planner_provider coder_provider reviewer_provider
-  planner_provider="$(_provider_for_model "$planner_model")"
-  coder_provider="$(_provider_for_model "$coder_model")"
-  reviewer_provider="$(_provider_for_model "$reviewer_model")"
-
-  jq -n \
-    --arg plannerModel "$planner_model" \
-    --arg plannerAgent "$planner_agent" \
-    --arg plannerProvider "$planner_provider" \
-    --arg planDepth "$plan_depth" \
-    --arg coderModel "$coder_model" \
-    --arg coderAgent "$coder_agent" \
-    --arg coderProvider "$coder_provider" \
-    --arg codeDepth "$code_depth" \
-    --arg reviewerModel "$reviewer_model" \
-    --arg reviewerAgent "$reviewer_agent" \
-    --arg reviewerProvider "$reviewer_provider" \
-    --arg reviewMode "$review_mode" \
-    --arg selectedAt "$now" \
-    --argjson forceModel "$force_model_json" \
-    '{
-      planning: {model:$plannerModel, provider:$plannerProvider, agent:$plannerAgent, stageRole:"planning", challengeSide:null, selectedAt:$selectedAt, depth:$planDepth},
-      coding: {model:$coderModel, provider:$coderProvider, agent:$coderAgent, stageRole:"coding", challengeSide:null, selectedAt:$selectedAt, depth:$codeDepth},
-      review: {model:$reviewerModel, provider:$reviewerProvider, agent:$reviewerAgent, stageRole:"review", challengeSide:null, selectedAt:$selectedAt, mode:$reviewMode},
-      resolvedAt: $selectedAt,
-      forceModel: $forceModel
-    }' > "$tmp" 2>/dev/null || {
-      rm -f "$tmp"
-      log_warn "write_phase_config: jq failed"
-      return 0
-    }
-  mv "$tmp" "$feature_dir/.phase-config.json"
-}
-
-_provider_for_model() {
-  local model="$1" provider_json provider
-  if [[ -n "${TOOLS_DIR:-}" && -n "$model" ]]; then
-    provider_json="$(wavemill_run_tool "recovery-contract.ts" provider --model "$model" --json 2>/dev/null || true)"
-    provider="$(printf '%s' "$provider_json" | jq -r '.provider // empty' 2>/dev/null || true)"
-    [[ -n "$provider" ]] && printf '%s\n' "$provider" && return 0
-  fi
-  case "$(agent_resolve_from_model "$model" "coding" 2>/dev/null || true)" in
-    native-openrouter) printf '%s\n' 'native-openrouter' ;;
-    native-openai) printf '%s\n' 'native-openai' ;;
-    claude) printf '%s\n' 'anthropic' ;;
-    codex) printf '%s\n' 'openai' ;;
-    *) printf '%s\n' '' ;;
-  esac
+  local -a write_args=(--replace)
+  [[ -n "$planner_model" ]] && write_args+=(--planner "$planner_model" --plan-depth "$plan_depth")
+  [[ -n "$coder_model" ]] && write_args+=(--coder "$coder_model" --code-depth "$code_depth")
+  [[ -n "$reviewer_model" ]] && write_args+=(--reviewer "$reviewer_model" --review-mode "$review_mode")
+  [[ -n "$force_model" ]] && write_args+=(--force-model "$force_model")
+  phase_config_write_stages "$feature_dir" "${write_args[@]}" >/dev/null || {
+    log_warn "write_phase_config: contract writer failed"
+    return 0
+  }
 }
 
 # Read a field from .phase-config.json for a given stage.

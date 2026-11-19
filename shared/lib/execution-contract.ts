@@ -3,16 +3,22 @@ import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { filterDisabledModels, isDisabledModel } from './disabled-models.ts';
 import {
-  DEFAULT_MODEL_REGISTRY,
+  getEffectiveRegistry,
   getModel,
-  type AgentType,
   type ModelRegistry,
 } from './model-registry.ts';
-import { resolveModelAgent, type AgentResolutionPhase } from './model-agent-resolution.ts';
+import {
+  resolveModelAgent,
+  resolveStageExecutor,
+  type AgentResolutionPhase,
+  type StageExecutorResolution,
+} from './model-agent-resolution.ts';
 import { mutateJsonState } from './state-mutex.ts';
 import { evaluateNativeProviderGate } from './native-agent/certification/eligibility-gate.ts';
 import type { CertificationPhase } from './native-agent/certification/schema.ts';
 import { resolveNativeAgentProviders } from './native-agent/providers.ts';
+import { appendRouteOverrideToFeatureDir } from './route-artifact.ts';
+import type { RouteOverrideInput, RouteStageRole } from './route-override-record.ts';
 
 export type StageRole = 'planning' | 'coding' | 'review';
 export type ChallengeSide = 'primary' | 'challenger' | null;
@@ -33,7 +39,6 @@ export type RecoveryUnavailableReason =
   | 'model_disabled'
   | 'model_not_launchable'
   | 'provider_unavailable'
-  | 'agent_unsupported_for_model'
   | 'certification_invalid_for_role';
 
 export type ContractReadResult =
@@ -109,6 +114,12 @@ function parseJsonFile(file: string): unknown {
   return JSON.parse(readFileSync(file, 'utf-8'));
 }
 
+/**
+ * The challenge intent carries models only (HOK-3511). A review-stage
+ * challenger's sealed reviewer model still wins over the (possibly inherited)
+ * phase-config block, but the executor is derived from the model at
+ * validation time, never copied from the intent.
+ */
 function challengeIntentReviewContract(input: {
   featureDir: string;
   stageRole: StageRole;
@@ -125,15 +136,10 @@ function challengeIntentReviewContract(input: {
       const model = clean(reviewer?.model)
         || (clean(parsed.challengeStage) === 'review' ? clean(side?.expectedStageModel) : '');
       if (!model) continue;
-      const resolved = resolveModelAgent({ model, phase: 'review' });
-      const agent = clean(reviewer?.agent)
-        || (clean(parsed.challengeStage) === 'review' ? clean(side?.expectedStageAgent) : '')
-        || (resolved.ok ? resolved.agent : '');
-      if (!agent) continue;
       return {
         model,
-        provider: providerForModel(model),
-        agent,
+        provider: '',
+        agent: '',
         stageRole: 'review',
         challengeSide: input.challengeSide,
         selectedAt: clean(parsed.createdAt) || input.fallbackSelectedAt || new Date(0).toISOString(),
@@ -143,17 +149,6 @@ function challengeIntentReviewContract(input: {
     }
   }
   return null;
-}
-
-export function providerForModel(modelId: string, registry: ModelRegistry = DEFAULT_MODEL_REGISTRY): string {
-  const capabilities = getModel(registry, modelId);
-  const nativeProvider = capabilities?.nativeCapability?.nativeProvider;
-  if (nativeProvider) return `native-${nativeProvider}`;
-  if (capabilities?.agent === 'claude') return 'anthropic';
-  if (capabilities?.agent === 'codex') return 'openai';
-  if (capabilities?.vendor === 'anthropic' || capabilities?.vendor === 'deepseek') return 'anthropic';
-  if (capabilities?.vendor === 'openai') return 'openai';
-  return capabilities?.agent ?? capabilities?.vendor ?? '';
 }
 
 export function serializeContract(contract: ExecutionContract): string {
@@ -222,11 +217,14 @@ export function readPersistedContract(input: {
     return { ok: true, contract: challengeContract };
   }
 
-  if (!model || !provider || !agent || !selectedAt) {
+  // HOK-3511: the persisted contract names the model; agent and provider are
+  // derived from it at read-validation time. A stored agent/provider pair is
+  // carried through for audit output only — it is never trusted for a launch.
+  if (!model || !selectedAt) {
     return {
       ok: false,
       reason: 'contract_missing',
-      detail: `${input.stageRole} contract must include model, provider, agent, and selectedAt`,
+      detail: `${input.stageRole} contract must include model and selectedAt`,
     };
   }
   if (!isStageRole(stageRole)) {
@@ -250,38 +248,143 @@ export function readPersistedContract(input: {
   };
 }
 
+const ROUTE_ROLE_BY_STAGE: Record<StageRole, RouteStageRole> = {
+  planning: 'planner',
+  coding: 'coder',
+  review: 'reviewer',
+};
+
+export interface StageContractSpec {
+  stageRole: StageRole;
+  model: string;
+  challengeSide?: ChallengeSide;
+  /** Extra stage-block fields written alongside the contract (depth, mode, launchSubstitution). */
+  extra?: Record<string, unknown>;
+  /** `'keep'` preserves the block's existing selectedAt; a string pins it; default is now. */
+  selectedAt?: 'keep' | string;
+  /** Drop the block's existing fields instead of merging over them. */
+  reset?: boolean;
+}
+
+export interface StageWriteOutcome {
+  model: string;
+  agent?: string;
+  provider?: string;
+  selectedAt: string;
+  refusal?: { reason: string; diagnostic: string };
+}
+
+/**
+ * The one writer of `.phase-config.json` stage blocks (HOK-3511). It takes
+ * models, and derives agent and provider itself through
+ * {@link resolveStageExecutor} with the repo's effective registry — a caller
+ * can no longer persist an executor carried over from another source. A model
+ * that does not resolve keeps its block (model, metadata) and loses any stale
+ * agent/provider; the refusal is returned for logging, recovery re-derives,
+ * and the launch gate owns the outcome (HOK-3512).
+ *
+ * With `routeOverride`, each stage whose decided model this write replaces is
+ * appended to the route record first (HOK-3363), before the stage block (and
+ * any top-level route fields the caller rewrites afterwards) move.
+ */
 export async function writePersistedContract(input: {
   featureDir: string;
-  contract: ExecutionContract;
-}): Promise<void> {
+  repoDir?: string;
+  registry?: ModelRegistry;
+  stages: readonly StageContractSpec[];
+  /** Start from a fresh file: all three stage blocks plus resolvedAt/forceModel. */
+  replace?: boolean;
+  forceModel?: string | null;
+  routeOverride?: RouteOverrideInput;
+}): Promise<{ stages: Partial<Record<StageRole, StageWriteOutcome>> }> {
+  const registry = input.registry ?? getEffectiveRegistry(input.repoDir);
+  const now = new Date().toISOString();
   await mkdir(input.featureDir, { recursive: true });
   const configFile = phaseConfigPath(input.featureDir);
+
+  const resolutions = new Map<StageRole, StageExecutorResolution>();
+  for (const stage of input.stages) {
+    resolutions.set(stage.stageRole, resolveStageExecutor({
+      model: stage.model,
+      stage: stage.stageRole,
+      repoDir: input.repoDir,
+      registry,
+    }));
+  }
+
+  if (input.routeOverride) {
+    for (const stage of input.stages) {
+      await appendRouteOverrideToFeatureDir(
+        input.featureDir,
+        ROUTE_ROLE_BY_STAGE[stage.stageRole],
+        stage.model,
+        input.routeOverride,
+      );
+    }
+  }
+
+  const outcomes: Partial<Record<StageRole, StageWriteOutcome>> = {};
   await mutateJsonState<PhaseConfig>(
     configFile,
-    (current) => ({
-      ...current,
-      [input.contract.stageRole]: {
-        ...((current[input.contract.stageRole] as Record<string, unknown> | undefined) ?? {}),
-        model: input.contract.model,
-        provider: input.contract.provider,
-        agent: input.contract.agent,
-        stageRole: input.contract.stageRole,
-        challengeSide: input.contract.challengeSide,
-        ...(input.contract.certificationRef ? { certificationRef: input.contract.certificationRef } : {}),
-        selectedAt: input.contract.selectedAt,
-      },
-      resolvedAt: typeof current.resolvedAt === 'string' ? current.resolvedAt : input.contract.selectedAt,
-    }),
+    (current) => {
+      const base: PhaseConfig = input.replace
+        ? { resolvedAt: now, forceModel: input.forceModel ?? null }
+        : {
+          ...current,
+          resolvedAt: typeof current.resolvedAt === 'string' ? current.resolvedAt : now,
+          ...(input.forceModel !== undefined
+            ? { forceModel: input.forceModel }
+            : { forceModel: current.forceModel ?? null }),
+        };
+      for (const stage of input.stages) {
+        const resolution = resolutions.get(stage.stageRole)!;
+        const existing = (input.replace || stage.reset)
+          ? {}
+          : ((current[stage.stageRole] as Record<string, unknown> | undefined) ?? {});
+        const existingBlock = (current[stage.stageRole] as PhaseStageConfig | undefined) ?? {};
+        const selectedAt = stage.selectedAt === 'keep'
+          ? (clean(existingBlock.selectedAt) || clean(current.resolvedAt) || now)
+          : (stage.selectedAt ?? now);
+        const block: Record<string, unknown> = {
+          ...existing,
+          ...(stage.extra ?? {}),
+          model: stage.model,
+          stageRole: stage.stageRole,
+          challengeSide: stage.challengeSide
+            ?? (normalizeChallengeSide(existingBlock.challengeSide) ?? null),
+          selectedAt,
+        };
+        if (resolution.ok) {
+          block.agent = resolution.agent;
+          block.provider = resolution.provider;
+        } else {
+          delete block.agent;
+          delete block.provider;
+        }
+        base[stage.stageRole] = block;
+        outcomes[stage.stageRole] = {
+          model: stage.model,
+          selectedAt,
+          ...(resolution.ok
+            ? { agent: resolution.agent, provider: resolution.provider }
+            : { refusal: { reason: resolution.reason, diagnostic: resolution.diagnostic } }),
+        };
+      }
+      return base;
+    },
     { createIfMissing: true, initial: {} },
   );
 
-  if (input.contract.challengeSide) {
+  const side = input.stages.find((stage) => stage.challengeSide)?.challengeSide;
+  if (side) {
     await writeFile(
       challengeSidePath(input.featureDir),
-      `${JSON.stringify({ side: input.contract.challengeSide, selectedAt: input.contract.selectedAt }, null, 2)}\n`,
+      `${JSON.stringify({ side, selectedAt: now }, null, 2)}\n`,
       'utf-8',
     );
   }
+
+  return { stages: outcomes };
 }
 
 function isLaunchableByRegistry(model: string, stageRole: StageRole, registry: ModelRegistry, repoDir?: string): ContractValidateResult {
@@ -296,7 +399,7 @@ function isLaunchableByRegistry(model: string, stageRole: StageRole, registry: M
   return { ok: true };
 }
 
-function validateNativeProvider(contract: ExecutionContract, repoDir?: string, registry: ModelRegistry = DEFAULT_MODEL_REGISTRY): ContractValidateResult {
+function validateNativeProvider(contract: ExecutionContract, repoDir: string | undefined, registry: ModelRegistry): ContractValidateResult {
   const nativeProvider = NATIVE_PROVIDER_BY_AGENT[contract.agent];
   if (!nativeProvider) return { ok: true };
 
@@ -343,12 +446,19 @@ function validateNativeProvider(contract: ExecutionContract, repoDir?: string, r
   return { ok: true };
 }
 
+/**
+ * HOK-3511: validation asks only whether the model can launch for the stage.
+ * The contract's agent/provider are expected to be the derived executor (see
+ * {@link readValidatedContract}); a persisted agent is never compared against
+ * the resolver, so the `agent_unsupported_for_model` mismatch class is
+ * unrepresentable for a contract whose model is launchable.
+ */
 export function validateContractLaunchable(input: {
   contract: ExecutionContract;
   repoDir?: string;
   registry?: ModelRegistry;
 }): ContractValidateResult {
-  const registry = input.registry ?? DEFAULT_MODEL_REGISTRY;
+  const registry = input.registry ?? getEffectiveRegistry(input.repoDir);
   const { contract } = input;
   if (isDisabledModel(contract.model) || !filterDisabledModels([contract.model]).includes(contract.model)) {
     return {
@@ -360,23 +470,6 @@ export function validateContractLaunchable(input: {
 
   const registryLaunchable = isLaunchableByRegistry(contract.model, contract.stageRole, registry, input.repoDir);
   if (!registryLaunchable.ok) return registryLaunchable;
-
-  const resolved = resolveModelAgent({
-    model: contract.model,
-    phase: contract.stageRole,
-    registry,
-    repoDir: input.repoDir,
-  });
-  if (!resolved.ok || resolved.agent !== (contract.agent as AgentType)) {
-    return {
-      ok: false,
-      reason: 'agent_unsupported_for_model',
-      detail: unavailableDetail(
-        contract.model,
-        resolved.ok ? `current resolver supports agent ${resolved.agent}, not persisted agent ${contract.agent}` : resolved.diagnostic,
-      ),
-    };
-  }
 
   return validateNativeProvider(contract, input.repoDir, registry);
 }
@@ -423,7 +516,15 @@ export async function readChallengeEvidenceInvalid(featureDir: string): Promise<
   }
 }
 
-/** Canonical read/validate seam used by every recovery caller and future ledger scheduling. */
+/**
+ * Canonical read/validate seam used by every recovery caller and future ledger
+ * scheduling. HOK-3511: the returned contract carries the agent and provider
+ * *derived* from the persisted model through {@link resolveStageExecutor} with
+ * the repo's effective registry — the same resolution the launcher uses — so a
+ * stale persisted executor (or a legacy block without one) can never refuse a
+ * relaunch whose model is launchable. This is not a reroute: the model is
+ * unchanged and nothing is written.
+ */
 export function readValidatedContract(input: {
   featureDir: string;
   stageRole: StageRole;
@@ -436,6 +537,16 @@ export function readValidatedContract(input: {
   if (read.contract.stageRole !== input.stageRole) {
     return { ok: false, reason: 'contract_malformed', detail: `Persisted ${input.stageRole} contract names stage ${read.contract.stageRole}`, contract: read.contract };
   }
-  const validation = validateContractLaunchable({ contract: read.contract, repoDir: input.repoDir, registry: input.registry });
-  return validation.ok ? read : { ...validation, contract: read.contract };
+  const registry = input.registry ?? getEffectiveRegistry(input.repoDir);
+  const executor = resolveStageExecutor({
+    model: read.contract.model,
+    stage: input.stageRole,
+    repoDir: input.repoDir,
+    registry,
+  });
+  const contract = executor.ok
+    ? { ...read.contract, agent: executor.agent, provider: executor.provider }
+    : read.contract;
+  const validation = validateContractLaunchable({ contract, repoDir: input.repoDir, registry });
+  return validation.ok ? { ok: true, contract } : { ...validation, contract };
 }
