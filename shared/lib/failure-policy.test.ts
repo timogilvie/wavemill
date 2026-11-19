@@ -35,7 +35,7 @@ test('terminal-count-shrinks: fewer distinct terminal codes than before HOK-3176
     `allowlist grew to ${TERMINAL_ALLOWLIST.length} (was ${TERMINAL_CODES_BEFORE_HOK_3176})`,
   );
   const allStage = TERMINAL_ALLOWLIST.filter((cause) => !cause.challengeOnly);
-  assert.equal(allStage.length, 9, 'all-stage terminals changed — update this pin deliberately');
+  assert.equal(allStage.length, 10, 'all-stage terminals changed — update this pin deliberately');
 });
 
 // protects: the one escalation step accepting an operator-decision code that is
@@ -90,6 +90,8 @@ test('allowlist fault classes agree with classifyArmFault attribution', () => {
 });
 
 for (const code of [
+  // Positive saved-route refusal requires an audited intervention (HOK-3512).
+  'recovery_contract_unavailable',
   'policy-denied',
   'cancelled',
   'provider-config-error',

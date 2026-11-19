@@ -117,6 +117,7 @@ for fn in \
   check_stage_awaiting_user \
   phase_launch_head \
   phase_launch_base \
+  stage_failure_retry_key \
   phase_launch_gate \
   coding_launch_refusal_limit \
   coding_launch_refusal_is_transient \

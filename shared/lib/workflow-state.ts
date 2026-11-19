@@ -175,9 +175,6 @@ export type TaskRecord = {
   launchFailure?: JsonObject | null;
   retryFailure?: string;
   retryFailureDetail?: string;
-  stopReason?: string;
-  stopSubReason?: string;
-  stopDetail?: string;
   statusClearedBy?: JsonObject;
 
   // terminal

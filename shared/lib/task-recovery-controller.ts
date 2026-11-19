@@ -29,6 +29,7 @@ import { readStageResult, stageResultRunIdentity, type StageResult } from './sta
 import { readOwnershipRows } from './session-ownership.ts';
 import { archiveLateStageEvidence } from './task-evidence-archive.ts';
 import { isSettled } from './task-settlement.ts';
+import type { readValidatedContract } from './execution-contract.ts';
 
 export const RECOVERY_POLICY = Object.freeze({ name: 'task-recovery-controller', version: 1 } as const);
 
@@ -97,7 +98,8 @@ export interface RecoverySnapshot {
   attempt: RecoveryAttempt;
     disposition: RecoveryDisposition | null;
   stageResult: RecoveryStageResult;
-    contractAvailable: boolean | null;
+  executionContract: ReturnType<typeof readValidatedContract>
+    | {ok: false; reason: 'contract_read_failed'; detail: string} | null;
   outstandingEffect: RecoveryOutstandingEffect | null;
     wait: RecoveryWait | null;
     failure: RecoveryFailure | null;
@@ -123,6 +125,8 @@ export interface RecoveryDecision {
   policy: typeof RECOVERY_POLICY_ID;
   stage: FailureStage;
   wait?: RecoveryWait;
+  /** Policy-classified route evidence, forwarded intact to the existing executor. */
+  failure?: FailureDecision & {detail: string};
   failureKind?: string;
   nextAction?: string;
   retryBucket?: string;
@@ -283,10 +287,23 @@ export function decideTaskRecovery(snapshot: RecoverySnapshot): RecoveryDecision
 
 function decideFromFailure(snapshot: RecoverySnapshot, failure: RecoveryFailure): RecoveryDecision {
   const { stage } = snapshot;
-  const { decision: fd, retry } = failure;
-  const base: Partial<RecoveryDecision> = { failureKind: fd.failureKind, nextAction: fd.nextAction };
+  const { retry } = failure;
+  const contract = snapshot.executionContract;
+  // Failed reads must not downgrade an already terminal observation (for
+  // example, a task whose recorded spend budget is exhausted).
+  const refusal = contract?.ok === false
+    && !(contract.reason === 'contract_read_failed' && failure.decision.class === 'terminal') ? contract : null;
+  const detail = refusal ? `Saved ${stage} route refused (${refusal.reason}): ${refusal.detail}` : '';
+  const fd = refusal ? classifyFailure({stage,
+    // A CLI/read failure is not a positive validator refusal. It retains the
+    // existing bounded retry, never an invented wake or a model substitution.
+    failureKind: refusal.reason === 'contract_read_failed' ? 'native-unclassified' : 'recovery_contract_unavailable',
+    detail,
+  }) : failure.decision;
+  const base: Partial<RecoveryDecision> = { failureKind: fd.failureKind, nextAction: fd.nextAction,
+    ...(refusal ? {failure: {...fd, detail}} : {}) };
 
-  if (snapshot.baseDrift) {
+  if (snapshot.baseDrift && !refusal) {
     return decision(stage, 'remediate', 'update from the observed base before reevaluating Ready', { ...base, nextAction: 'update-base' });
   }
   if (stage === 'ready' && fd.class === 'code-failure' && failure.source === 'transition') {
@@ -295,7 +312,7 @@ function decideFromFailure(snapshot: RecoverySnapshot, failure: RecoveryFailure)
     });
   }
   if (fd.class === 'terminal') {
-    return decision(stage, 'escalate', `allowlisted terminal cause ${fd.failureKind}: ${fd.cause?.reason ?? fd.rationale}`, {
+    return decision(stage, 'escalate', `allowlisted terminal cause ${fd.failureKind}: ${refusal ? detail : fd.cause?.reason ?? fd.rationale}`, {
       ...base,
       escalationBasis: { kind: 'policy-terminal', decisionClass: 'terminal' },
     });
@@ -315,15 +332,6 @@ function decideFromFailure(snapshot: RecoverySnapshot, failure: RecoveryFailure)
       ...base,
       retryBucket: bucket,
       escalationBasis: { kind: 'exhausted', bucket },
-    });
-  }
-  // proceed: a coding replay requires a persisted execution contract; an
-  // unavailable contract holds under the same budget (never a model swap).
-  if (stage === 'coding' && snapshot.contractAvailable === false) {
-    return decision(stage, 'wait', 'coding retry requires a persisted execution contract to replay; holding until one is available', {
-      ...base,
-      retryBucket: bucket,
-      wait: { owner: 'tool', wake: 'execution-contract-available' },
     });
   }
   if (fd.class === 'code-failure') {
@@ -420,7 +428,8 @@ function claimCurrentRecoveryAction(args: ClaimRecoveryArgs): ClaimResult {
     (current) => {
       const existing = current.claim;
       const abandoned = existing && recoveryOwnerReclaimable(existing);
-      if (existing && !abandoned && existing.outcome !== 'reassess' && sameClaimIdentity(existing, dec.action, dec.stage, runId, evidenceId)) {
+      if (existing && (existing.acknowledgedAt || !abandoned) && existing.outcome !== 'reassess'
+          && sameClaimIdentity(existing, dec.action, dec.stage, runId, evidenceId)) {
         // An identical claim already exists: another notifier won. Keep it.
         outcome = { claimed: false, reason: 'already-claimed', existing };
         return current;
@@ -568,7 +577,9 @@ export async function reconcileAndRecover(args: Omit<ClaimRecoveryArgs, 'decisio
       }
       snapshot = { ...snapshot, stageResult: { kind: 'valid', status: result.status }, failure: null,
         wait: result.status === 'awaiting_user' ? { owner: 'human', wake: 'operator-release' } : snapshot.wait };
-    } else if (result?.status === 'running') {
+    } else if (result?.status === 'running' && snapshot.disposition?.kind !== 'settled') {
+      // A missing-window notification may prove the agent settled even though
+      // its last result still says running. Keep that classified obligation.
       snapshot = { ...snapshot, stageResult: { kind: 'running' }, failure: null };
     }
     if (claim && !claim.acknowledgedAt && result?.status === 'completed') {
@@ -714,7 +725,7 @@ export async function runControllerCli(): Promise<void> {
       disposition: dispositionPayload,
       stageResult: result?.status === 'completed' || result?.status === 'awaiting_user'
         ? { kind: 'valid', status: result.status } : { kind: 'running' },
-      contractAvailable: null, outstandingEffect: null,
+      executionContract: null, outstandingEffect: null,
       wait: result?.status === 'awaiting_user' ? { owner: 'human', wake: 'operator-release' } : null, failure: null,
       reassessment,
     };

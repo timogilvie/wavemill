@@ -42,6 +42,18 @@ A deadline, a missing acknowledgement, or an Observer outage is **not** a
 model/provider failure, does not steal ownership, and does not terminate work.
 Explicit human holds survive restart and retry.
 
+Saved-route recovery carries the complete `execution-contract.ts` validation
+result, including refusal reason and detail. A positive refusal enters the
+failure policy's `recovery_contract_unavailable` terminal cause and the existing
+operator escalation step; it cannot wait on an `execution-contract-available`
+event without a producer or author private stopped state. A failed validator
+read retains bounded retry and cannot downgrade an existing terminal failure.
+Completion, human holds, stale identity, uncertain effects and live work keep
+their precedence. Repaired route evidence and explicit operator releases change
+the claim identity. An
+applied acknowledgement remains deduplicated after its worker exits; only an
+unapplied action may be reclaimed on identical evidence.
+
 Native stages are a consumer (HOK-3382). `RecoverySnapshot.reassessment`
 carries the shared stall fact (`due`, `lastProgressAt`) plus the native
 transcript's open harness tool call, resolved by the monitor from
