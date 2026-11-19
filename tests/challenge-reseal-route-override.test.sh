@@ -50,7 +50,9 @@ eval "$(extract_function "$MONITOR_SCRIPT_FILE" read_phase_config)"
 FEATURE_DIR="$TMP_DIR/feature"
 mkdir -p "$FEATURE_DIR"
 STATE_FILE="$TMP_DIR/workflow-state.json"
-printf '{"tasks":{"HOK-3500":{"coderModel":"claude-opus-5-5"}}}\n' > "$STATE_FILE"
+# shellcheck source=lib/state-fixtures.sh
+source "$SCRIPT_DIR/lib/state-fixtures.sh"
+fixture_workflow_state "$STATE_FILE" HOK-3500 coderModel=claude-opus-5-5
 
 # Sealed launch route: coder claude-opus-5-5 with its (carried) executor —
 # the exact pre-reseal shape the incident recorded.
