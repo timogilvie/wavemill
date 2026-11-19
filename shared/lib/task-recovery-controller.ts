@@ -173,12 +173,6 @@ export function decideTaskRecovery(snapshot: RecoverySnapshot): RecoveryDecision
     return decision(stage, 'wait', `explicit human hold (${snapshot.wait.wake})`, { wait: snapshot.wait });
   }
 
-  // A failed stage with a refused saved route is policy-terminal.
-  if (snapshot.stageResult.kind === 'failed' && snapshot.executionContract?.ok === false) {
-    const refusal = classifyFailure({ stage, failureKind: 'recovery_contract_unavailable' });
-    return decideFromFailure(snapshot, { decision: refusal, retry: 'proceed' });
-  }
-
   // 6. A valid current completion is consumed, not rerun.
   if (snapshot.stageResult.kind === 'valid') {
     if (unverifiableIdentity) {
@@ -266,6 +260,15 @@ export function decideTaskRecovery(snapshot: RecoverySnapshot): RecoveryDecision
   // 5. Legitimate non-human wait.
   if (snapshot.wait && snapshot.failure === null) {
     return decision(stage, 'wait', `legitimate wait owned by ${snapshot.wait.owner} (${snapshot.wait.wake})`, { wait: snapshot.wait });
+  }
+
+  // A positively refused saved route is policy-terminal. A failed validator
+  // read is uncertainty, so keep the normal bounded retry decision instead.
+  if (snapshot.stageResult.kind === 'failed'
+      && snapshot.executionContract?.ok === false
+      && snapshot.executionContract.reason !== 'contract_read_failed') {
+    const refusal = classifyFailure({ stage, failureKind: 'recovery_contract_unavailable' });
+    return decideFromFailure(snapshot, { decision: refusal, retry: 'proceed' });
   }
 
   // 8. Classified failure → delegate to the failure authorities.

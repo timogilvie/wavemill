@@ -51,7 +51,7 @@ test('every refusal reaches actionable escalation independent of retry/backoff s
       assert.equal(d.action, 'escalate', `${reason}/${retry}: refusal cannot wait for an event with no producer`);
       assert.equal(d.escalationBasis?.kind, 'policy-terminal');
       assert.ok(d.rationale.includes(reason));
-      assert.equal(d.failure?.cause?.faultClass, 'harness-fault');
+      assert.equal(d.failure?.cause?.faultClass, 'selection-fault');
       assert.equal(d.failure?.attribution, 'unattributed');
       assert.ok(d.failure?.detail.includes(reason));
     }
