@@ -7,6 +7,11 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Source the shared helpers under test.
 source "$REPO_DIR/shared/lib/wavemill-common.sh"
 
+# HOK-3511: apply_expanded_route_if_present writes .phase-config.json through
+# phase_config_write_stages → recovery-contract.ts; resolve the tool from this
+# checkout, never from an installed copy.
+export TOOLS_DIR="$REPO_DIR/tools"
+
 log() {
   local level="${1:-}" message="${2:-}"
   if [[ "$level" == "warn" ]]; then
