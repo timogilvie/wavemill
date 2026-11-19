@@ -197,6 +197,22 @@ export function writeOperatorIntervention(
   return path;
 }
 
+/**
+ * Append one operator command to `.operator-events.jsonl` — the TS twin of
+ * `operator_event_record` (transient-marker.sh): `seq` is the line count + 1,
+ * one compact object per line. An escalation written with
+ * `--expires-on operator-event` expires on it (HOK-3512: a reroute clears the
+ * refused-route inbox item).
+ */
+export function recordOperatorEvent(featureDir: string, command: string, issue: string, detail?: string): number {
+  mkdirSync(featureDir, { recursive: true });
+  const path = join(featureDir, '.operator-events.jsonl');
+  const seq = (existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter((line) => line.trim() !== '').length : 0) + 1;
+  const at = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+  appendFileSync(path, `${JSON.stringify({ seq, command, issue, at, head: '', ...(detail ? { detail } : {}) })}\n`);
+  return seq;
+}
+
 function maybeFeatureDir(path: string): boolean {
   if (!existsSync(path)) return false;
   if (existsSync(join(path, 'selected-task.json'))) return true;

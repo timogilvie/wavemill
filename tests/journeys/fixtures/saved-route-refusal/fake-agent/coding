@@ -1,0 +1,37 @@
+# shellcheck shell=bash
+# Fake coder for the HOK-3512 saved-route refusal journey (sourced by
+# tests/fakes/bin/claude).
+#
+# HOK-3500 incident shape: the first coding launch fails retryably, and by the
+# time recovery replays the saved coding route that route no longer passes
+# launch validation (here: its model left the registry, as a lapsed
+# certification would). The replay used to wait on a wake nothing produced;
+# it must now raise one inbox item. The relaunch after the operator reroute
+# completes through the shared fake's normal coding contract.
+if [[ -f "$FEATURE_DIR/route-refusal-injected" ]]; then
+  default_coding
+  return
+fi
+touch "$FEATURE_DIR/route-refusal-injected"
+
+# Remember the launchable model for the operator's reroute, then make the
+# saved coding route unlaunchable.
+jq -r '.coding.model' "$FEATURE_DIR/.phase-config.json" > "$FEATURE_DIR/journey-launchable-coder-model"
+jq '.coding.model = "journey-retired-coder"' "$FEATURE_DIR/.phase-config.json" > "$FEATURE_DIR/.phase-config.json.tmp"
+mv "$FEATURE_DIR/.phase-config.json.tmp" "$FEATURE_DIR/.phase-config.json"
+
+detail="native-stage-timeout: native coding exhausted its model time budget (3600s of 3600s)"
+now="$(date -u +%FT%TZ)"
+result="$FEATURE_DIR/.coding-result.json"
+jq --arg now "$now" --arg detail "$detail" '
+  .status = "failed" | .finishedAt = $now | .notes = ("Native coding failed: " + $detail)
+' "$result" > "$result.tmp"
+mv "$result.tmp" "$result"
+
+jq -n --arg detail "$detail" --argjson ts "$(date +%s)" '{
+  state: "error", event: "process_exit", detail: $detail, agent: "native", timestamp: $ts, writer: "agent",
+  agentRecord: {state: "error", event: "process_exit", detail: $detail, agent: "native", timestamp: $ts}
+}' > "/tmp/wavemill-${WAVEMILL_SESSION}-${WAVEMILL_ISSUE}.hook"
+
+printf '%s\n' "$detail"
+exit 1
