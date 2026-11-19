@@ -73,7 +73,8 @@ for fn in \
   challenge_compute_fork_identity \
   challenge_intent_stamp_fork_descriptor \
   challenge_intent_files_valid \
-  challenge_intent_file_json; do
+  challenge_intent_file_json \
+  read_phase_config; do
   eval "$(extract_function "$fn")"
 done
 
@@ -96,6 +97,60 @@ wavemill_run_tool() {
   local tool="${1:?wavemill_run_tool requires a tool basename}"
   shift
   node "$TOOLS_DIR/$tool" "$@"
+}
+agent_resolve_from_model() {
+  case "${1:-}" in
+    gpt-*) echo codex ;;
+    claude-*) echo claude ;;
+    *) echo native-openrouter ;;
+  esac
+}
+# HOK-3511: the real phase_config_write_stages spawns recovery-contract.ts
+# write, whose executor resolution is certification-gated. Stub it with the
+# same contract — agent and provider derived from each stage's model (via the
+# fixture's agent_resolve_from_model), never carried in by the caller.
+phase_config_write_stages() {
+  local feature_dir="$1"; shift
+  local planner="" coder="" reviewer="" plan_depth="" code_depth="" review_mode="" side="" reset="false"
+  while (( $# > 0 )); do
+    case "$1" in
+      --planner) planner="$2"; shift 2 ;;
+      --coder) coder="$2"; shift 2 ;;
+      --reviewer) reviewer="$2"; shift 2 ;;
+      --plan-depth) plan_depth="$2"; shift 2 ;;
+      --code-depth) code_depth="$2"; shift 2 ;;
+      --review-mode) review_mode="$2"; shift 2 ;;
+      --challenge-side) side="$2"; shift 2 ;;
+      --reset) reset="true"; shift ;;
+      *) shift ;;
+    esac
+  done
+  _stub_write_stage() {
+    local stage="$1" phase_key="$2" model="$3" extra_key="$4" extra_value="$5"
+    [[ -n "$model" ]] || return 0
+    local agent provider
+    agent="$(agent_resolve_from_model "$model" "$stage")"
+    case "$agent" in
+      native-openrouter) provider="native-openrouter" ;;
+      native-openai) provider="native-openai" ;;
+      claude) provider="anthropic" ;;
+      codex) provider="openai" ;;
+      *) provider="" ;;
+    esac
+    jq --arg k "$phase_key" --arg m "$model" --arg a "$agent" --arg p "$provider" \
+      --arg side "$side" --arg reset "$reset" --arg ek "$extra_key" --arg ev "$extra_value" \
+      '.[$k] = ((if $reset == "true" then {} else (.[$k] // {}) end)
+         + {model: $m, agent: $a, stageRole: $k, selectedAt: (now | todateiso8601)}
+         + (if $p != "" then {provider: $p} else {} end)
+         + (if $side != "" then {challengeSide: $side} else {challengeSide: null} end)
+         + (if $ev != "" then {($ek): $ev} else {} end))' \
+      "$feature_dir/.phase-config.json" > "$feature_dir/.phase-config.json.tmp"
+    mv "$feature_dir/.phase-config.json.tmp" "$feature_dir/.phase-config.json"
+  }
+  _stub_write_stage review review "$reviewer" mode "$review_mode"
+  _stub_write_stage coding coding "$coder" depth "$code_depth"
+  _stub_write_stage planning planning "$planner" depth "$plan_depth"
+  echo '{"ok":true,"stages":{}}'
 }
 
 LOG_FILE="$TMP_DIR/log.txt"
@@ -218,7 +273,7 @@ check_eq "shared reviewer comes from the plan-time route, not the stale arm reco
   "$(jq -r '.tasks["HOK-9001_c"].reviewerModel' "$STATE_FILE")"
 check_eq "shared review mode comes from the plan-time route" "static+llm" \
   "$(jq -r '.tasks["HOK-9001_c"].reviewMode' "$STATE_FILE")"
-check_eq "challenger coding provider reset for its own coder" "absent" \
+check_eq "challenger coding provider derived from its own coder" "native-openrouter" \
   "$(jq -r '.coding.provider // "absent"' "$CH_FEATURE/.phase-config.json")"
 check_eq "primary marked challengerLaunched" "true" "$(jq -r '.tasks["HOK-9001"].challengerLaunched' "$STATE_FILE")"
 
