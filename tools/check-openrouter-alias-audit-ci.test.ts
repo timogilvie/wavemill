@@ -49,9 +49,15 @@ jobs:
         if: env.RUN_OPENROUTER_ALIAS_AUDIT != 'true'
         run: echo skip
 
+      - name: Resolve baseline registry
+        if: env.RUN_OPENROUTER_ALIAS_AUDIT == 'true' && (github.event_name == 'pull_request' || github.event_name == 'push')
+        env:
+          BASE_SHA: \${{ github.event.pull_request.base.sha || github.event.before }}
+        run: echo baseline
+
       - name: Audit OpenRouter aliases
         if: env.RUN_OPENROUTER_ALIAS_AUDIT == 'true'
-        run: npx tsx tools/audit-openrouter-aliases.ts --json --no-write
+        run: npx tsx tools/audit-openrouter-aliases.ts --json --no-write \${OPENROUTER_ALIAS_AUDIT_BASELINE_ARGS:-}
 
   check-paths:
     name: Check Lifecycle Paths
@@ -155,3 +161,22 @@ test('fails when path detection failures are allowed to go green', async () => {
     assert.match(message, /fail closed/);
   });
 });
+
+const BASELINE_IF = "        if: env.RUN_OPENROUTER_ALIAS_AUDIT == 'true' && (github.event_name == 'pull_request' || github.event_name == 'push')";
+
+for (const [name, from, to, expected] of [
+  ['the baseline step is missing', '      - name: Resolve baseline registry', '      - name: Something else', /no `Resolve baseline registry` step/],
+  ['a scheduled run would be scoped to a baseline', BASELINE_IF, `${BASELINE_IF.slice(0, -1)} || github.event_name == 'schedule')`, /scheduled and manual audits stay unscoped/],
+  ['the baseline is not the base commit', 'github.event.pull_request.base.sha || github.event.before', 'github.sha', /read from the base commit/],
+  ['the audit step hard-codes a baseline', '--json --no-write', '--json --no-write --baseline-registry base.json', /hard-codes --baseline-registry/],
+] as const) {
+  test(`fails when ${name}`, async () => {
+    assert.ok(COMPLIANT_WORKFLOW.includes(from), `fixture must contain: ${from}`);
+    await withRepo(COMPLIANT_WORKFLOW.replace(from, to), (repoDir) => {
+      const result = checkOpenRouterAliasAuditCi(repoDir);
+
+      assert.equal(result.ok, false);
+      assert.match(formatOpenRouterAliasAuditCi(result), expected);
+    });
+  });
+}

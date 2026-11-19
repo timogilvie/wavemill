@@ -1,0 +1,84 @@
+name: OpenRouter Drift
+
+# Pull requests fail only on registry drift they introduce (ci.yml,
+# "OpenRouter Alias Audit"), so this workflow is what surfaces drift that comes
+# from the live catalog. It audits the integration branch every four hours. A
+# finding seen in two consecutive runs is filed as one High-priority Linear
+# issue in the wavemill project's Now milestone, so the mill reconciles it as
+# backlog work. The run itself is red for as long as drift is present.
+#
+# Requires the LINEAR_API_KEY repository secret.
+
+on:
+  schedule:
+    - cron: '17 */4 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: openrouter-drift
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read # download the previous run's audit report
+
+jobs:
+  audit:
+    name: Audit and file drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      # Fixes land on auto/integration first; auditing it stops a drift that is
+      # already fixed there from being reported until the next promotion.
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: auto/integration
+
+      - name: Setup
+        uses: ./.github/actions/setup
+
+      - name: Audit OpenRouter aliases
+        id: audit
+        run: |
+          set +e
+          npx tsx tools/audit-openrouter-aliases.ts --output drift-report/current.json
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Download previous audit report
+        if: hashFiles('drift-report/current.json') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          previous=$(gh run list --workflow openrouter-drift.yml --status completed --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -n "$previous" ] && gh run download "$previous" --name openrouter-drift-report --dir drift-report/previous; then
+            echo "Comparing with run $previous."
+          else
+            echo "::notice::No previous audit report; a finding is filed once a second run confirms it."
+          fi
+
+      - name: File persistent drift in Linear
+        if: hashFiles('drift-report/current.json') != ''
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+        run: >-
+          npx tsx tools/file-openrouter-drift.ts
+          --report drift-report/current.json
+          --previous drift-report/previous/current.json
+          --team-key HOK --project wavemill --milestone Now
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: openrouter-drift-report
+          path: drift-report/current.json
+          if-no-files-found: ignore
+
+      - name: Fail while drift or an audit error is present
+        if: steps.audit.outputs.exit_code != '0'
+        run: |
+          echo "::error::OpenRouter alias audit exited ${{ steps.audit.outputs.exit_code }} (1 = selectable drift, 2 = catalog unavailable)."
+          exit 1
