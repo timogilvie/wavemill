@@ -264,9 +264,27 @@ jobs:
         if: env.RUN_OPENROUTER_ALIAS_AUDIT == 'true'
         uses: ./.github/actions/setup
 
+      # A pull request or push fails only on drift it introduced: findings on
+      # registry entries identical to the base commit come from the live
+      # catalog, and no edit in the change can clear them. They are reported as
+      # a warning here and still fail the scheduled run, which has no baseline.
+      # If the base registry cannot be read, the audit runs unscoped.
+      - name: Resolve baseline registry
+        if: env.RUN_OPENROUTER_ALIAS_AUDIT == 'true' && (github.event_name == 'pull_request' || github.event_name == 'push')
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          baseline="$RUNNER_TEMP/baseline-model-registry.json"
+          if git fetch --no-tags --depth=1 origin "$BASE_SHA" \
+            && git show "$BASE_SHA:shared/fixtures/model-registry.v1.json" > "$baseline"; then
+            echo "OPENROUTER_ALIAS_AUDIT_BASELINE_ARGS=--baseline-registry $baseline" >> "$GITHUB_ENV"
+          else
+            echo "::warning::Base registry at '$BASE_SHA' is unavailable; running the unscoped audit."
+          fi
+
       - name: Audit OpenRouter aliases
         if: env.RUN_OPENROUTER_ALIAS_AUDIT == 'true'
-        run: npx tsx tools/audit-openrouter-aliases.ts --json --no-write
+        run: npx tsx tools/audit-openrouter-aliases.ts --json --no-write ${OPENROUTER_ALIAS_AUDIT_BASELINE_ARGS:-}
 
   # Aggregates every test job above into one status check.
   #

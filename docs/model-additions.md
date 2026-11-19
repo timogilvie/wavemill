@@ -99,6 +99,24 @@ exceed the provider catalog and declared tool support when the provider catalog
 omits tool support. The CI workflow runs this audit daily and on demand. Retired
 aliases may appear in the report as expected non-selectable findings.
 
+On a pull request or push the CI job passes `--baseline-registry` with the base
+commit's registry. That run fails only on selectable findings for aliases whose
+registry entry the change added or edited. A finding on an untouched entry comes
+from the live catalog; it is printed as a warning annotation marked `inherited`
+and does not fail the run. The daily and manual runs have no baseline and fail on
+every selectable finding. A change to the audit code itself is judged by the
+scheduled run, not by its own pull request.
+
+Drift that no pull request caused is surfaced by the **OpenRouter Drift**
+workflow (`.github/workflows/openrouter-drift.yml`). It audits `auto/integration`
+every four hours and stays red while drift is present. A finding seen in two
+consecutive runs (a reference price can flap for a few hours) is filed by
+`tools/file-openrouter-drift.ts` as one High-priority Linear issue in the
+wavemill project's Now milestone, titled "Reconcile model registry with the
+OpenRouter catalog". While that issue is open, later runs rewrite its findings
+table only when the findings change; they never file a second one. The workflow
+needs the `LINEAR_API_KEY` repository secret.
+
 ## OpenRouter Catalog Maintenance Runbook
 
 Repeatable operator loop for reconciling the registry with the live OpenRouter
