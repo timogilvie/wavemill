@@ -373,6 +373,8 @@ describe('one launch identity (HOK-3447)', () => {
   });
 
   // HOK-3476: Test resolveLineageForStageResult function
+  // protects: a stage-result write losing its launch's runId/stageAttemptId/
+  // parentRunId/retryOf because the extractor read the wrong row fields.
   it('resolveLineageForStageResult extracts lineage from launch row', () => {
     const launchRow: SessionOwnershipRow = {
       sessionRef: 'session123',
@@ -395,6 +397,8 @@ describe('one launch identity (HOK-3447)', () => {
     assert.equal(lineage.retryOf, 'HOK-123:prev-epoch:1794822000');
   });
 
+  // protects: fabricating a runId/stageAttemptId for a pre-HOK-3476 launch
+  // row that never recorded one, instead of leaving lineage unknown.
   it('resolveLineageForStageResult handles legacy rows without lineage', () => {
     const launchRow: SessionOwnershipRow = {
       sessionRef: 'session123',

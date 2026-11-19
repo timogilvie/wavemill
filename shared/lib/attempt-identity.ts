@@ -19,6 +19,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import { validateTaskAttemptRef } from './sdk-task-cost/contract.ts';
 import type { TaskAttemptRef } from './sdk-task-cost/contract.ts';
 
 /** Inputs of {@link mintRunId}. */
@@ -52,17 +53,48 @@ export interface ProjectableOwnershipRow {
 }
 
 /**
- * Project a TaskAttemptRef from an ownership row.
+ * {@link TaskAttemptRef}'s fields, but `run_id` may be absent — a row minted
+ * before HOK-3373 has none. Never asserted to actually satisfy the SDK
+ * contract; call {@link taskAttemptRefConforms} to check that separately.
+ */
+export type ProjectedTaskAttemptRef = Omit<TaskAttemptRef, 'run_id'> & { run_id?: string };
+
+/**
+ * Project a TaskAttemptRef shape from an ownership row.
  *
  * Returns undefined run_id for legacy rows with no runId field.
  * The stage_attempt_id is always present for new rows.
  */
-export function projectTaskAttemptRef(ownershipRow: ProjectableOwnershipRow): TaskAttemptRef {
+export function projectTaskAttemptRef(ownershipRow: ProjectableOwnershipRow): ProjectedTaskAttemptRef {
   return {
     task_id: ownershipRow.issue,
     run_id: ownershipRow.runId,
     stage_attempt_id: ownershipRow.stageAttemptId
   };
+}
+
+/**
+ * Whether a projected ref satisfies the SDK `task_attempt/v1` `TaskAttemptRef`
+ * contract (HOK-3476), using the SDK's own `validateTaskAttemptRef`. Never
+ * throws, so a caller can record Wavemill's own lineage either way and
+ * decide separately whether to surface it as SDK-conformant.
+ *
+ * Wavemill's `runId` ({@link mintRunId}) is deterministic —
+ * `<issue>:<runEpoch>:<launchSeconds>` — for shell-twin byte parity and
+ * timestamp parsing ({@link runIdIssue}, {@link runIdStartedAt}). The SDK's
+ * `run_id` must be a minted UUID/ULID, "never derived from... a timestamp"
+ * (`@hokusai/core`). Every ref projected from today's `mintRunId` therefore
+ * fails this check — a documented gap (`docs/invariants/attempt-lineage.md`),
+ * not a caller bug. Closing it means revisiting the minted format, which is
+ * out of scope for HOK-3476 (it propagates identity, it does not rewrite it).
+ */
+export function taskAttemptRefConforms(ref: ProjectedTaskAttemptRef): ref is TaskAttemptRef {
+  try {
+    validateTaskAttemptRef(ref);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
