@@ -14,6 +14,17 @@ if [[ "${JOURNEY_RECOVERY_CONTRACT_REPLAY:-0}" == 1 && ! -f "$FEATURE_DIR/.journ
   run_tool stage-result-cli.ts update "$FEATURE_DIR" coding --status failed --notes "Scripted interrupted coding attempt; implementation retained" --model-attribution-eligible false
   exit 143
 fi
+if [[ "${JOURNEY_CODER_ROUTE_CHANGE:-0}" == 1 && ! -f "$FEATURE_DIR/.journey-coding-failed-once" ]] \
+   && ! task_identity_is_challenger "$WAVEMILL_ISSUE"; then
+  # HOK-3511: one scripted coding failure on the primary after its coder was
+  # moved by the expanded route. The relaunch must replay the persisted
+  # contract (derived executor) under the stage's bounded retry with zero
+  # operator touches — the HOK-3500 stall happened exactly here.
+  touch "$FEATURE_DIR/.journey-coding-failed-once"
+  echo "HOK-3511 injected coding exit" >> "$FAKE_AGENT_LOG"
+  run_tool stage-result-cli.ts update "$FEATURE_DIR" coding --status failed --notes "Scripted coding failure; HOK-3511 relaunch replay" --model-attribution-eligible false
+  exit 143
+fi
 [[ ! -f recovery-preserved.txt ]] || git add recovery-preserved.txt
 default_coding
 

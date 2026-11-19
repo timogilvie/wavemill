@@ -35,7 +35,8 @@ export const STAGE_EXECUTOR_GUARD: GuardSpec = {
     },
     {
       name: 'ts-native-provider-construction',
-      description: 'provider label built as `native-${...}` outside the resolver — the provider is a function of the resolved agent',
+      // allow-template-curly: the ${...} names the forbidden template shape, literally.
+      description: 'provider label built as a native-${...} template outside the resolver — the provider is a function of the resolved agent',
       lang: 'ts',
       re: /provider\s*[:=]\s*`native-\$\{/,
     },

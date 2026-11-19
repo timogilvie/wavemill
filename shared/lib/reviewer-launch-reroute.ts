@@ -164,6 +164,7 @@ async function applyReviewerSubstitution(input: {
   if (existsSync(routingCompletePath)) {
     await mutateJsonState<Record<string, unknown>>(routingCompletePath, (current) => ({
       ...current,
+      // allow-stage-launchability: the HOK-3363 override was appended above by writePersistedContract (routeOverride)
       reviewer: input.to,
     }));
   }
