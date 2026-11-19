@@ -128,7 +128,11 @@ export function gatherReadyTaskProgress(opts: {
   task?: Pick<TaskRecord, 'updated' | 'branch' | 'slug' | 'worktree' | 'status' | 'phase' | 'lifecycle' | 'windowId'>;
   readyResult: Pick<StageResult, 'startedAt' | 'finishedAt' | 'artifacts'> | null; paneText?: string; panePid?: number | null; now?: Date;
 }): TaskProgress {
-  return gatherStageTaskProgress({ ...opts, stage: REMEDIATION_STAGE[remediationKind(opts.readyResult)] });
+  return gatherStageTaskProgress({
+    ...opts,
+    stage: REMEDIATION_STAGE[remediationKind(opts.readyResult)],
+    stageResult: opts.readyResult,
+  });
 }
 
 export type StageAgentDispositionKind = 'inactive' | 'advanced' | 'in-flight' | 'settled';
