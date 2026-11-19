@@ -69,7 +69,7 @@ echo ""
 echo "assertions:"
 journey_assert "no relaunch while the saved route was refused" test "$LAUNCHES_AT_REFUSAL" = "1"
 journey_assert "the inbox item names the coding stage" \
-  bash -c 'jq -e "tostring | test(\"saved coding route\")" "$1" >/dev/null' _ "$JOURNEY_TMP/refusal-attention.json"
+  bash -c 'jq -e "tostring | test(\"saved coding route\"; \"i\")" "$1" >/dev/null' _ "$JOURNEY_TMP/refusal-attention.json"
 journey_assert "exactly two coding launches (one refused replay held, one bounded relaunch)" \
   test "$(journey_agent_launch_count "$ISSUE" coding)" = "2"
 journey_assert "the reroute was recorded as one operator event" \

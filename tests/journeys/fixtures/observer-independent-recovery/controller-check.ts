@@ -29,6 +29,7 @@ function baseDriftSnapshot(overrides: Partial<RecoverySnapshot> = {}): RecoveryS
     baseDrift: true,
     disposition: null,
     stageResult: { kind: 'failed' },
+    executionContract: null,
     outstandingEffect: null,
     wait: null,
     failure: { decision: classifyFailure({ stage: 'ready', detail: 'some novel ready error' }), retry: 'proceed' },

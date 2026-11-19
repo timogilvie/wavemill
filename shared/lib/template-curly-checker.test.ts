@@ -27,12 +27,14 @@ describe('checkSourceText', () => {
     const findings = checkSourceText('fixture.ts', `const s = 'prefix ${placeholder} suffix';\n`);
 
     assert.equal(findings.length, 1);
-    assert.deepEqual(findings[0], {
+    const { file, line, column, pattern, text } = findings[0];
+    assert.deepEqual({ file, line, column, pattern }, {
       file: 'fixture.ts',
       line: 1,
       column: 11,
-      text: `'prefix ${placeholder} suffix'`,
+      pattern: 'string-literal-placeholder',
     });
+    assert.ok(text.includes(`'prefix ${placeholder} suffix'`), 'the finding shows the offending line');
   });
 
   it('flags double-quoted placeholder syntax', () => {
@@ -40,7 +42,7 @@ describe('checkSourceText', () => {
 
     assert.equal(findings.length, 1);
     assert.equal(findings[0].column, 11);
-    assert.equal(findings[0].text, `"prefix ${placeholder} suffix"`);
+    assert.ok(findings[0].text.includes(`"prefix ${placeholder} suffix"`));
   });
 
   it('flags string literals inside template substitutions', () => {
@@ -49,7 +51,7 @@ describe('checkSourceText', () => {
     const findings = checkSourceText('fixture.ts', source);
 
     assert.equal(findings.length, 1);
-    assert.equal(findings[0].text, `'nested ${placeholder}'`);
+    assert.ok(findings[0].text.includes(`'nested ${placeholder}'`));
   });
 
   it('flags javascript files', () => {
@@ -216,11 +218,19 @@ describe('formatTemplateCurly', () => {
     const output = formatTemplateCurly({
       ok: false,
       scannedFiles: 1,
-      findings: [{ file: 'shared/example.ts', line: 2, column: 14, text: `'${placeholder}'` }],
+      findings: [{
+        file: 'shared/example.ts',
+        line: 2,
+        column: 14,
+        pattern: 'string-literal-placeholder',
+        description: 'plain string literal contains placeholder syntax',
+        text: `'${placeholder}'`,
+      }],
     });
 
     assert.match(output, /shared\/example\.ts:2:14/);
     assert.match(output, /switch the string to backticks/);
     assert.match(output, /allow-template-curly: <reason>/);
+    assert.match(output, /tools\/template-curly-allowlist\.txt/);
   });
 });

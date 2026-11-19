@@ -82,6 +82,24 @@ describe('checkGuardSource — matching', () => {
   });
 });
 
+describe('checkGuardSource — structural checks without listed paths', () => {
+  const everywhere: GuardSpec = {
+    ...SPEC,
+    patterns: [],
+    structuralChecks: [
+      { name: 'any-file', description: 'TODO marker', find: (text, file) => (text.includes('TODO') ? [{ line: 1, detail: file }] : []) },
+      { name: 'tools-only', description: 'TODO marker in tools', scopedPaths: ['tools/'], find: (text) => (text.includes('TODO') ? [{ line: 1 }] : []) },
+    ],
+  };
+
+  it('runs on every scanned file, narrowed by scopedPaths, and passes the file to find', () => {
+    assert.deepEqual(patternsOf('shared/lib/a.ts', 'TODO\n', everywhere), ['any-file']);
+    assert.deepEqual(patternsOf('tools/a.ts', 'TODO\n', everywhere), ['any-file', 'tools-only']);
+    assert.equal(checkGuardSource(everywhere, 'shared/lib/a.ts', 'TODO\n')[0].description, 'TODO marker (shared/lib/a.ts)');
+    assert.deepEqual(patternsOf('shared/lib/a.ts', '// allow-demo: tracked elsewhere\nTODO\n', everywhere), []);
+  });
+});
+
 describe('checkGuardSource — comments and suppression', () => {
   it('skips whole-line comments per language but not trailing comments', () => {
     assert.deepEqual(patternsOf('a.ts', '// forbidden()\n/* forbidden() */\n * forbidden()\n'), []);

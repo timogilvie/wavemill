@@ -141,6 +141,12 @@ export const TERMINAL_CODES_BEFORE_HOK_3176 = 29;
  */
 export const TERMINAL_ALLOWLIST: readonly TerminalCause[] = Object.freeze([
   {
+    code: 'recovery_contract_unavailable',
+    reason: 'the saved route was positively refused by validation; identical replay cannot change it until an operator changes the route',
+    faultClass: 'harness-fault',
+    testRef: 'failure-policy.test.ts:terminal:recovery_contract_unavailable',
+  },
+  {
     code: 'policy-denied',
     reason: 'a mutation/network policy rejected the action; only an operator can widen the policy',
     faultClass: 'harness-fault',
@@ -196,15 +202,6 @@ export const TERMINAL_ALLOWLIST: readonly TerminalCause[] = Object.freeze([
     reason: "the task's one recorded spend budget is exhausted across its owned sessions; another run cannot change how much it may spend",
     faultClass: 'model-fault',
     testRef: 'failure-policy.test.ts:terminal:task-budget-exhausted',
-  },
-  {
-    // HOK-3512: the saved stage route fails `validateContractLaunchable`.
-    // Recovery replays that route and never re-chooses a model (HOK-2601), so
-    // every retry is refused identically until an operator or Hokusai reroutes.
-    code: 'recovery_contract_unavailable',
-    reason: 'the saved stage route fails launch validation; recovery replays that route, so every retry is refused until the route changes',
-    faultClass: 'selection-fault',
-    testRef: 'failure-policy.test.ts:terminal:recovery_contract_unavailable',
   },
   // Challenge-only: existing pair-resolution semantics. Each is emitted only
   // after its own bounded-retry bucket is exhausted, so the retry already
@@ -546,6 +543,7 @@ function excerpt(text: string, maxChars = 4000): string {
 // ── Next actions ────────────────────────────────────────────────────────────
 
 const NEXT_ACTIONS: Readonly<Record<string, string>> = {
+  recovery_contract_unavailable: 'inspect the saved route and validator reason; use wavemill reroute for an audited replacement, then resume',
   'context-exhausted': 'session compacted to the floor and still overflowed; re-launch on a larger-context model or split the task',
   'context-window-exceeded': 'relaunch with compressed context or a larger-context model; the prompt exceeded the model context window',
   'provider-config-error': 'check provider auth/model configuration, then rerun. The provider rejected the request',
@@ -564,7 +562,6 @@ const NEXT_ACTIONS: Readonly<Record<string, string>> = {
   'review-not-ready': 'the reviewer returned a genuine not_ready verdict with undismissed blockers and Ready kept refusing to launch; the arm was retired (forfeit) so its green sibling proceeds. Inspect the review-result.json blockers on the closed PR',
   'review-identity-mismatch': "the review artifact's reviewer identity disagreed with the arm's assignment (or execution evidence was contradicted); the arm was retired as an invalid challenge (no model forfeit) so its green sibling proceeds. Inspect the review-result.json intendedModel/executedModel on the closed PR",
   'review-unattributed': 'Ready was refused by the review gate but the reviewer identity could not be proven; the arm was retired as an invalid challenge (no model forfeit) so its green sibling proceeds. Inspect the review-result.json executionEvidence on the closed PR',
-  recovery_contract_unavailable: 'the saved stage route cannot launch (the validator reason is recorded). Reroute the stage (wavemill reroute <task-id> --phase <stage>); the stage then relaunches under its bounded retry',
   'coding-dirty-handoff': 'the coding agent exited after writing .coding-complete with uncommitted output and did not repair it when relaunched (completion-protocol failure); the challenger is forfeited so the primary proceeds',
   'planning-artifact-invalid': 'the plan artifact failed structural validation after one repair turn. Inspect the recorded validationError; the model for the next attempt is Hokusai\'s decision',
   'review-no-output': 'the review model finished without emitting findings or a terminal verdict. Relaunch the review phase on a stronger reviewer',
