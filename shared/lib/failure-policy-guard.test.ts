@@ -197,3 +197,80 @@ describe('failure-policy guard — one escalation decision (HOK-3360)', () => {
     assert.ok(FAILURE_POLICY_GUARD.invariantPaths.includes('shared/lib/operator-escalation.ts'));
   });
 });
+
+describe('failure-policy guard — one tracked-job exhaustion path (HOK-3505)', () => {
+  const FILE = 'shared/lib/monitor-async-jobs.sh';
+  const exhaustionPatterns = (source: string) =>
+    patternsOf(FILE, source).filter((p) => p === 'unescalated-tracked-job-exhaustion');
+
+  it('accepts an exhaustion that escalates the same bucket variable', () => {
+    const source = [
+      'if bounded_retry_mark_exhausted "$state_dir" "$CROSS_PR_GUARD_JOB_BUCKET" "failed"; then',
+      '  escalate_operator_attention "$state_dir" exhausted "$CROSS_PR_GUARD_JOB_BUCKET" "msg" || true',
+      'fi',
+      '',
+    ].join('\n');
+    assert.deepEqual(exhaustionPatterns(source), []);
+  });
+
+  it('accepts an exhaustion that escalates the same literal bucket', () => {
+    const source = [
+      'if bounded_retry_mark_exhausted "$state_dir" root-cause-investigation "failed" --head "$rev"; then',
+      '  escalate_operator_attention "$state_dir" exhausted root-cause-investigation "msg" --head "$rev" || true',
+      'fi',
+      '',
+    ].join('\n');
+    assert.deepEqual(exhaustionPatterns(source), []);
+  });
+
+  it('flags an exhaustion with no escalation', () => {
+    const source = 'bounded_retry_mark_exhausted "$feature_dir" "$EXPANDED_REROUTE_JOB_BUCKET" "failed" || true\n';
+    assert.deepEqual(exhaustionPatterns(source), ['unescalated-tracked-job-exhaustion']);
+  });
+
+  it('flags an escalation of a different bucket variable', () => {
+    const source = [
+      'if bounded_retry_mark_exhausted "$feature_dir" "$PREPARE_TASK_INPUTS_JOB_BUCKET" "failed"; then',
+      '  escalate_operator_attention "$feature_dir" exhausted "$EXPANDED_REROUTE_JOB_BUCKET" "msg" || true',
+      'fi',
+      '',
+    ].join('\n');
+    assert.deepEqual(exhaustionPatterns(source), ['unescalated-tracked-job-exhaustion']);
+  });
+
+  it('flags an escalation of a different literal bucket', () => {
+    const source = [
+      'if bounded_retry_mark_exhausted "$state_dir" cleanup-decision-job "failed"; then',
+      '  escalate_operator_attention "$state_dir" exhausted root-cause-investigation "msg" || true',
+      'fi',
+      '',
+    ].join('\n');
+    assert.deepEqual(exhaustionPatterns(source), ['unescalated-tracked-job-exhaustion']);
+  });
+
+  it('flags an escalation of the same bucket on a non-exhausted basis', () => {
+    const source = [
+      'if bounded_retry_mark_exhausted "$state_dir" "$CLEANUP_DECISION_JOB_BUCKET" "failed"; then',
+      '  escalate_operator_attention "$state_dir" policy-terminal "$CLEANUP_DECISION_JOB_BUCKET" "msg" || true',
+      'fi',
+      '',
+    ].join('\n');
+    assert.deepEqual(exhaustionPatterns(source), ['unescalated-tracked-job-exhaustion']);
+  });
+
+  it('lets a declared quiet bucket exhaust without escalation', () => {
+    assert.deepEqual(exhaustionPatterns(
+      '[[ "$decision" == "exhausted" ]] && bounded_retry_mark_exhausted "$state_dir" "$IN_FLIGHT_TOUCH_SET_JOB_BUCKET" "failed" || true\n'), []);
+    assert.deepEqual(exhaustionPatterns(
+      'bounded_retry_mark_exhausted "$state_dir" in-flight-touch-set-job "failed" || true\n'), []);
+  });
+
+  it('a quiet bucket nearby does not excuse a different bucket', () => {
+    const source = [
+      'IN_FLIGHT_TOUCH_SET_JOB_BUCKET="in-flight-touch-set-job"',
+      'bounded_retry_mark_exhausted "$state_dir" "$CLEANUP_DECISION_JOB_BUCKET" "failed" || true',
+      '',
+    ].join('\n');
+    assert.deepEqual(exhaustionPatterns(source), ['unescalated-tracked-job-exhaustion']);
+  });
+});

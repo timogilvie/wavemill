@@ -5946,7 +5946,8 @@ _plan_packet_needs_user() {
 # task_inputs_prepare <issue> <slug> <feature_dir>
 # Make the local packet + expansion handshake ready. Sets TASK_INPUTS_VIA
 # (existing | materialized | warn) on success and TASK_INPUTS_DETAIL on
-# failure. Returns 0 = ready, 4 = pending (tracked expansion in flight or
+# failure; TASK_INPUTS_EXHAUSTED=true when the failure is the spent
+# expansion-recovery budget (escalated by prepare_task_inputs_gate). Returns 0 = ready, 4 = pending (tracked expansion in flight or
 # backing off), 1 = failed (policy blocks, invalid route artifact, or the
 # bounded expansion budget is spent).
 task_inputs_prepare() {
@@ -5954,6 +5955,7 @@ task_inputs_prepare() {
   local reason policy rc=0
   TASK_INPUTS_VIA=""
   TASK_INPUTS_DETAIL=""
+  TASK_INPUTS_EXHAUSTED=false
 
   reason="$(mill_expansion_handshake_reason "$feature_dir")"
   if [[ "$reason" == "missing" ]] && task_inputs_materialize_detailed "$feature_dir"; then
@@ -5999,6 +6001,7 @@ task_inputs_prepare() {
       ;;
     *)
       TASK_INPUTS_DETAIL="${PREPARE_TASK_INPUTS_LAST_DETAIL:-expansion recovery failed}"
+      TASK_INPUTS_EXHAUSTED=true
       return 1
       ;;
   esac
@@ -6045,6 +6048,11 @@ ensure_task_inputs_ready() {
       log "debug" "  $issue: [task-inputs] preparation pending, holding the approval request"
       set_window_attention_state "$win" "clear"
     else
+      # Budget exhaustion is escalated by prepare_task_inputs_gate and the
+      # attention projection owns the window (HOK-3505). Any other failure
+      # (invalid route artifact, policy=block) has no escalation basis and
+      # needs the operator now.
+      [[ "${TASK_INPUTS_EXHAUSTED:-false}" == "true" ]] || set_window_attention_state "$win" "needs-user"
       log_warn "$issue → task-input preparation failed before plan approval: $detail"
     fi
     return 1

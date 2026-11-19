@@ -1235,6 +1235,8 @@ test_missing_expansion_recovery_failure_launches_with_bootstrap() {
   check_eq "recover fail: coding does not launch" "false" "$(kv_value "$tick" coding_launched)"
   check_eq "recover fail: plan not offered for approval" "running" "$(harness_read_stage_status "$repo" "$slug" planning)"
   check_contains "recover fail: warning surfaced" "$(kv_value "$tick" warn_output)" "task-input preparation failed before plan approval"
+  # Budget exhaustion is escalated by the gate; the projection owns the window.
+  check_eq "recover fail: no needs-user window write on exhaustion" "" "$(kv_value "$tick" attention)"
 }
 
 test_missing_expansion_recovery_not_repeated() {
@@ -1293,6 +1295,8 @@ EOF
     check_eq "invalid $case_name: planning held for preparation" "running" "$(harness_read_stage_status "$repo" "$slug" planning)"
     check_contains "invalid $case_name: planning note names the invalid route" "$note" "invalid expanded routing artifact"
     check_contains "invalid $case_name: warning reports the preparation failure" "$(kv_value "$tick" warn_output)" "task-input preparation failed before plan approval"
+    # Not a budget exhaustion: no escalation basis, so the window is flagged now.
+    check_eq "invalid $case_name: needs-user attention" "needs-user" "$(kv_value "$tick" attention)"
     check_file_absent "invalid $case_name: no recovery state written" "$feature_dir/.expansion-recovery-state.json"
     if cmp -s "$feature_dir/.routing-complete" "$TEST_TMP/$slug-routing-before.json" \
       && cmp -s "$feature_dir/.phase-config.json" "$TEST_TMP/$slug-phase-before.json"; then

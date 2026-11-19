@@ -40,22 +40,22 @@ phase_is() { [[ "$(journey_task_field "$ISSUE" phase)" == "$1" ]]; }
 
 journey_wait_until "$ISSUE" 5  "task launched into planning" phase_is planning
 
-# Wait for the expansion recovery to exhaust and escalate.
+# Wait for the expansion recovery to exhaust and escalate. The feature dir
+# lives in the task worktree, not the repo checkout.
 has_attention() {
-  local fd="$REPO_DIR/features"
-  # Find any feature dir with .needs-attention
-  find "$fd" -maxdepth 2 -name '.needs-attention' 2>/dev/null | grep -q .
+  local fd
+  fd="$(journey_feature_dir "$ISSUE")" || return 1
+  [[ -f "$fd/.needs-attention" ]] \
+    && [[ "$(jq -r '.detail.escalationBasis // empty' "$fd/.needs-attention" 2>/dev/null)" == "exhausted:expansion-recovery-job" ]]
 }
-journey_wait_until "$ISSUE" 25 "escalation marker appeared" has_attention
+journey_wait_until "$ISSUE" 25 "exhausted:expansion-recovery-job escalation appeared" has_attention
 
+feature_dir="$(journey_feature_dir "$ISSUE")"
 # Assert: no private marker was written.
-no_private_marker() {
-  ! find "$REPO_DIR/features" -maxdepth 2 -name '.task-inputs-failure.json' 2>/dev/null | grep -q .
-}
+no_private_marker() { [[ ! -e "$feature_dir/.task-inputs-failure.json" ]]; }
 journey_assert "no .task-inputs-failure.json at any point" no_private_marker
 
 # Simulate operator recovery: place a valid task-packet.md.
-feature_dir="$(find "$REPO_DIR/features" -maxdepth 1 -type d -name '*' | grep -v '^'"$REPO_DIR/features"'$' | head -1)"
 cat > "$feature_dir/task-packet.md" <<'PACKET'
 ## 1. Objective
 

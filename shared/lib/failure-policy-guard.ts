@@ -50,13 +50,10 @@ import type { GuardSpec, StructuralMatch } from '../../tools/lib/source-guard.ts
 
 /**
  * Tracked async-job buckets where exhaustion is expected to degrade quietly
- * rather than page an operator. Every other bucket that calls
- * `bounded_retry_mark_exhausted` must follow up with
- * `escalate_operator_attention` in the same branch (HOK-3505).
- */
-/**
- * Tracked async-job bucket values and their shell variable names where
- * exhaustion is expected to degrade quietly rather than page an operator.
+ * rather than page an operator, by bucket value and by the shell variable that
+ * holds it. Every other bucket that calls `bounded_retry_mark_exhausted` must
+ * follow up with `escalate_operator_attention <dir> exhausted <same bucket>`
+ * in the same branch (HOK-3505).
  */
 export const QUIET_EXHAUSTION_BUCKETS: ReadonlySet<string> = new Set([
   'in-flight-touch-set-job',
@@ -66,21 +63,49 @@ const QUIET_BUCKET_VARS: ReadonlySet<string> = new Set([
   'IN_FLIGHT_TOUCH_SET_JOB_BUCKET',
 ]);
 
+/** Lines after an exhaustion mark that its escalation must appear within. */
+const ESCALATION_WINDOW_LINES = 10;
+
+/**
+ * Normalise a shell bucket argument so `"$X"`, `$X`, `${X}` compare equal
+ * (`var:X`) and `"lit"`, `'lit'`, `lit` compare equal (`lit:lit`).
+ */
+function normaliseBucketArg(token: string): string {
+  const unquoted = token.replace(/^["']|["']$/g, '');
+  const variable = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/.exec(unquoted);
+  return variable ? `var:${variable[1]}` : `lit:${unquoted}`;
+}
+
+function isQuietBucket(normalised: string): boolean {
+  if (normalised.startsWith('var:')) return QUIET_BUCKET_VARS.has(normalised.slice(4));
+  return QUIET_EXHAUSTION_BUCKETS.has(normalised.slice(4));
+}
+
+const SHELL_ARG = String.raw`("[^"]*"|'[^']*'|[^\s;|&]+)`;
+const MARK_EXHAUSTED_RE = new RegExp(String.raw`\bbounded_retry_mark_exhausted\s+${SHELL_ARG}\s+${SHELL_ARG}`);
+const ESCALATE_EXHAUSTED_RE = new RegExp(String.raw`\bescalate_operator_attention\s+${SHELL_ARG}\s+exhausted\s+${SHELL_ARG}`, 'g');
+
 function findUnescalatedExhaustion(source: string): StructuralMatch[] {
   const lines = source.split('\n');
   const matches: StructuralMatch[] = [];
   for (let i = 0; i < lines.length; i++) {
-    if (!/\bbounded_retry_mark_exhausted\b/.test(lines[i])) continue;
     if (/^\s*(?:#|\/\/|\*)/.test(lines[i])) continue;
-    const contextBefore = lines.slice(Math.max(0, i - 5), i + 1).join('\n');
-    const isQuietByLiteral = [...QUIET_EXHAUSTION_BUCKETS].some(b =>
-      contextBefore.includes(`"${b}"`) || contextBefore.includes(`'${b}'`));
-    const isQuietByVar = [...QUIET_BUCKET_VARS].some(v =>
-      contextBefore.includes(`$${v}`) || contextBefore.includes(`"$${v}"`));
-    if (isQuietByLiteral || isQuietByVar) continue;
-    const window = lines.slice(i, Math.min(lines.length, i + 10)).join('\n');
-    if (!/\bescalate_operator_attention\b/.test(window)) {
-      matches.push({ line: i + 1, detail: 'bounded_retry_mark_exhausted without escalate_operator_attention' });
+    if (!/\bbounded_retry_mark_exhausted\b/.test(lines[i])) continue;
+    const mark = MARK_EXHAUSTED_RE.exec(lines[i]);
+    if (!mark) {
+      matches.push({ line: i + 1, detail: 'bounded_retry_mark_exhausted bucket argument not found on the call line' });
+      continue;
+    }
+    const bucket = normaliseBucketArg(mark[2]);
+    if (isQuietBucket(bucket)) continue;
+    const window = lines.slice(i, Math.min(lines.length, i + ESCALATION_WINDOW_LINES)).join('\n');
+    const escalated = [...window.matchAll(ESCALATE_EXHAUSTED_RE)]
+      .some((call) => normaliseBucketArg(call[2]) === bucket);
+    if (!escalated) {
+      matches.push({
+        line: i + 1,
+        detail: `bounded_retry_mark_exhausted on ${mark[2]} without escalate_operator_attention <dir> exhausted ${mark[2]}`,
+      });
     }
   }
   return matches;

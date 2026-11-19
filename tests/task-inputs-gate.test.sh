@@ -86,12 +86,17 @@ write_stage_result() {
   jq -n --arg stage "$2" --arg status "$3" --arg notes "${6:-}" \
     '{stage: $stage, status: $status, notes: $notes}' > "$1/.${2}-result.json"
 }
-ESCALATION_DIR=""
-ESCALATION_MSG=""
-escalate_operator_attention() {
-  ESCALATION_DIR="$1"
-  ESCALATION_MSG="$4"
-  printf '%s\n' "$4" > "$1/.needs-attention"
+# escalate_operator_attention is the REAL helper (operator-escalation.sh):
+# the exhaustion basis and the .needs-attention marker are asserted below.
+# It resolves the marker head from the task worktree, so exhaustion features
+# get a git world (init_git_world).
+attention_basis() { jq -r '.detail.escalationBasis // empty' "$1/.needs-attention" 2>/dev/null || true; }
+attention_reason() { jq -r '.reason // empty' "$1/.needs-attention" 2>/dev/null || true; }
+init_git_world() {
+  local wt="$TMP/worktrees/$1"
+  git -C "$wt" init -q >/dev/null 2>&1
+  git -C "$wt" -c user.name=fixture -c user.email=fixture@example.invalid \
+    commit -q --allow-empty -m fixture >/dev/null 2>&1
 }
 JOB_RUNNING=0
 LAUNCHES="$TMP/launches.log"
@@ -210,8 +215,10 @@ check_eq "raw: exactly one expansion job overall" "$(launch_count)" "1"
 # ── 4. expansion failure is bounded and actionable ──────────────────────────
 echo "--- expansion failure ---"
 fd="$(new_feature failing "raw words only")"
+init_git_world failing
 write_plan "$fd"
 : > "$LAUNCHES"
+# Twice the retry limit of passes: the launches must stop at the limit.
 for attempt in 1 2 3 4 5 6; do
   ensure_task_inputs_ready JRN-1 failing "$fd" win claude publish >/dev/null 2>&1 || true
   expansion_recovery_mark_result "$fd" "JRN-1" "failed" "expand-issue-exited-non-zero" "1" >/dev/null
@@ -219,10 +226,13 @@ for attempt in 1 2 3 4 5 6; do
 done
 check_eq "failure: launches capped at the retry limit" "$(launch_count)" "$ASYNC_CHECK_JOB_RETRY_LIMIT"
 LOG_OUT=""
+ATTENTION=""
 rc=0; ensure_task_inputs_ready JRN-1 failing "$fd" win claude publish || rc=$?
 check_eq "failure: holds (never offers approval)" "$rc" "1"
 check_file "failure: escalation marker written" "$fd/.needs-attention"
-check_contains "failure: escalation names the recovery command" "$ESCALATION_MSG" "wavemill expand JRN-1"
+check_eq "failure: escalation basis is the exhausted bucket" "$(attention_basis "$fd")" "exhausted:$PREPARE_TASK_INPUTS_JOB_BUCKET"
+check_contains "failure: escalation names the recovery command" "$(attention_reason "$fd")" "wavemill expand JRN-1"
+check_eq "failure: no needs-user window write on exhaustion (projection owns it)" "$ATTENTION" ""
 check_file "failure: exhausted sentinel recorded" "$fd/.retry-expansion-recovery-job-exhausted"
 check_no_file "failure: no binding recorded" "$fd/.plan-packet-hash"
 # The operator's fix (wavemill expand) lands a packet: the plan is offered.
@@ -231,23 +241,38 @@ rc=0; ensure_task_inputs_ready JRN-1 failing "$fd" win claude publish || rc=$?
 check_eq "failure recovered by operator expand: proceeds" "$rc" "0"
 
 # ── 4b. HOK-3409 replay: three timed-out expansions produce one inbox item ──
+# Evidence: tests/fixtures/incident-replay/real/hok3409-inputs-exhaustion/.
 echo "--- HOK-3409 replay ---"
+HOK3409_FIXTURE="$SCRIPT_DIR/fixtures/incident-replay/real/hok3409-inputs-exhaustion/expansion-outcomes.json"
+HOK3409_ISSUE="$(jq -r '.issue' "$HOK3409_FIXTURE")"
 fd="$(new_feature hok3409 "raw issue text")"
+init_git_world hok3409
 write_plan "$fd"
 : > "$LAUNCHES"
-ESCALATION_DIR="" ESCALATION_MSG=""
-for attempt in 1 2 3 4 5 6; do
-  ensure_task_inputs_ready HOK-3409 hok3409 "$fd" win claude publish >/dev/null 2>&1 || true
-  expansion_recovery_mark_result "$fd" "HOK-3409" "failed" "expand-issue-timed-out" "124" >/dev/null
+ATTENTION=""
+# One monitor pass launches one expansion job; the job's recorded outcome
+# lands; the clock moves past the retry backoff. Once per recorded outcome.
+while IFS=$'\t' read -r o_status o_detail o_rc; do
+  ensure_task_inputs_ready "$HOK3409_ISSUE" hok3409 "$fd" win claude publish >/dev/null 2>&1 || true
+  expansion_recovery_mark_result "$fd" "$HOK3409_ISSUE" "$o_status" "$o_detail" "$o_rc" >/dev/null
   mill_clock_advance_tick
-done
+done < <(jq -r '.outcomes[] | [.status, .detail, .exitCode] | @tsv' "$HOK3409_FIXTURE")
+check_eq "hok-3409: one launch per recorded outcome" "$(launch_count)" "$(jq -r '.expected.jobLaunches' "$HOK3409_FIXTURE")"
+check_no_file "hok-3409: no escalation before the budget is spent" "$fd/.needs-attention"
 LOG_OUT=""
-rc=0; ensure_task_inputs_ready HOK-3409 hok3409 "$fd" win claude publish || rc=$?
+rc=0; ensure_task_inputs_ready "$HOK3409_ISSUE" hok3409 "$fd" win claude publish || rc=$?
 check_eq "hok-3409: exhaustion holds" "$rc" "1"
 check_file "hok-3409: escalation marker (inbox item)" "$fd/.needs-attention"
-check_contains "hok-3409: escalation names recovery command" "$ESCALATION_MSG" "wavemill expand HOK-3409"
+check_eq "hok-3409: basis is exhausted:<bucket>" "$(attention_basis "$fd")" "$(jq -r '.expected.escalationBasis' "$HOK3409_FIXTURE")"
+check_contains "hok-3409: escalation names recovery command" "$(attention_reason "$fd")" "wavemill expand $HOK3409_ISSUE"
 check_no_file "hok-3409: no private marker (.task-inputs-failure.json)" "$fd/.task-inputs-failure.json"
+check_no_file "hok-3409: no raw blocked hook" "/tmp/wavemill-$SESSION-$HOK3409_ISSUE.hook"
 check_contains "hok-3409: warning mentions timed-out detail" "$LOG_OUT" "expand-issue-timed-out"
+first_marker="$(cat "$fd/.needs-attention")"
+rc=0; ensure_task_inputs_ready "$HOK3409_ISSUE" hok3409 "$fd" win claude publish || rc=$?
+check_eq "hok-3409: repeat pass still holds" "$rc" "1"
+check_eq "hok-3409: repeat pass writes no second inbox item" "$(cat "$fd/.needs-attention")" "$first_marker"
+check_eq "hok-3409: no extra launch after exhaustion" "$(launch_count)" "$(jq -r '.expected.jobLaunches' "$HOK3409_FIXTURE")"
 
 # ── 5. agent-published request (native) and the handoff entry point ─────────
 echo "--- accept and handoff modes ---"
