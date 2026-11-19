@@ -39,6 +39,10 @@ task_reaped() {
   [[ -z "$(journey_task_field "$ISSUE" phase)" || "$status" == "merged" || "$status" == "completed" ]] \
     && [[ ! -d "$WORKTREE_ROOT/$(jq -r --arg id "$ISSUE" '.tasks[$id].slug // "__none__"' "$STATE_FILE" 2>/dev/null)" ]]
 }
+mill_log_count() {
+  sed 's/\x1b\[[0-9;]*[A-Za-z]//g' "$JOURNEY_TMP/logs/monitor.out" "$JOURNEY_TMP/logs/status.log" 2>/dev/null \
+    | grep -c "$1" || true
+}
 
 # Task progresses through plan and coding.
 journey_wait_until "$ISSUE" 5  "task launched into planning" phase_is planning
@@ -58,6 +62,8 @@ journey_wait_until "$ISSUE" 20 "coding relaunched after millisecond-timestamp ag
 RECOVERY_ACTIONS="$WORKTREE_ROOT/$(journey_task_field "$ISSUE" slug)/features/$(journey_task_field "$ISSUE" slug)/.recovery-actions.jsonl"
 journey_assert "Monitor claimed exactly one coding recovery action" \
   jq -s -e '[.[] | select(.action == "retry-stage" and .stage == "coding" and (.runId | type == "string"))] | length == 1' "$RECOVERY_ACTIONS"
+journey_assert "Monitor routed the recorded agent exit through the canonical settled disposition" \
+  test "$(mill_log_count "coding agent settled without a result (agent-exited)")" = "1"
 
 # Once relaunched, the task should complete the workflow normally.
 journey_wait_until "$ISSUE" 8  "review launched"             phase_is review
