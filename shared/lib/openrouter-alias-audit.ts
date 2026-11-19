@@ -37,6 +37,8 @@ export interface AliasAuditFinding {
   expected?: number;
   /** For `pricing-drift`: the registry price that understates the reference. */
   actual?: number | null;
+  /** Set on a change-scoped run: the alias's registry entry equals the baseline. */
+  inheritedFromBaseline?: boolean;
 }
 
 export interface AliasAuditReport {
@@ -46,6 +48,20 @@ export interface AliasAuditReport {
   checked: number;
   findings: AliasAuditFinding[];
   selectableFindings: number;
+  /** Present only when the audit ran against a baseline registry. */
+  baseline?: AliasAuditBaselineSummary;
+}
+
+/**
+ * How a change-scoped run split its selectable findings. `introduced` findings
+ * sit on a registry entry the change added or edited; `inherited` findings sit
+ * on an entry identical to the baseline, so only the live catalog can have
+ * caused them and no edit in the change can clear them.
+ */
+export interface AliasAuditBaselineSummary {
+  introducedSelectableFindings: number;
+  inheritedSelectableFindings: number;
+  changedAliases: string[];
 }
 
 function resolveCatalogContextTokens(model: OpenRouterModel): number | null {
@@ -446,6 +462,78 @@ export function auditOpenRouterAliases(input: {
 
 export function hasSelectableAliasFindings(report: AliasAuditReport): boolean {
   return report.selectableFindings > 0;
+}
+
+/** The registry-catalog fields the audit reads for one alias. */
+interface RegistryCatalogShape {
+  models?: unknown;
+  openrouterMappings?: unknown;
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_key, inner: unknown) => {
+    if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+      const record = inner as Record<string, unknown>;
+      return Object.fromEntries(Object.keys(record).sort().map((key) => [key, record[key]]));
+    }
+    return inner;
+  });
+}
+
+function aliasFingerprints(catalog: RegistryCatalogShape): Map<string, string> {
+  const parts = new Map<string, string[]>();
+  const add = (alias: unknown, part: unknown) => {
+    if (typeof alias !== 'string') return;
+    parts.set(alias, [...(parts.get(alias) ?? []), stableJson(part)]);
+  };
+  for (const entry of Array.isArray(catalog.models) ? catalog.models : []) {
+    add((entry as { id?: unknown } | null)?.id, entry);
+  }
+  for (const row of Array.isArray(catalog.openrouterMappings) ? catalog.openrouterMappings : []) {
+    add((row as { wavemillAlias?: unknown } | null)?.wavemillAlias, row);
+  }
+  return new Map([...parts].map(([alias, list]) => [alias, list.sort().join('\n')]));
+}
+
+/**
+ * Aliases whose registry entry (model row plus OpenRouter mapping rows) is new
+ * or differs from the baseline catalog. Key order is ignored; any value change
+ * counts, so an edit never hides behind "inherited".
+ */
+export function aliasesChangedSinceBaseline(head: unknown, baseline: unknown): Set<string> {
+  const headPrints = aliasFingerprints((head ?? {}) as RegistryCatalogShape);
+  const basePrints = aliasFingerprints((baseline ?? {}) as RegistryCatalogShape);
+  return new Set([...headPrints].filter(([alias, print]) => basePrints.get(alias) !== print).map(([alias]) => alias));
+}
+
+/**
+ * Scope a report to one change: a finding on an alias the change did not touch
+ * is marked inherited. A change-scoped run blocks only on introduced selectable
+ * findings ({@link hasBlockingAliasFindings}); the unscoped scheduled run still
+ * fails on every selectable finding, so inherited drift is never dropped.
+ */
+export function scopeAliasAuditToBaseline(
+  report: AliasAuditReport,
+  head: unknown,
+  baseline: unknown,
+): AliasAuditReport {
+  const changed = aliasesChangedSinceBaseline(head, baseline);
+  const findings = report.findings.map((finding) => ({ ...finding, inheritedFromBaseline: !changed.has(finding.alias) }));
+  const selectable = findings.filter((finding) => finding.selectable);
+  return {
+    ...report,
+    findings,
+    baseline: {
+      introducedSelectableFindings: selectable.filter((finding) => !finding.inheritedFromBaseline).length,
+      inheritedSelectableFindings: selectable.filter((finding) => finding.inheritedFromBaseline).length,
+      changedAliases: [...changed].sort(),
+    },
+  };
+}
+
+/** Whether this run must fail: introduced findings when scoped, all selectable otherwise. */
+export function hasBlockingAliasFindings(report: AliasAuditReport): boolean {
+  return (report.baseline?.introducedSelectableFindings ?? report.selectableFindings) > 0;
 }
 
 /**
