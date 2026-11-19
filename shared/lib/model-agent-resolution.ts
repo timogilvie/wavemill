@@ -2,6 +2,7 @@ import {
   DEFAULT_MODEL_REGISTRY,
   evaluateRegistryPhaseEligibility,
   explainModelSupportExclusion,
+  getEffectiveRegistry,
   getStageContextWindowFloor,
   getModel,
   isCodexChatgptLaunchEligible,
@@ -320,6 +321,62 @@ function resolveRegistryBackedNativeAgent(input: {
   }
 
   return { ok: true, agent: input.nativeAgent };
+}
+
+/**
+ * The one agent→provider table (HOK-3511). Provider is a function of the
+ * resolved agent, never a second model lookup, so a persisted provider can
+ * never disagree with its agent. `claude-openrouter` never escapes
+ * {@link resolveModelAgent} (it resolves to `native-openrouter`); its row
+ * exists only to satisfy the exhaustive key type.
+ */
+const PROVIDER_BY_AGENT: Record<AgentType, string> = {
+  claude: 'anthropic',
+  codex: 'openai',
+  'claude-openrouter': 'native-openrouter',
+  'native-openai': 'native-openai',
+  'native-openrouter': 'native-openrouter',
+};
+
+export type StageExecutorResolution =
+  | { ok: true; agent: AgentType; provider: string }
+  | Extract<AgentResolution, { ok: false }>;
+
+/** The provider that runs a resolved agent. Only the resolver module owns this mapping. */
+export function providerForAgent(agent: AgentType): string {
+  return PROVIDER_BY_AGENT[agent];
+}
+
+/**
+ * The one stage executor resolver (HOK-3511): maps (model, stage, effective
+ * registry) to the {agent, provider} that runs it. Every writer of a
+ * `.phase-config.json` stage block, the launcher and the recovery validator
+ * answer "which agent and provider run this model?" here — never by carrying
+ * an agent over from an intent, a sealed route, or a persisted file.
+ *
+ * The registry defaults to the repo's effective registry (overlay included),
+ * never to {@link DEFAULT_MODEL_REGISTRY}, so the launcher and the validator
+ * cannot disagree about a repo-overlay model.
+ */
+export function resolveStageExecutor(opts: {
+  model: string;
+  stage: AgentResolutionPhase;
+  repoDir?: string;
+  registry?: ModelRegistry;
+  now?: Date;
+  certificationRoot?: string;
+}): StageExecutorResolution {
+  const registry = opts.registry ?? getEffectiveRegistry(opts.repoDir);
+  const resolved = resolveModelAgent({
+    model: opts.model,
+    phase: opts.stage,
+    repoDir: opts.repoDir,
+    registry,
+    now: opts.now,
+    certificationRoot: opts.certificationRoot,
+  });
+  if (!resolved.ok) return resolved;
+  return { ok: true, agent: resolved.agent, provider: PROVIDER_BY_AGENT[resolved.agent] };
 }
 
 export function resolveModelAgent(opts: ResolveModelAgentOptions): AgentResolution {

@@ -3697,12 +3697,20 @@ test_missing_challenge_stage_fails_safe_to_phase_config() {
 EOF
 
   # challengeStage intentionally absent; refresh block may fire but its npx
-  # call fails gracefully, leaving challenge_coder unchanged.
+  # call fails gracefully, leaving challenge_coder unchanged. The route
+  # writer's own spawn (recovery-contract.ts, HOK-3511) must keep working, so
+  # the stub fails every tool except that one.
   overrides="$(harness_common_route_overrides)
     is_challenge_task() { return 0; }
     TOOLS_DIR=\"/tmp/\${SESSION}-\${ISSUE}-tools\"
     mkdir -p \"\$TOOLS_DIR\"
-    npx() { return 1; }
+    npx() {
+      if [[ \"\${2:-}\" == *recovery-contract.ts ]]; then
+        node --import tsx \"$REPO_DIR/tools/recovery-contract.ts\" \"\${@:3}\"
+        return \$?
+      fi
+      return 1
+    }
     get_task_meta() {
       local issue_key=\"\$1\" field=\"\$2\"
       case \"\$issue_key.\$field\" in

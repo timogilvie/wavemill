@@ -1117,7 +1117,7 @@ test('resolveSealedDecisionAgainstExpandedRoute enriches non-varied fields and p
   assert.equal(result.challengerVariedModel, 'glm-5.2');
   assert.equal(result.intent.decisionSource, 'preserved');
   const primary = result.intent.primary as { planner: { model: string }; coder: { model: string } };
-  const challenger = result.intent.challenger as { planner: { model: string; agent: string }; coder: { model: string } };
+  const challenger = result.intent.challenger as { planner: { model: string; agent?: string }; coder: { model: string } };
   // Primary incumbent planner is enriched from the expanded route.
   assert.equal(primary.planner.model, 'expanded-planner');
   // Non-varied stages come from the expanded route on both sides.
@@ -1125,7 +1125,9 @@ test('resolveSealedDecisionAgainstExpandedRoute enriches non-varied fields and p
   assert.equal(challenger.coder.model, 'expanded-coder');
   // The challenger's varied planner is preserved byte-for-byte.
   assert.equal(challenger.planner.model, 'glm-5.2');
-  assert.equal(challenger.planner.agent, 'native-openrouter');
+  // HOK-3511: the enriched intent carries models only; the agent is derived
+  // from the model wherever the route is written or launched.
+  assert.equal(challenger.planner.agent, undefined);
 });
 
 test('resolveSealedDecisionAgainstExpandedRoute collapses when the sealed challenger is no longer eligible', () => {
