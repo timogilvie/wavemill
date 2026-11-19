@@ -12,7 +12,8 @@ const sourceOverride = process.env.RECOVERY_CONTRACT_CONTROLLER_SOURCE;
 const controller = await loadContractModule<{decideTaskRecovery(snapshot: RecoverySnapshot): RecoveryDecision}>(
   new URL('../shared/lib/task-recovery-controller.ts', import.meta.url), sourceOverride,
 );
-const incident = JSON.parse(readFileSync(new URL('./fixtures/recovery-refusal-contract/hok-3512.json', import.meta.url), 'utf8'));
+const incidentFixture = new URL('./fixtures/recovery-refusal-contract/hok-3512.json', import.meta.url);
+const incident = JSON.parse(readFileSync(incidentFixture, 'utf8'));
 const reasons: RecoveryUnavailableReason[] = ['contract_missing', 'contract_malformed', 'model_disabled',
   'model_not_launchable', 'provider_unavailable', 'agent_unsupported_for_model', 'certification_invalid_for_role'];
 
