@@ -275,13 +275,19 @@ export function decideTaskRecovery(snapshot: RecoverySnapshot): RecoveryDecision
   //     outcome for the failed-stage, window-lost and launch-surface paths:
   //     failure-policy classifies it and the escalation step pages, so a
   //     refusal is never a wait on a wake nothing produces.
-  if (snapshot.contract && snapshot.contract.ok === false) {
+  //     The shell adapter replays the saved route as `executionContract`; a
+  //     positive validator refusal there is the same outcome. A read failure
+  //     is not a refusal and keeps its bounded retry in decideFromFailure.
+  const executionRefusal = snapshot.executionContract?.ok === false
+    && snapshot.executionContract.reason !== 'contract_read_failed' ? snapshot.executionContract : null;
+  const routeRefusal = snapshot.contract?.ok === false ? snapshot.contract : executionRefusal;
+  if (routeRefusal) {
     if (unverifiableIdentity) {
       return decision(stage, 'wait', 'saved route refused but the attempt identity is unverifiable; holding for reassessment', {
         wait: { owner: 'tool', wake: 'attempt-identity-resolved' },
       });
     }
-    return decideFromContractRefusal(snapshot, snapshot.contract);
+    return decideFromContractRefusal(snapshot, routeRefusal);
   }
 
   // 5. Legitimate non-human wait.

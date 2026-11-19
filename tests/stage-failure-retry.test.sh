@@ -74,8 +74,7 @@ for fn in \
   challenge_result_stage_for_launch \
   write_openrouter_warning_cache \
   record_openrouter_credits_challenge_abort \
-  _recovery_contract_refused \
-  _recovery_launch_surface_refused \
+  _request_launch_recovery \
 ; do
   eval "$(extract_function "$fn")"
 done
@@ -342,8 +341,14 @@ refuse_route "$fd"
 write_stage_result "$fd" coding running native kimi-k2
 before_state="$(jq -S . "$STATE_FILE")"
 _RESTORE_STATE=none
-_recovery_contract_refused T-1 coding "$fd" "$(recovery_contract_json T-1 "$fd" coding)"
-if [[ "$_RESTORE_STATE" == "failed" && "$(refusal_basis "$fd")" == "$failed_basis" ]] \
+# The supervised async job runs the same controller step; run it inline here.
+maybe_retry_failed_stage() { _maybe_retry_failed_stage_now "$@" >/dev/null 2>&1 || true; }
+stage_agent_disposition() { printf '%s\n' '{"kind":"settled","reason":"window-missing"}'; }
+refused_contract="$(recovery_contract_json T-1 "$fd" coding)"
+_request_launch_recovery T-1 coding "$fd" "$(jq -r .reason <<<"$refused_contract")" \
+  "$(jq -r .detail <<<"$refused_contract")" "$refused_contract"
+unset -f maybe_retry_failed_stage stage_agent_disposition
+if [[ "$_RESTORE_STATE" == "pending" && "$(refusal_basis "$fd")" == "$failed_basis" ]] \
   && grep -q 'saved coding route (model retired-coder-model) refused by launch validation: model_not_launchable' "$fd/.needs-attention" \
   && [[ "$(jq -S . "$STATE_FILE")" == "$before_state" ]] \
   && [[ "$(stage_result_field "$fd" coding status)" == "running" ]] \
