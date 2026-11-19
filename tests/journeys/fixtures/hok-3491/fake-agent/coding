@@ -1,0 +1,6 @@
+# shellcheck shell=bash
+# Each real launch creates new output and exits. The task's input is unchanged.
+printf 'partial implementation for %s\n' "$WAVEMILL_ISSUE" >> journey-output.txt
+git add journey-output.txt
+git -c user.name=fake-agent -c user.email=fake-agent@example.invalid commit -q -m "$WAVEMILL_ISSUE: partial output"
+exit 143

@@ -74,6 +74,13 @@ describe('validator', () => {
     assert.equal(validateWorkflowState({ migrationReservations: {}, tasks: { 'HOK-1': { someFutureField: 1 } } }).valid, true);
   });
 
+  it('accepts legacy stopped-task evidence after the private stop writer is retired', () => {
+    assert.equal(validateTaskRecord('HOK-1', {
+      status: 'stopped', phase: 'coding', stopReason: 'recovery_contract_unavailable',
+      stopSubReason: 'model_disabled', stopDetail: 'persisted route refused',
+    }).valid, true);
+  });
+
   it('accepts the legacy jobs array', () => {
     assert.equal(validateWorkflowState({ jobs: [{ id: 'j1' }] }).valid, true);
   });

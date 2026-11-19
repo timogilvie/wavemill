@@ -18,11 +18,9 @@
 
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { providerForModel } from './execution-contract.ts';
-import { getEffectiveRegistry } from './model-registry.ts';
+import { writePersistedContract } from './execution-contract.ts';
 import { createLaunchabilityChecker } from './stage-launchability.ts';
 import { mutateJsonState } from './state-mutex.ts';
-import { appendRouteOverrideToFeatureDir } from './route-artifact.ts';
 import {
   findLaunchableSubstitute,
   routeWorkflowAuto,
@@ -125,15 +123,14 @@ async function recordExclusions(
 
 async function applyReviewerSubstitution(input: {
   featureDir: string;
+  repoDir: string;
   issue: string;
   from: string;
   to: string;
-  agent: string;
-  provider: string;
   refusal: ReviewerLaunchRefusal;
   source: 'router' | 'deterministic';
   at: string;
-}): Promise<void> {
+}): Promise<string> {
   const substitution = {
     from: input.from,
     to: input.to,
@@ -143,45 +140,40 @@ async function applyReviewerSubstitution(input: {
     at: input.at,
   };
 
-  const phaseConfigPath = join(input.featureDir, '.phase-config.json');
-  if (existsSync(phaseConfigPath)) {
-    await mutateJsonState<Record<string, unknown>>(phaseConfigPath, (current) => {
-      const review = (current.review && typeof current.review === 'object' ? current.review : {}) as Record<string, unknown>;
-      return {
-        ...current,
-        review: {
-          ...review,
-          model: input.to,
-          agent: input.agent,
-          provider: input.provider,
-          selectedAt: input.at,
-          launchSubstitution: substitution,
-        },
-      };
-    });
-  }
+  // HOK-3511: the one contract writer derives agent and provider from the
+  // substitute model, and (HOK-3363) appends the override to the route record,
+  // where the eval and the Hokusai contribution row read it.
+  const written = await writePersistedContract({
+    featureDir: input.featureDir,
+    repoDir: input.repoDir,
+    stages: [{
+      stageRole: 'review',
+      model: input.to,
+      selectedAt: input.at,
+      extra: { launchSubstitution: substitution },
+    }],
+    routeOverride: {
+      source: 'launchability',
+      reason: input.refusal.reason,
+      ...(input.refusal.certification ? { certification: input.refusal.certification } : {}),
+      at: input.at,
+    },
+  });
 
   const routingCompletePath = join(input.featureDir, '.routing-complete');
   if (existsSync(routingCompletePath)) {
     await mutateJsonState<Record<string, unknown>>(routingCompletePath, (current) => ({
       ...current,
+      // allow-stage-launchability: the HOK-3363 override was appended above by writePersistedContract (routeOverride)
       reviewer: input.to,
     }));
   }
-
-  // HOK-3363: the substitution is an override of the routed reviewer; the route
-  // record is where the eval and the Hokusai contribution row read it.
-  await appendRouteOverrideToFeatureDir(input.featureDir, 'reviewer', input.to, {
-    source: 'launchability',
-    reason: input.refusal.reason,
-    ...(input.refusal.certification ? { certification: input.refusal.certification } : {}),
-    at: input.at,
-  });
 
   appendFileSync(
     join(input.featureDir, REVIEWER_ROUTE_SUBSTITUTIONS_LOG),
     `${JSON.stringify({ issue: input.issue, role: 'reviewer', ...substitution })}\n`,
   );
+  return written.stages.review?.agent ?? '';
 }
 
 /**
@@ -236,15 +228,12 @@ export async function rerouteRefusedReviewer(opts: RerouteRefusedReviewerOptions
     };
   }
 
-  const check = launchable(substitute, 'review');
-  const agent = 'agent' in check ? check.agent : '';
-  await applyReviewerSubstitution({
+  const agent = await applyReviewerSubstitution({
     featureDir: opts.featureDir,
+    repoDir: opts.repoDir,
     issue: opts.issue,
     from,
     to: substitute,
-    agent,
-    provider: providerForModel(substitute, getEffectiveRegistry(opts.repoDir)),
     refusal: opts.refusal,
     source,
     at,

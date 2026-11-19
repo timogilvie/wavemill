@@ -52,6 +52,22 @@ describe('retry-sentinel guard — clean shapes', () => {
   });
 });
 
+describe('stage retry input ownership', () => {
+  it('rejects output-keyed admission and accounting', () => {
+    for (const name of ['_monitor_claim_failed_stage_action', '_dispatch_failed_stage_recovery']) {
+      const source = `${name}() {\n  bounded_retry_gate "$feature_dir" "$bucket" "$head" 3\n}\n`;
+      assert.deepEqual(patternsOf('shared/lib/wavemill-monitor.sh', source), ['stage-retry-input']);
+    }
+  });
+
+  it('accepts both callers consuming the declared input key', () => {
+    const source = '_monitor_claim_failed_stage_action() {\n'
+      + '  retry_identity="$(stage_failure_retry_key "$issue" "$feature_dir" "$stage")"\n'
+      + '  bounded_retry_gate "$feature_dir" "$bucket" "$retry_key" 3\n}\n';
+    assert.deepEqual(patternsOf('shared/lib/wavemill-monitor.sh', source), []);
+  });
+});
+
 describe('retry-sentinel guard — repository', () => {
   it('passes at HEAD with the seeded allowlist', () => {
     const result = runSourceGuard(RETRY_SENTINEL_GUARD, repoRoot);

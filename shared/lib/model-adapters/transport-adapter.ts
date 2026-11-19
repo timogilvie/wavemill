@@ -110,6 +110,14 @@ export interface ReportedReviewFinding {
   summary: string;
   failure_scenario: string;
   verdict?: 'CONFIRMED' | 'PLAUSIBLE';
+  /**
+   * The reviewer disproved its own finding (HOK-2932). The review prompts ask
+   * for these three fields, so a report that carries them is well-formed; the
+   * dismissal only counts when the justification is non-blank.
+   */
+  dismissed?: boolean;
+  dismissalJustification?: string;
+  dismissalEvidence?: string;
 }
 
 /** A validated, session-bound `ReportFindings` report from a claude CLI call. */

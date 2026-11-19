@@ -2,6 +2,7 @@ import {
   DEFAULT_MODEL_REGISTRY,
   evaluateRegistryPhaseEligibility,
   explainModelSupportExclusion,
+  getEffectiveRegistry,
   getStageContextWindowFloor,
   getModel,
   isCodexChatgptLaunchEligible,
@@ -15,6 +16,7 @@ import {
 import type { CertificationPhase } from './native-agent/certification/schema.ts';
 import { evaluateNativeProviderGate } from './native-agent/certification/eligibility-gate.ts';
 import { resolveLaunchPriorityModel, type RoleEligibility } from './openrouter-catalog.ts';
+import { explainProviderEnablementRefusal } from './provider-enablement.ts';
 
 export type AgentResolutionPhase = 'planning' | 'coding' | 'review';
 
@@ -28,7 +30,11 @@ export type UnroutableReason =
   | 'context-window-insufficient'
   | 'role-ineligible'
   | 'uncertified'
-  | 'codex-chatgpt-ineligible';
+  | 'codex-chatgpt-ineligible'
+  /** The model's provider is turned off in the repo config (e.g. `providers.deepseek.enabled=false`). */
+  | 'provider-disabled'
+  /** The model needs a native agent and `nativeAgent.enabled` is not true. */
+  | 'native-disabled';
 
 export type AgentResolution =
   | { ok: true; agent: AgentType }
@@ -322,6 +328,62 @@ function resolveRegistryBackedNativeAgent(input: {
   return { ok: true, agent: input.nativeAgent };
 }
 
+/**
+ * The one agent→provider table (HOK-3511). Provider is a function of the
+ * resolved agent, never a second model lookup, so a persisted provider can
+ * never disagree with its agent. `claude-openrouter` never escapes
+ * {@link resolveModelAgent} (it resolves to `native-openrouter`); its row
+ * exists only to satisfy the exhaustive key type.
+ */
+const PROVIDER_BY_AGENT: Record<AgentType, string> = {
+  claude: 'anthropic',
+  codex: 'openai',
+  'claude-openrouter': 'native-openrouter',
+  'native-openai': 'native-openai',
+  'native-openrouter': 'native-openrouter',
+};
+
+export type StageExecutorResolution =
+  | { ok: true; agent: AgentType; provider: string }
+  | Extract<AgentResolution, { ok: false }>;
+
+/** The provider that runs a resolved agent. Only the resolver module owns this mapping. */
+export function providerForAgent(agent: AgentType): string {
+  return PROVIDER_BY_AGENT[agent];
+}
+
+/**
+ * The one stage executor resolver (HOK-3511): maps (model, stage, effective
+ * registry) to the {agent, provider} that runs it. Every writer of a
+ * `.phase-config.json` stage block, the launcher and the recovery validator
+ * answer "which agent and provider run this model?" here — never by carrying
+ * an agent over from an intent, a sealed route, or a persisted file.
+ *
+ * The registry defaults to the repo's effective registry (overlay included),
+ * never to {@link DEFAULT_MODEL_REGISTRY}, so the launcher and the validator
+ * cannot disagree about a repo-overlay model.
+ */
+export function resolveStageExecutor(opts: {
+  model: string;
+  stage: AgentResolutionPhase;
+  repoDir?: string;
+  registry?: ModelRegistry;
+  now?: Date;
+  certificationRoot?: string;
+}): StageExecutorResolution {
+  const registry = opts.registry ?? getEffectiveRegistry(opts.repoDir);
+  const resolved = resolveModelAgent({
+    model: opts.model,
+    phase: opts.stage,
+    repoDir: opts.repoDir,
+    registry,
+    now: opts.now,
+    certificationRoot: opts.certificationRoot,
+  });
+  if (!resolved.ok) return resolved;
+  return { ok: true, agent: resolved.agent, provider: PROVIDER_BY_AGENT[resolved.agent] };
+}
+
 export function resolveModelAgent(opts: ResolveModelAgentOptions): AgentResolution {
   const modelId = opts.model.trim();
   if (!modelId || !SAFE_MODEL_ID_PATTERN.test(modelId)) {
@@ -365,6 +427,27 @@ export function resolveModelAgent(opts: ResolveModelAgentOptions): AgentResoluti
         certificationStatus: 'unknown-model',
       }),
     };
+  }
+
+  // Provider / native enablement is a launch input (the launcher refuses a
+  // disabled provider), so it is part of this answer for every consumer: the
+  // router's launchability guard, the challenge pool and the doctor. Only
+  // repo-scoped resolutions read config; the global projection has none.
+  if (opts.repoDir) {
+    const disabled = explainProviderEnablementRefusal({
+      modelId,
+      agent: resolvedAgent,
+      vendor: capabilities?.vendor,
+      repoDir: opts.repoDir,
+    });
+    if (disabled) {
+      return {
+        ok: false,
+        reason: disabled.reason,
+        certificationStatus: `${disabled.surface}:off`,
+        diagnostic: `[agent-resolution] model=${modelId} phase=${opts.phase} provider=${disabled.provider} reason=${disabled.reason} certification=${disabled.surface}:off detail="${disabled.detail}"`,
+      };
+    }
   }
 
   if (resolvedAgent === 'codex' || resolvedAgent === 'claude') {

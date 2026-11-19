@@ -1,0 +1,6 @@
+{
+  "identifier": "JRN-3505",
+  "title": "Inputs exhaustion replay: raw issue, expansion fails 3 times",
+  "state": "Todo",
+  "description": "A one-line description that is NOT a detailed task packet (no Objective heading, no Success Criteria). The expansion recovery must run."
+}

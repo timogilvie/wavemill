@@ -205,8 +205,12 @@ export function makeOpenRouterReadyRepo(configOverride: Record<string, unknown> 
   const previousKey = process.env.TEST_OPENROUTER_KEY;
   process.env.TEST_OPENROUTER_KEY = 'test-openrouter-key';
   const providers = (configOverride.providers as Record<string, unknown> | undefined) || {};
+  // Native OpenRouter routing needs native execution on; the launcher (and so
+  // the launchability predicate) refuses it otherwise.
+  const nativeAgent = (configOverride.nativeAgent as Record<string, unknown> | undefined) || {};
   const repo = makeRepo({
     ...configOverride,
+    nativeAgent: { enabled: true, allowedPhases: ['planning', 'coding', 'review'], ...nativeAgent },
     providers: {
       ...providers,
       openrouter: {
