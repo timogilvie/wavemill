@@ -171,6 +171,12 @@ const ALLOWED_FINDING_KEYS = new Set([
   'failure_scenario',
   'verdict',
   'outcome',
+  // The review prompts (tools/prompts/review-*.md) define these dismissal
+  // fields; rejecting them threw away whole reports from reviewers that
+  // followed their instructions.
+  'dismissed',
+  'dismissalJustification',
+  'dismissalEvidence',
 ]);
 const SEVERITIES = new Set(['blocker', 'warning']);
 const VERDICTS = new Set(['CONFIRMED', 'PLAUSIBLE']);
@@ -225,6 +231,14 @@ function validateFindings(input: unknown): { findings: ReportedReviewFinding[]; 
     if ('outcome' in f) {
       return { findings: [], error: 'outcome is not allowed in a review report' };
     }
+    if (f.dismissed !== undefined && typeof f.dismissed !== 'boolean') {
+      return { findings: [], error: 'dismissed must be a boolean' };
+    }
+    for (const key of ['dismissalJustification', 'dismissalEvidence'] as const) {
+      if (f[key] !== undefined && typeof f[key] !== 'string') {
+        return { findings: [], error: `${key} must be a string` };
+      }
+    }
     const finding: ReportedReviewFinding = {
       file: f.file,
       severity: f.severity as 'blocker' | 'warning',
@@ -237,6 +251,9 @@ function validateFindings(input: unknown): { findings: ReportedReviewFinding[]; 
       finding.short_summary = f.short_summary;
     }
     if (f.verdict !== undefined) finding.verdict = f.verdict as 'CONFIRMED' | 'PLAUSIBLE';
+    if (f.dismissed !== undefined) finding.dismissed = f.dismissed as boolean;
+    if (typeof f.dismissalJustification === 'string') finding.dismissalJustification = f.dismissalJustification;
+    if (typeof f.dismissalEvidence === 'string') finding.dismissalEvidence = f.dismissalEvidence;
     findings.push(finding);
   }
   return { findings };

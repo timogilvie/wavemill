@@ -16,3 +16,21 @@ if [[ "${JOURNEY_RECOVERY_CONTRACT_REPLAY:-0}" == 1 || "${JOURNEY_NATIVE_ARM_EVI
        planDepth:(.planning.depth // "light"),codeDepth:(.coding.depth // "light"),reviewMode:"static"}' \
     "$FEATURE_DIR/.phase-config.json" > "$FEATURE_DIR/.post-expansion-route.json"
 fi
+if [[ "${JOURNEY_CODER_ROUTE_CHANGE:-0}" == 1 ]]; then
+  source "$FAKE_AGENT_TOOLS_DIR/../shared/lib/task-identity.sh"
+  if ! task_identity_is_challenger "$WAVEMILL_ISSUE"; then
+    # HOK-3511 (replaying HOK-3500): the expanded route moves the primary's
+    # coder to the other pool model, and the on-disk coding block carries a
+    # stale executor for it — the exact pre-fix file shape. The handoff's
+    # route writers must overwrite that with the agent derived from the model.
+    _journey_flipped_coder="$(jq -r 'if .coder == "claude-sonnet-4-6" then "claude-haiku-4-5-20251001" else "claude-sonnet-4-6" end' \
+      "$FEATURE_DIR/.post-expansion-route.json")"
+    jq --arg to "$_journey_flipped_coder" '.coder = $to' "$FEATURE_DIR/.post-expansion-route.json" \
+      > "$FEATURE_DIR/.post-expansion-route.json.tmp" \
+      && mv "$FEATURE_DIR/.post-expansion-route.json.tmp" "$FEATURE_DIR/.post-expansion-route.json"
+    jq '.coding.agent = "codex" | .coding.provider = "openai"' "$FEATURE_DIR/.phase-config.json" \
+      > "$FEATURE_DIR/.phase-config.json.tmp" \
+      && mv "$FEATURE_DIR/.phase-config.json.tmp" "$FEATURE_DIR/.phase-config.json"
+    echo "HOK-3511 expanded route flipped primary coder to $_journey_flipped_coder" >> "$FAKE_AGENT_LOG"
+  fi
+fi

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { HIGH_BLAST_RADIUS_GUIDANCE, isBlockingFinding, isDismissedFinding, reviewEngineTestUtils } from './review-engine.ts';
+import { HIGH_BLAST_RADIUS_GUIDANCE, isBlockingFinding, isDismissedFinding, reviewContractFromToolReport, reviewEngineTestUtils } from './review-engine.ts';
 import type { ReviewContext } from './review-context-gatherer.ts';
 import type { callLLM } from './llm-cli.ts';
 import type { ReviewToolReport } from './model-adapters/transport-adapter.ts';
@@ -887,5 +887,27 @@ exit 0
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('reviewContractFromToolReport dismissals', () => {
+  const blocker = {
+    file: 'a.ts', line: 3, severity: 'blocker' as const, category: 'logic',
+    summary: 'possible regression', failure_scenario: 'x breaks y',
+  };
+
+  it('a justified dismissal stops a blocker counting toward the verdict', () => {
+    const contract = reviewContractFromToolReport({
+      findings: [{ ...blocker, dismissed: true, dismissalJustification: 'disproved by the test run' }],
+    } as Parameters<typeof reviewContractFromToolReport>[0]);
+    assert.equal(contract.verdict, 'ready');
+    assert.equal(contract.codeReviewFindings[0].dismissed, true);
+  });
+
+  it('a dismissal without a justification still blocks', () => {
+    const contract = reviewContractFromToolReport({
+      findings: [{ ...blocker, dismissed: true }],
+    } as Parameters<typeof reviewContractFromToolReport>[0]);
+    assert.equal(contract.verdict, 'not_ready');
   });
 });

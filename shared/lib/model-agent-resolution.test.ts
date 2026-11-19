@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ModelRegistry } from './model-registry.ts';
-import { resolveModelAgent, resolveLaunchPreflight, type AgentResolution } from './model-agent-resolution.ts';
+import {
+  providerForAgent,
+  resolveModelAgent,
+  resolveLaunchPreflight,
+  resolveStageExecutor,
+  type AgentResolution,
+} from './model-agent-resolution.ts';
 import { getStageContextWindowFloor } from './model-registry.ts';
 
 function makeRegistry(modelId: string, model: ModelRegistry['models'][string]): ModelRegistry {
@@ -606,5 +612,86 @@ describe('resolveLaunchPreflight', () => {
     assert.equal(result.requestedModel, 'gpt-99-turbo');
     assert.equal(result.resolvedModel, null);
     assert.equal(result.reason, 'unknown-model');
+  });
+});
+
+describe('resolveStageExecutor (HOK-3511)', () => {
+  it('maps an anthropic model to {claude, anthropic}', () => {
+    const result = resolveStageExecutor({ model: 'claude-sonnet-5', stage: 'coding' });
+    assert.deepEqual(result, { ok: true, agent: 'claude', provider: 'anthropic' });
+  });
+
+  it('maps an openai model to {codex, openai}', () => {
+    const registry = makeRegistry('gpt-test-coder', {
+      vendor: 'openai',
+      codexChatgptCapability: { supported: true },
+    } as ModelRegistry['models'][string]);
+    const result = resolveStageExecutor({ model: 'gpt-test-coder', stage: 'coding', registry });
+    assert.deepEqual(result, { ok: true, agent: 'codex', provider: 'openai' });
+  });
+
+  it('maps an openrouter native model to {native-openrouter, native-openrouter}', () => {
+    const registry = makeRegistry('kimi-test-code', {
+      vendor: 'moonshot',
+      agent: 'native-openrouter',
+      toolSupport: 'full',
+      contextWindowTokens: 262_144,
+      nativeCapability: {
+        nativeProvider: 'openrouter',
+        piTransportKind: 'openai-completions',
+        readOnlyNative: 'certified',
+        certification: {
+          maxCertifiedPhase: 'workflow',
+          certifiedAt: new Date().toISOString(),
+          certificationSuiteVersion: 'v1',
+        },
+      },
+    } as unknown as ModelRegistry['models'][string]);
+    const result = resolveStageExecutor({ model: 'kimi-test-code', stage: 'review', registry });
+    assert.deepEqual(result, { ok: true, agent: 'native-openrouter', provider: 'native-openrouter' });
+  });
+
+  it('maps an openai native model to {native-openai, native-openai}', () => {
+    const registry = makeRegistry('oai-test-native', {
+      vendor: 'openai-native',
+      agent: 'native-openai',
+      toolSupport: 'full',
+      contextWindowTokens: 262_144,
+      nativeCapability: {
+        nativeProvider: 'openai',
+        piTransportKind: 'openai-responses',
+        readOnlyNative: 'certified',
+        certification: {
+          maxCertifiedPhase: 'workflow',
+          certifiedAt: new Date().toISOString(),
+          certificationSuiteVersion: 'v1',
+        },
+      },
+    } as unknown as ModelRegistry['models'][string]);
+    const result = resolveStageExecutor({ model: 'oai-test-native', stage: 'review', registry });
+    assert.deepEqual(result, { ok: true, agent: 'native-openai', provider: 'native-openai' });
+  });
+
+  it('resolves a model only present in the supplied (effective) registry', () => {
+    const registry = makeRegistry('overlay-only-model', {
+      vendor: 'anthropic',
+    } as ModelRegistry['models'][string]);
+    const result = resolveStageExecutor({ model: 'overlay-only-model', stage: 'planning', registry });
+    assert.deepEqual(result, { ok: true, agent: 'claude', provider: 'anthropic' });
+    const viaDefault = resolveStageExecutor({ model: 'overlay-only-model', stage: 'planning' });
+    assert.equal(viaDefault.ok, false);
+  });
+
+  it('propagates the typed refusal for an unknown model', () => {
+    const result = resolveStageExecutor({ model: 'not-a-model', stage: 'coding' });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.reason, 'unknown-model');
+  });
+
+  it('providerForAgent agrees with the executor for every resolvable agent', () => {
+    assert.equal(providerForAgent('claude'), 'anthropic');
+    assert.equal(providerForAgent('codex'), 'openai');
+    assert.equal(providerForAgent('native-openai'), 'native-openai');
+    assert.equal(providerForAgent('native-openrouter'), 'native-openrouter');
   });
 });

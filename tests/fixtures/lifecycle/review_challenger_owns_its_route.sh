@@ -84,8 +84,54 @@ for fn in \
   read_phase_config; do
   eval "$(extract_function "$MONITOR_SCRIPT_FILE" "$fn")"
 done
-eval "$(extract_function "$COMMON_SCRIPT_FILE" phase_config_provider_for_agent)"
 eval "$(extract_function "$COMMON_SCRIPT_FILE" pass_task_field)"
+# HOK-3511: the real phase_config_write_stages spawns recovery-contract.ts
+# write, whose executor resolution is certification-gated. Stub it with the
+# same contract — agent and provider derived from each stage's model (via the
+# fixture's agent_resolve_from_model), never carried in by the caller.
+phase_config_write_stages() {
+  local feature_dir="$1"; shift
+  local planner="" coder="" reviewer="" plan_depth="" code_depth="" review_mode="" side="" reset="false"
+  while (( $# > 0 )); do
+    case "$1" in
+      --planner) planner="$2"; shift 2 ;;
+      --coder) coder="$2"; shift 2 ;;
+      --reviewer) reviewer="$2"; shift 2 ;;
+      --plan-depth) plan_depth="$2"; shift 2 ;;
+      --code-depth) code_depth="$2"; shift 2 ;;
+      --review-mode) review_mode="$2"; shift 2 ;;
+      --challenge-side) side="$2"; shift 2 ;;
+      --reset) reset="true"; shift ;;
+      *) shift ;;
+    esac
+  done
+  _stub_write_stage() {
+    local stage="$1" phase_key="$2" model="$3" extra_key="$4" extra_value="$5"
+    [[ -n "$model" ]] || return 0
+    local agent provider
+    agent="$(agent_resolve_from_model "$model" "$stage")"
+    case "$agent" in
+      native-openrouter) provider="native-openrouter" ;;
+      native-openai) provider="native-openai" ;;
+      claude) provider="anthropic" ;;
+      codex) provider="openai" ;;
+      *) provider="" ;;
+    esac
+    jq --arg k "$phase_key" --arg m "$model" --arg a "$agent" --arg p "$provider" \
+      --arg side "$side" --arg reset "$reset" --arg ek "$extra_key" --arg ev "$extra_value" \
+      '.[$k] = ((if $reset == "true" then {} else (.[$k] // {}) end)
+         + {model: $m, agent: $a, stageRole: $k, selectedAt: (now | todateiso8601)}
+         + (if $p != "" then {provider: $p} else {} end)
+         + (if $side != "" then {challengeSide: $side} else {challengeSide: null} end)
+         + (if $ev != "" then {($ek): $ev} else {} end))' \
+      "$feature_dir/.phase-config.json" > "$feature_dir/.phase-config.json.tmp"
+    mv "$feature_dir/.phase-config.json.tmp" "$feature_dir/.phase-config.json"
+  }
+  _stub_write_stage review review "$reviewer" mode "$review_mode"
+  _stub_write_stage coding coding "$coder" depth "$code_depth"
+  _stub_write_stage planning planning "$planner" depth "$plan_depth"
+  echo '{"ok":true,"stages":{}}'
+}
 # The monitor spawns check-challenge-route.ts through wavemill_run_tool; run it
 # directly so the real one-variable check executes.
 wavemill_run_tool() {
