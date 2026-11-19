@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { join } from 'node:path';
 import { reconcilePrRoute, type ReconcilePrRouteDeps } from './pr-route-provenance.ts';
 import type { StageResult } from './stage-result.ts';
+import { validateExecutedRoute } from './pr-metadata.ts';
 
 function depsFor(featureDir: string, files: Record<string, unknown>): ReconcilePrRouteDeps {
   const byPath = new Map<string, string>();
@@ -95,6 +96,35 @@ describe('reconcilePrRoute', () => {
     assert.equal(result.route.reviewer.orchestrator?.resolved_model, 'claude-haiku-4-5');
     assert.equal(result.route.reviewer.substantiveAnalysis?.resolved_model, 'google/gemini-3.1-pro-preview');
     assert.equal(result.route.reviewer.substantiveAnalysis?.pinned, false);
+  });
+
+  it('reports an inherited stage with no executed model as unknown and keeps the route valid', async () => {
+    const featureDir = '/workspace/features/hok-3512-c';
+    const head = 'abc123';
+    const result = await reconcilePrRoute(
+      { issue: 'HOK-3512_c', featureDir, currentHeadSha: head },
+      depsFor(featureDir, {
+        '.planning-result.json': stageResult({
+          stage: 'planning',
+          agent: 'codex',
+          model: 'gpt-5.6-terra',
+          intendedModel: 'gpt-5.6-terra',
+          executedModel: null,
+          source: 'inherited',
+          executionEvidence: { status: 'missing', source: 'unknown' },
+          modelAttributionEligible: false,
+        } as unknown as Partial<StageResult> & Pick<StageResult, 'stage' | 'agent' | 'model'>),
+      }),
+    );
+
+    assert.equal(result.route.planner.status, 'unknown');
+    assert.equal(result.route.planner.resolved_model, undefined);
+    assert.equal(result.route.planner.requested_selector, 'gpt-5.6-terra');
+    assert.equal(result.route.planner.evidence.reason, 'inherited_without_executed_model');
+    assert.deepEqual(
+      validateExecutedRoute(result.route).filter((e) => /planner/.test(e.message)),
+      [],
+    );
   });
 
   it('reports stale stage evidence as unknown without substituting intent', async () => {
