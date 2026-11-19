@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { HIGH_BLAST_RADIUS_GUIDANCE, isBlockingFinding, isDismissedFinding, reviewEngineTestUtils } from './review-engine.ts';
+import { HIGH_BLAST_RADIUS_GUIDANCE, isBlockingFinding, isDismissedFinding, reviewContractFromToolReport, reviewEngineTestUtils } from './review-engine.ts';
 import type { ReviewContext } from './review-context-gatherer.ts';
 import type { callLLM } from './llm-cli.ts';
 import type { ReviewToolReport } from './model-adapters/transport-adapter.ts';
@@ -357,8 +357,11 @@ describe('review-engine per-model dispatch (HOK-3247)', () => {
     return { calls, nativeCalls };
   }
 
-  async function review(model?: string) {
+  async function review(model?: string, wavemillConfig?: Record<string, unknown>) {
     const repoDir = mkdtempSync(join(tmpdir(), 'review-engine-dispatch-'));
+    if (wavemillConfig) {
+      writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify(wavemillConfig));
+    }
     try {
       const { runReview } = await import('./review-engine.ts');
       return await runReview(makeReviewContext(), repoDir, {
@@ -389,6 +392,18 @@ describe('review-engine per-model dispatch (HOK-3247)', () => {
     assert.equal(result.substantiveAnalysisIdentity?.agent, 'claude-cli');
     assert.equal(result.substantiveAnalysisIdentity?.source, 'artifact');
     assert.equal(result.substantiveAnalysisIdentity?.pinned, true);
+  });
+
+  it('caps each CLI review call at the 300s default when review.cliTimeoutMs is unset', async () => {
+    const { calls } = setup({ agents: { 'claude-opus-5-5': 'claude' } });
+    await review('claude-opus-5-5');
+    assert.equal(calls[0]?.timeout, 300_000);
+  });
+
+  it('uses review.cliTimeoutMs as the per-call cap for CLI review calls', async () => {
+    const { calls } = setup({ agents: { 'claude-opus-5-5': 'claude' } });
+    await review('claude-opus-5-5', { review: { cliTimeoutMs: 1_200_000 } });
+    assert.equal(calls[0]?.timeout, 1_200_000);
   });
 
   it('runs an OpenAI reviewer on the codex CLI and records it unverified (codex reports no model)', async () => {
@@ -872,5 +887,27 @@ exit 0
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('reviewContractFromToolReport dismissals', () => {
+  const blocker = {
+    file: 'a.ts', line: 3, severity: 'blocker' as const, category: 'logic',
+    summary: 'possible regression', failure_scenario: 'x breaks y',
+  };
+
+  it('a justified dismissal stops a blocker counting toward the verdict', () => {
+    const contract = reviewContractFromToolReport({
+      findings: [{ ...blocker, dismissed: true, dismissalJustification: 'disproved by the test run' }],
+    } as Parameters<typeof reviewContractFromToolReport>[0]);
+    assert.equal(contract.verdict, 'ready');
+    assert.equal(contract.codeReviewFindings[0].dismissed, true);
+  });
+
+  it('a dismissal without a justification still blocks', () => {
+    const contract = reviewContractFromToolReport({
+      findings: [{ ...blocker, dismissed: true }],
+    } as Parameters<typeof reviewContractFromToolReport>[0]);
+    assert.equal(contract.verdict, 'not_ready');
   });
 });

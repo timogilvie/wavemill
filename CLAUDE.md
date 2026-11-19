@@ -5,28 +5,28 @@
 Shared tooling for Claude and Codex workflows:
 
 ### Directory Structure
-- **`shared/lib/`** - Shared JavaScript helpers (Linear API, Git, GitHub) used by both Claude and Codex
-- **`tools/`** - TypeScript wrappers that import from shared helpers (used by Claude commands)
+- **`shared/lib/`** - Shared helpers (Linear API, Git, GitHub) used by Claude and Codex
+- **`tools/`** - TypeScript wrappers over shared helpers (used by Claude commands)
 - **`commands/`** - Workflow command definitions (symlinked from `~/.claude/commands/`)
-- **`claude/config.json`** - Claude-specific configuration (Linear projects, git prefixes, check commands)
+- **`claude/config.json`** - Claude-specific config (Linear projects, git prefixes, check commands)
 - **`codex/`** - Codex-specific commands and state management
-- **`tools/prompts/`** - Shared prompt templates for PRDs, tasks, bug investigations, and issue expansion
+- **`tools/prompts/`** - Shared prompt templates for PRDs, tasks, bugs and issue expansion
 - **`.wavemill/registry/`** - Append-only runtime resource registry
 - **`.wavemill/manifests/`** - Per-session resource manifests
 
 ### Key Principles
-1. **Single Source of Truth**: This repo is canonical — `shared/lib/` holds all API logic; `tools/` holds all CLI tools. `wavemill` runs tools directly from the repo — never from `~/.claude/tools/`. Install assets resolve via `shared/lib/native-agent/install-paths.ts` (TS) / `WAVEMILL_INSTALL_DIR` + `wavemill_tool_path` (shell); the milled repo is `WAVEMILL_MILLED_REPO_DIR`/`REPO_DIR`. Enforced by `tests/check-install-paths.test.sh` and `tests/check-common-guards.test.sh`.
+1. **Single Source of Truth**: This repo is canonical — `shared/lib/` holds API logic, `tools/` the CLI tools; `wavemill` runs them from the repo, never from `~/.claude/tools/`. Install assets resolve via `shared/lib/native-agent/install-paths.ts` (TS) / `WAVEMILL_INSTALL_DIR` + `wavemill_tool_path` (shell); the milled repo is `WAVEMILL_MILLED_REPO_DIR`/`REPO_DIR`. Enforced by `tests/check-install-paths.test.sh` and `tests/check-common-guards.test.sh`.
 2. **Config Schema**: Both `claude/config.json` and `codex/config.json` follow `claude/config.schema.json`; wavemill runtime config follows `wavemill-config.schema.json`
-3. **Shared Templates**: `tools/prompts/` templates are consumed by both toolchains
+3. **Shared Templates**: `tools/prompts/` serves both toolchains
 4. **State Separation**: Claude uses `features/`, `bugs/`, `epics/`; Codex uses `.codex/state/`
 5. **Thin tools**: Keep `tools/` wrappers under 150 lines; put reusable, tested business logic in `shared/lib/`.
 6. **Model selection belongs to Hokusai**: Hokusai chooses each stage model and its cost/risk tradeoff. Report failures with attribution, fault class, cost and outcome; never change local coder policy to avoid them. See `AGENTS.md`.
 
 ### Shared Business Logic Modules
 
-**Guards cap new invariants (HOK-3236).** A "never do X" rule lives in a file under `docs/invariants/<name>.md`, with one index line naming the rule, guard and path. A PR adding an invariant adds the file, index line and guard (`tools/check-<name>.ts`, built on `tools/lib/source-guard.ts` with `invariantDocs` set to it, wired into `test:preflight`) in that PR; a rule that cannot be enforced mechanically gets no file. `source-guard.ts` provides the semantics: tracked files only, invariant source auto-excluded, whole-line comments skipped, `// allow-<name>: <reason>` on the line or the line above, and a ratcheting allowlist (`<path> [<count>]  # reason`) that only shrinks.
+**Guards cap new invariants (HOK-3236).** A "never do X" rule lives in a file under `docs/invariants/<name>.md`, with one index line naming the rule, guard and path. A PR adding an invariant adds the file, index line and guard (`tools/check-<name>.ts`, built on `tools/lib/source-guard.ts` with `invariantDocs` set, listed in `tools/preflight-guards.txt`); a rule that cannot be enforced mechanically gets no file. `source-guard.ts` provides the semantics: tracked files only, invariant source auto-excluded, whole-line comments skipped, `// allow-<name>: <reason>` on the line or the line above, and a ratcheting allowlist (`<path> [<count>]  # reason`) that only shrinks.
 
-All business logic lives in `shared/lib/` for reusability across CLI tools, commands, and workflows:
+All business logic lives in `shared/lib/`, reusable across CLI tools, commands and workflows:
 
 #### Issue Expansion
 - `issue-expander.ts` - Issue parsing, context formatting, LLM expansion, drift checking
@@ -41,9 +41,9 @@ All business logic lives in `shared/lib/` for reusability across CLI tools, comm
 - `initiative-decomposer.ts` - Full decomposition workflow with Linear integration
 
 #### Evaluation
-- `eval-orchestrator.ts` - Complete evaluation workflow orchestration
+- `eval-orchestrator.ts` - Evaluation workflow orchestration
 - `eval-context-gatherer.ts` - Context gathering with auto-detection
-- `eval-formatter.ts` - Detailed eval record formatting
+- `eval-formatter.ts` - Eval record formatting
 - `eval-summary-printer.ts` - One-line eval summaries
 - `eval-record-builder.ts` - Enrich records with metadata
 - `intervention-detector.ts` - Detect human interventions
@@ -75,11 +75,12 @@ All business logic lives in `shared/lib/` for reusability across CLI tools, comm
 - **Stage launchability (HOK-3142)** — Every router-selected model must pass this predicate — never add a routing path that returns without `finalizeDecision`. Guard: `tools/check-stage-launchability.ts`. → [docs/invariants/stage-launchability.md](docs/invariants/stage-launchability.md)
 - **Provider identity (HOK-3143)** — Never trust the requested wire id as `executedModel` — stage results must carry the provider-reported id and `executionEvidence.source: 'provider-response'`. Guard: `tools/check-provider-identity.ts`. → [docs/invariants/provider-identity.md](docs/invariants/provider-identity.md)
 - **Per-stage route record (HOK-3363)** — Never replace a decided stage model without appending an override, and never keep a private route-change flag or a local coder ranking. Guard: `tools/check-stage-launchability.ts`. → [docs/invariants/route-override-record.md](docs/invariants/route-override-record.md)
+- **Stage executor (HOK-3511)** — `resolveStageExecutor` alone maps a model to agent/provider; `writePersistedContract` / `phase_config_write_stages` alone write `.phase-config.json` stage blocks from the model; recovery re-derives, never validates a stored agent. Guard: `tools/check-stage-executor.ts`. → [docs/invariants/stage-executor.md](docs/invariants/stage-executor.md)
 - **Model identity (HOK-3321)** — Never compare a model-named identifier with `===`/`!==` in challenge code. Guard: `tools/check-model-equivalence.ts`. → [docs/invariants/model-equivalence.md](docs/invariants/model-equivalence.md)
 - **Executed-model record (HOK-3369, HOK-3498)** — No second derivation site, agent-type gate in `write_stage_result`, or hand-written fallback markers / evidence block outside `stage-result.ts` / the resolver. Guard: `tools/check-executed-model-resolver.ts`. → [docs/invariants/executed-model-resolver.md](docs/invariants/executed-model-resolver.md)
 - **Task identity (HOK-3113..HOK-3118)** — Never parse or build `_c` inline, and never author an inline issue-ID regex outside `task-identity.*`. Guard: `tools/check-task-identity.ts`. → [docs/invariants/task-identity.md](docs/invariants/task-identity.md)
 - **Workflow-state shape (HOK-3220)** — Narrow with `Pick<TaskRecord, ...>`; a new written field goes into the schema + `TaskRecord` + `npx tsx tools/generate-schema-validators.ts`. Guard: `tools/check-task-record-shape.ts`. → [docs/invariants/workflow-state-shape.md](docs/invariants/workflow-state-shape.md)
-- **Side-effect ledger (HOK-3183 / HOK-3185)** — _Retired 2026-11; see `docs/mill-task-ledger-design.md`._
+- **Side-effect ledger** — _Retired 2026-11; see `docs/mill-task-ledger-design.md`._
 - **Incident replay fixtures (HOK-3231)** — A PR that fixes a recorded incident must include its evidence as a replay fixture. Guard: prompt rule (`tools/prompts/coding-phase.md`, both review prompts). → [docs/invariants/incident-replay-fixtures.md](docs/invariants/incident-replay-fixtures.md)
 - **Feature flags (HOK-3235)** — New flag writers must add their row in the same PR as the flag — no new `WAVEMILL_*` without a doc entry. Guard: `tools/check-feature-flags.ts`. → [docs/invariants/feature-flags.md](docs/invariants/feature-flags.md)
 - **Behavioural tests (HOK-3237)** — Tests assert against *behaviour*, not against the source text of `shared/lib/**` or `tools/**`. Guard: `tools/check-source-text-assertions.ts`. → [docs/invariants/behavioural-tests.md](docs/invariants/behavioural-tests.md)
@@ -134,7 +135,7 @@ Available in `~/.claude/commands/`:
 ### Native Certification CLI
 `wavemill native-agent certifications` subcommands: `list`, `inspect`, `verify`, `report`, `certify`, `re-certify`, `reidentify`, `invalidate`, `migrate`, `prune`.
 
-Use `wavemill native-agent certify --provider <provider> --model <model> --phase <phase>` for one model, or `--all --phase workflow` for the full current-suite matrix. `npx tsx tools/native-agent-certify.ts --refresh-canary-cohort` refreshes the `nativeAgent.certification.canaryCohort` live canaries (HOK-3062); preflight runs it once per episode unless `canaryAutoRefresh: false`, and auto-remediates suite gaps, identity drift, stale artifacts and near-TTL renewal. `WAVEMILL_SKIP_CERTIFICATION_AUTO_REMEDIATE=1` requires manual certification; `WAVEMILL_SKIP_CERTIFICATION_COVERAGE_GUARD=1` is an operator-only override. `wavemill native-agent certifications prune` lists orphans (`--yes` removes).
+`wavemill native-agent certify --provider <provider> --model <model> --phase <phase>` certifies one model; `--all --phase workflow` the full matrix. `npx tsx tools/native-agent-certify.ts --refresh-canary-cohort` refreshes the `canaryCohort` live canaries (HOK-3062); preflight runs it once per episode unless `canaryAutoRefresh: false` and auto-remediates suite gaps, identity drift, stale artifacts and near-TTL renewal. `WAVEMILL_SKIP_CERTIFICATION_AUTO_REMEDIATE=1` requires manual certification; `WAVEMILL_SKIP_CERTIFICATION_COVERAGE_GUARD=1` is operator-only. `certifications prune` lists orphans (`--yes` removes).
 
 ## Test Discovery
 
@@ -159,9 +160,9 @@ bash tests/run-unit-tests.sh --list        # print selection without running
 bash tests/run-custom-tests.sh --shard 2/3 # custom harness CI shard 2 of 3
 ```
 
-Shell, unit and custom shards use **deterministic weighted partitioning**: `tools/partition-tests.ts` (LPT greedy over `shared/lib/test-partitioner.ts`) balances them by measured per-test medians from `tests/ci-test-weights.json`. A new test has no entry yet and gets the conservative `defaultMs` weight — creating the file is all that is needed. `tools/check-shard-balance.ts` (preflight) enforces exactly-once assignment, manifest hygiene and the 130%-of-median rule; refresh via `npx tsx tools/ci-test-timings.ts collect` from ≥3 CI timing artifacts (`docs/ci-test-timings.md`).
+Shell, unit and custom shards use **deterministic weighted partitioning**: `tools/partition-tests.ts` (LPT greedy over `shared/lib/test-partitioner.ts`) balances them by measured per-test medians from `tests/ci-test-weights.json`. A new test gets the conservative `defaultMs` weight — creating the file is enough. `tools/check-shard-balance.ts` (preflight) enforces exactly-once assignment, manifest hygiene and the 130%-of-median rule; refresh via `npx tsx tools/ci-test-timings.ts collect` from ≥3 CI timing artifacts (`docs/ci-test-timings.md`).
 
-**CI job layout** (`.github/workflows/ci.yml`): `preflight`, `shell` (×3 weighted shards), `unit` (×7 weighted shards), `custom` (×3 weighted shards), `smoke`, and `certification` run in parallel. The `shell-and-unit` job aggregates them into the single required `main` status check **"Shell and Unit Tests"** — do not rename it without updating branch protection. The shell/unit/custom jobs upload `timing-*` artifacts, which feed the weights manifest.
+**CI job layout** (`.github/workflows/ci.yml`): `preflight`, `shell` (×3 weighted shards), `unit` (×7 weighted shards), `custom` (×3 weighted shards), `smoke`, and `certification` run in parallel. The `shell-and-unit` job aggregates them into the single required `main` status check **"Shell and Unit Tests"** — do not rename it without updating branch protection. Shell/unit/custom jobs upload `timing-*` artifacts, feeding the weights manifest.
 
 - **Golden journeys and shared fakes (HOK-3226)** — Never start a test tmux server, `set -m` launch or placeholder outside `tests/fakes/lib.sh`, or resolve tmux privately. Guard: `tools/check-test-world-lifetime.ts`. → [docs/invariants/golden-journeys.md](docs/invariants/golden-journeys.md)
 
@@ -175,7 +176,7 @@ Use [docs/prompt-locations.md](docs/prompt-locations.md) as the canonical regist
 
 ## Hook-Based Status Tracking
 
-Wavemill tracks agent lifecycle through a JSON status file contract at `/tmp/wavemill-${SESSION}-${ISSUE}.hook`. See [docs/hook-status-tracking.md](docs/hook-status-tracking.md) for the protocol, adapters, JSON format and dashboard refresh.
+Wavemill tracks agent lifecycle through a JSON status file contract at `/tmp/wavemill-${SESSION}-${ISSUE}.hook`. See [docs/hook-status-tracking.md](docs/hook-status-tracking.md).
 
 ## State Mutation
 
@@ -189,9 +190,9 @@ Template usage is logged to `.wavemill/evals/prompt-registry.jsonl` for GEPA att
 
 ## Project Context
 
-`.wavemill/project-context.md` (hot memory) and `.wavemill/context/` (cold memory) hold living documentation. See [docs/project-context-system.md](docs/project-context-system.md) for initialisation, updates and drift detection.
+`.wavemill/project-context.md` (hot memory) and `.wavemill/context/` (cold memory) hold living documentation. See [docs/project-context-system.md](docs/project-context-system.md).
 
-## Task Packet Structure (Progressive Disclosure)
+## Task Packet Structure
 
 Task packets use a two-file format (a brief header plus detailed sections). See [docs/task-packet-structure.md](docs/task-packet-structure.md).
 
@@ -199,7 +200,7 @@ Task packets use a two-file format (a brief header plus detailed sections). See 
 
 TypeScript modules load config through `shared/lib/config.ts` (`loadWavemillConfig`, typed accessors, schema validation, per-repo caching). See [docs/config-loading.md](docs/config-loading.md).
 
-## Permission Configuration (Auto-Approve Read-Only Commands)
+## Permission Configuration
 
 The `permissions` section in `.wavemill-config.json` configures auto-approval for read-only commands. See [docs/permission-configuration.md](docs/permission-configuration.md).
 

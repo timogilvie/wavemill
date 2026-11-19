@@ -22,6 +22,7 @@ import type { WorkflowRouteDecision } from './workflow-router.ts';
 import { filterDisabledModels } from './disabled-models.ts';
 import { partitionEvidence } from './model-evidence-policy.ts';
 import { stageInherited } from './challenge-execution-contract.ts';
+import { createLaunchabilityChecker, isProviderEnablementRefusal } from './stage-launchability.ts';
 
 export type ChallengeReason = 'low-confidence' | 'new-model' | 'low-data-stage' | 'disabled';
 export type ChallengeStage = 'plan' | 'implementation' | 'review';
@@ -313,7 +314,23 @@ function makeStageEligibilityChecker(
       new Set(listEffectiveModelsForStage(CHALLENGE_STAGE_TO_MODEL_STAGE[stage], { repoDir }).models),
     );
   }
-  return (model, stage) => byStage.get(stage)?.has(model) ?? false;
+  const providerEnabled = makeProviderEnabledChecker(repoDir);
+  return (model, stage) => (byStage.get(stage)?.has(model) ?? false) && providerEnabled(model, stage);
+}
+
+/**
+ * The global projection knows nothing of a repo's disabled providers, so a
+ * recommendation must drop models the launchability predicate refuses for
+ * provider / native enablement. Certification and other refusals stay with
+ * the challenge pool filter (`challenge-mode.ts`), which runs the full
+ * predicate before any arm is launched.
+ */
+function makeProviderEnabledChecker(
+  repoDir?: string,
+): (model: string, stage: ChallengeStage) => boolean {
+  if (!repoDir) return () => true;
+  const check = createLaunchabilityChecker({ repoDir });
+  return (model, stage) => !isProviderEnablementRefusal(check(model, CHALLENGE_STAGE_TO_MODEL_STAGE[stage]));
 }
 
 function checkLowConfidence(
@@ -333,9 +350,11 @@ function checkLowConfidence(
 
   const primaryModel = routingDecision.coder;
   const defaultModel = getDefaultModel(routingDecision, repoDir);
-  const challengerModel = defaultModel !== primaryModel
+  const providerEnabled = makeProviderEnabledChecker(repoDir);
+  const isEnabledCoder = (model: string) => providerEnabled(model, 'implementation');
+  const challengerModel = defaultModel !== primaryModel && isEnabledCoder(defaultModel)
     ? defaultModel
-    : chooseLeastTestedModel(availableModels, recordsByModel, [primaryModel]);
+    : chooseLeastTestedModel(availableModels.filter(isEnabledCoder), recordsByModel, [primaryModel]);
 
   if (!challengerModel || challengerModel === primaryModel) {
     return null;
@@ -385,8 +404,10 @@ function checkNewModel(
   }
 
   const recordsByModel = summary.recordsByModel;
+  const providerEnabled = makeProviderEnabledChecker(repoDir);
   const challengerModel = [...new Set(availableModels)]
     .filter((model) => model !== defaultModel && (recordsByModel[model] ?? 0) < maxRecords)
+    .filter((model) => providerEnabled(model, 'implementation'))
     .sort((left, right) => {
       const leftCount = recordsByModel[left] ?? 0;
       const rightCount = recordsByModel[right] ?? 0;

@@ -1660,12 +1660,15 @@ export function resolveSealedDecisionAgainstExpandedRoute(input: {
   const primarySealed = intent.primary;
   const challengerSealed = intent.challenger;
   const executed = new Set<ChallengeStage>(input.executedStages ?? []);
-  const enrichStage = (s: ChallengeStage, sealedSide: typeof primarySealed): { model: string; agent: string } => {
+  // HOK-3511: an enriched intent carries models only. The agent that runs a
+  // model is derived by the stage-executor resolver when the route is written
+  // or launched, never copied out of a sealed side.
+  const enrichStage = (s: ChallengeStage, sealedSide: typeof primarySealed): { model: string } => {
     const sealedRoute = readSideStageRoute(sealedSide, s);
     // An executed stage keeps the sealed model (what actually ran); only a
     // sealed side with no model for it falls back to the expanded route.
-    if (executed.has(s) && sealedRoute.model) return sealedRoute;
-    return { model: routeModel(s), agent: sealedRoute.agent };
+    if (executed.has(s) && sealedRoute.model) return { model: sealedRoute.model };
+    return { model: routeModel(s) };
   };
 
   const primary: ChallengeRuntimeSideIntent = {
@@ -1677,12 +1680,9 @@ export function resolveSealedDecisionAgainstExpandedRoute(input: {
     inheritedStages: [],
   };
 
-  const challengerStage = (s: ChallengeStage): { model: string; agent: string } => {
+  const challengerStage = (s: ChallengeStage): { model: string } => {
     if (s === stage) {
-      return {
-        model: sealedDecision.challengerVariedModel,
-        agent: sealedDecision.challengerVariedAgent ?? readSideStageRoute(challengerSealed, s).agent,
-      };
+      return { model: sealedDecision.challengerVariedModel };
     }
     return enrichStage(s, challengerSealed);
   };

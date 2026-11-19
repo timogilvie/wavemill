@@ -73,6 +73,8 @@ describe('audit-openrouter-aliases command', () => {
         'repo-dir': repoDir,
         json: false,
         'no-write': false,
+      'baseline-registry': undefined,
+        'baseline-registry': undefined,
       }, {
         fetchCatalog: async () => new Map<string, OpenRouterModel>(),
         fetchEndpoints: async () => [],
@@ -102,6 +104,7 @@ describe('audit-openrouter-aliases command', () => {
       'repo-dir': repoDir,
       json: false,
       'no-write': true,
+      'baseline-registry': undefined,
     }, {
       fetchCatalog: async () => new Map<string, OpenRouterModel>(),
       fetchEndpoints: async () => [],
@@ -124,6 +127,8 @@ describe('audit-openrouter-aliases command', () => {
         'repo-dir': repoDir,
         json: true,
         'no-write': true,
+      'baseline-registry': undefined,
+        'baseline-registry': undefined,
       }, {
         fetchCatalog: async () => new Map<string, OpenRouterModel>([
           ['qwen/qwen3-coder', {
@@ -159,6 +164,7 @@ describe('audit-openrouter-aliases command', () => {
       'repo-dir': repoDir,
       json: true,
       'no-write': true,
+      'baseline-registry': undefined,
     }, {
       fetchCatalog: async () => {
         throw new Error('should not fetch');
@@ -183,6 +189,7 @@ describe('audit-openrouter-aliases command', () => {
       'repo-dir': repoDir,
       json: false,
       'no-write': false,
+      'baseline-registry': undefined,
     }, {
       fetchCatalog: async () => {
         throw new Error('network down');
@@ -207,6 +214,8 @@ describe('audit-openrouter-aliases command', () => {
         'repo-dir': repoDir,
         json: false,
         'no-write': true,
+      'baseline-registry': undefined,
+        'baseline-registry': undefined,
       }, {
         // Top-level block is a cheap third-party host whose cache price would
         // flag the registry; the first-party endpoint matches the registry.
@@ -248,6 +257,8 @@ describe('audit-openrouter-aliases command', () => {
         'repo-dir': repoDir,
         json: false,
         'no-write': true,
+      'baseline-registry': undefined,
+        'baseline-registry': undefined,
       }, {
         fetchCatalog: async () => new Map<string, OpenRouterModel>([
           ['qwen/qwen3-coder', { id: 'qwen/qwen3-coder', context_length: 200_000 }],
@@ -298,6 +309,8 @@ describe('audit-openrouter-aliases command', () => {
         'repo-dir': repoDir,
         json: false,
         'no-write': true,
+      'baseline-registry': undefined,
+        'baseline-registry': undefined,
       }, {
         fetchCatalog: async () => {
           throw new Error('should not fetch');
@@ -318,5 +331,73 @@ describe('audit-openrouter-aliases command', () => {
     } finally {
       output.restore();
     }
+  });
+});
+
+describe('audit-openrouter-aliases --baseline-registry', () => {
+  // The alias is missing from the (empty) catalog, so it always has one
+  // selectable finding; only the baseline decides whether this run fails.
+  const entry = { id: 'qwen-3-coder', capabilities: makeModel('supported') };
+
+  async function runScoped(baseline: unknown, head: unknown = { models: [entry] }) {
+    const repoDir = makeTempRepo();
+    const baselinePath = join(repoDir, 'baseline.json');
+    writeFileSync(baselinePath, typeof baseline === 'string' ? baseline : JSON.stringify(baseline));
+    const output = captureOutput();
+    try {
+      const code = await runOpenRouterAliasAuditCommand({
+        'catalog-json': undefined,
+        'endpoints-json': undefined,
+        fixture: false,
+        output: undefined,
+        'repo-dir': repoDir,
+        json: true,
+        'no-write': true,
+        'baseline-registry': baselinePath,
+      }, {
+        fetchCatalog: async () => new Map<string, OpenRouterModel>(),
+        fetchEndpoints: async () => [],
+        registry: { models: { 'qwen-3-coder': entry.capabilities }, ladders: {} },
+        now: () => new Date('2026-11-19T00:00:00.000Z'),
+        loadHeadCatalog: () => head,
+      });
+      return { code, stdout: output.stdout.join('\n'), stderr: output.stderr.join('\n') };
+    } finally {
+      output.restore();
+    }
+  }
+
+  it('passes with a warning when the drifting entry is unchanged from the baseline', async () => {
+    const result = await runScoped({ models: [entry] });
+    assert.equal(result.code, 0);
+    assert.match(result.stdout, /::warning title=OpenRouter alias drift not caused by this change::1 /);
+    assert.match(result.stdout, /"inheritedSelectableFindings": 1/);
+    assert.match(result.stdout, /inherited - registry entry unchanged/);
+  });
+
+  it('fails when the change edited the drifting entry', async () => {
+    const edited = { id: entry.id, capabilities: { ...entry.capabilities, contextWindowTokens: 150_000 } };
+    const result = await runScoped({ models: [edited] });
+    assert.equal(result.code, 1);
+    assert.match(result.stdout, /"introducedSelectableFindings": 1/);
+  });
+
+  it('fails when the change added the drifting alias', async () => {
+    assert.equal((await runScoped({ models: [] })).code, 1);
+  });
+
+  it('fails when the change edited only the alias mapping row', async () => {
+    const mapping = { wavemillAlias: entry.id, openrouterId: 'qwen/qwen3-coder' };
+    const result = await runScoped(
+      { models: [entry], openrouterMappings: [mapping] },
+      { models: [entry], openrouterMappings: [{ ...mapping, openrouterId: 'qwen/renamed' }] },
+    );
+    assert.equal(result.code, 1);
+  });
+
+  it('exits 2 rather than relaxing the audit when the baseline is unreadable', async () => {
+    const result = await runScoped('{not json');
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /could not read baseline registry/);
   });
 });

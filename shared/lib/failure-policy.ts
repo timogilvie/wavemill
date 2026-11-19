@@ -141,6 +141,12 @@ export const TERMINAL_CODES_BEFORE_HOK_3176 = 29;
  */
 export const TERMINAL_ALLOWLIST: readonly TerminalCause[] = Object.freeze([
   {
+    code: 'recovery_contract_unavailable',
+    reason: 'the saved route was positively refused by validation; identical replay cannot change it until an operator changes the route',
+    faultClass: 'harness-fault',
+    testRef: 'failure-policy.test.ts:terminal:recovery_contract_unavailable',
+  },
+  {
     code: 'policy-denied',
     reason: 'a mutation/network policy rejected the action; only an operator can widen the policy',
     faultClass: 'harness-fault',
@@ -537,6 +543,7 @@ function excerpt(text: string, maxChars = 4000): string {
 // ── Next actions ────────────────────────────────────────────────────────────
 
 const NEXT_ACTIONS: Readonly<Record<string, string>> = {
+  recovery_contract_unavailable: 'inspect the saved route and validator reason; use wavemill reroute for an audited replacement, then resume',
   'context-exhausted': 'session compacted to the floor and still overflowed; re-launch on a larger-context model or split the task',
   'context-window-exceeded': 'relaunch with compressed context or a larger-context model; the prompt exceeded the model context window',
   'provider-config-error': 'check provider auth/model configuration, then rerun. The provider rejected the request',

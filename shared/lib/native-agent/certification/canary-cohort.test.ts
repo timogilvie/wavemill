@@ -264,7 +264,9 @@ describe('evaluateCanaryCohortHealth', () => {
   });
 
   for (const defect of ['missing-suite', 'wrong-suite', 'insufficient-phase', 'expired-certificate'] as const) {
-    it(`does not count a fresh canary when the launch gate rejects ${defect}`, async () => {
+    it(`does not count a fresh canary when the launch gate rejects ${defect}`, async (t) => {
+      // Exercise same-millisecond reads deterministically, as on the CI runner.
+      if (defect === 'expired-certificate') t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
       const ws = makeWorkspace();
       try {
         const registry = structuredClone(STUB_REGISTRY);
@@ -273,7 +275,10 @@ describe('evaluateCanaryCohortHealth', () => {
         if (defect === 'missing-suite') delete metadata.certification;
         if (defect === 'wrong-suite') metadata.certification!.certificationSuiteVersion = 'another-suite';
         if (defect === 'insufficient-phase') artifact.phase = 'read-only';
-        if (defect === 'expired-certificate') artifact.expiresAt = new Date(Date.now() - DAY_MS).toISOString();
+        if (defect === 'expired-certificate') {
+          // Valid publication interval, but expired before health evaluation.
+          artifact.expiresAt = new Date(Date.parse(artifact.certifiedAt) + DAY_MS / 2).toISOString();
+        }
         writeGlobalCertification(artifact, { root: ws.root });
         const cohort = resolveCanaryCohort({ repoDir: ws.repoDir, registry, config: cohortConfig() });
         const health = await evaluateCanaryCohortHealth({ repoDir: ws.repoDir, registry, cohort,
@@ -281,6 +286,7 @@ describe('evaluateCanaryCohortHealth', () => {
         assert.equal(health.codingReadyCount, 0);
         assert.equal(health.members[0].codingEligible, false);
         assert.equal(health.belowMinimum, true);
+        if (defect === 'expired-certificate') assert.equal(health.members[0].failureReason, 'stale_artifact');
       } finally { ws.cleanup(); }
     });
   }

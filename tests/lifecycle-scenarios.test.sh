@@ -117,6 +117,7 @@ for fn in \
   check_stage_awaiting_user \
   phase_launch_head \
   phase_launch_base \
+  stage_failure_retry_key \
   phase_launch_gate \
   coding_launch_refusal_limit \
   coding_launch_refusal_is_transient \
@@ -159,8 +160,6 @@ for fn in \
   _plan_packet_relaunch_planning \
   _plan_packet_needs_user \
   task_inputs_prepare \
-  task_inputs_failure_marker \
-  task_inputs_surface_failure \
   task_inputs_demote_planning \
   ensure_task_inputs_ready \
   recover_misplaced_coding_complete_marker \

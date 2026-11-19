@@ -18,7 +18,7 @@ writeFileSync(stateFile, JSON.stringify(buildWorkflowState({'JRN-1':{runId:'reco
 const snapshotFile = join(dir, 'snapshot.json');
 const failed: RecoverySnapshot = {
   issue:'JRN-1',stage:'coding',attempt:{currentRunId:'recovery-run',controlRunId:'recovery-run'},
-  stageResult:{kind:'failed'},disposition:null,contractAvailable:true,outstandingEffect:null,wait:null,
+  stageResult:{kind:'failed'},disposition:null,executionContract:null,outstandingEffect:null,wait:null,
   failure:{decision:classifyFailure({stage:'coding',detail:'unclassified exited agent'}),retry:'proceed'},
 };
 function invoke(snapshot: RecoverySnapshot, evidence: string) {

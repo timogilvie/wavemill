@@ -1519,28 +1519,23 @@ finalize_challenge_execution_intent_before_coding() {
       code_depth=$(echo "$expanded_route_json" | jq -r '.codeDepth // "medium"' 2>/dev/null || echo "medium")
       review_mode=$(echo "$expanded_route_json" | jq -r '.reviewMode // "static"' 2>/dev/null || echo "static")
 
-      # Primary arm route from the enriched intent.
-      local primary_planner primary_planner_agent primary_coder_model primary_coder_agent primary_reviewer primary_reviewer_agent
+      # Primary arm route from the enriched intent. HOK-3511: the intent
+      # carries models only; agents are derived where the route is written.
+      local primary_planner primary_coder_model primary_reviewer
       primary_planner=$(echo "$enriched_intent" | jq -r '.primary.planner.model // empty' 2>/dev/null)
-      primary_planner_agent=$(echo "$enriched_intent" | jq -r '.primary.planner.agent // empty' 2>/dev/null)
       primary_coder_model=$(echo "$enriched_intent" | jq -r '.primary.coder.model // empty' 2>/dev/null)
-      primary_coder_agent=$(echo "$enriched_intent" | jq -r '.primary.coder.agent // empty' 2>/dev/null)
       primary_reviewer=$(echo "$enriched_intent" | jq -r '.primary.reviewer.model // empty' 2>/dev/null)
-      primary_reviewer_agent=$(echo "$enriched_intent" | jq -r '.primary.reviewer.agent // empty' 2>/dev/null)
 
       local primary_varied challenger_varied
       primary_varied=$(challenge_selection_health_varied_model "$stage" "$primary_planner" "$primary_coder_model" "$primary_reviewer")
 
       # Challenger arm route from the enriched intent.
-      local challenger_key challenger_planner challenger_planner_agent challenger_coder_model challenger_coder_agent challenger_reviewer challenger_reviewer_agent
+      local challenger_key challenger_planner challenger_coder_model challenger_reviewer
       challenger_key=$(echo "$enriched_intent" | jq -r '.challenger.key // empty' 2>/dev/null)
       [[ -n "$challenger_key" ]] || challenger_key="$(task_identity_challenger_key "$issue" 2>/dev/null || echo "")"
       challenger_planner=$(echo "$enriched_intent" | jq -r '.challenger.planner.model // empty' 2>/dev/null)
-      challenger_planner_agent=$(echo "$enriched_intent" | jq -r '.challenger.planner.agent // empty' 2>/dev/null)
       challenger_coder_model=$(echo "$enriched_intent" | jq -r '.challenger.coder.model // empty' 2>/dev/null)
-      challenger_coder_agent=$(echo "$enriched_intent" | jq -r '.challenger.coder.agent // empty' 2>/dev/null)
       challenger_reviewer=$(echo "$enriched_intent" | jq -r '.challenger.reviewer.model // empty' 2>/dev/null)
-      challenger_reviewer_agent=$(echo "$enriched_intent" | jq -r '.challenger.reviewer.agent // empty' 2>/dev/null)
 
       challenger_varied=$(challenge_selection_health_varied_model "$stage" "$challenger_planner" "$challenger_coder_model" "$challenger_reviewer")
 
@@ -1788,7 +1783,14 @@ challenge_reseal_primary_route() {
   local primary_issue="$1" feature_dir="$2" intent_json="$3" executed="${4:-}"
   [[ -n "$primary_issue" && -d "$feature_dir" ]] || return 1
 
-  local role stage phase state_key model agent provider changed=""
+  # HOK-3511: the reseal carries models only; the contract writer derives the
+  # agent and provider for each changed stage, and (HOK-3363) appends one
+  # `challenge` override to the route record per changed stage — before the
+  # top-level .routing-complete fields move, so the record seeds from the
+  # decided (pre-reseal) models.
+  local role stage phase state_key model changed=""
+  local -a write_args=(--keep-selected-at)
+  local -a changed_roles=() changed_models=() changed_state_keys=()
   for role in planner coder reviewer; do
     case "$role" in
       planner) stage="plan"; phase="planning"; state_key="plannerModel" ;;
@@ -1799,34 +1801,36 @@ challenge_reseal_primary_route() {
     model="$(jq -r --arg r "$role" '.primary[$r].model // ""' <<<"$intent_json" 2>/dev/null || true)"
     [[ -n "$model" ]] || continue
     [[ "$(read_phase_config "$feature_dir" "$phase" "model")" == "$model" ]] && continue
+    write_args+=("--$role" "$model")
+    changed_roles+=("$role")
+    changed_models+=("$model")
+    changed_state_keys+=("$state_key")
+    changed="${changed:+$changed,}$role"
+  done
+  [[ -n "$changed" ]] || return 0
 
-    agent="$(jq -r --arg r "$role" '.primary[$r].agent // ""' <<<"$intent_json" 2>/dev/null || true)"
-    if [[ -z "$agent" ]] && declare -F agent_resolve_from_model >/dev/null 2>&1; then
-      agent="$(agent_resolve_from_model "$model" "$phase" 2>/dev/null || true)"
-    fi
-    provider="$(phase_config_provider_for_agent "$agent")"
+  local pair_id
+  pair_id="$(jq -r '.pairId // ""' <<<"$intent_json" 2>/dev/null || true)"
+  [[ -n "$pair_id" ]] || pair_id="$primary_issue"
+  ensure_phase_config_state_file "$feature_dir"
+  phase_config_write_stages "$feature_dir" "${write_args[@]}" \
+    --override-source challenge --pair-id "$pair_id" --side primary \
+    --reason challenge_reseal >/dev/null 2>&1 || return 1
 
+  local i
+  for i in "${!changed_roles[@]}"; do
     if [[ -f "$feature_dir/.routing-complete" ]]; then
       state_mutate "$feature_dir/.routing-complete" '.[$role] = $model' \
-        --arg role "$role" --arg model "$model" >/dev/null 2>&1 || return 1
+        --arg role "${changed_roles[$i]}" --arg model "${changed_models[$i]}" >/dev/null 2>&1 || return 1
     fi
-    ensure_phase_config_state_file "$feature_dir"
-    state_mutate "$feature_dir/.phase-config.json" \
-      '.[$phase] = ((.[$phase] // {}) + {model: $model, stageRole: $phase}
-         + (if $agent != "" then {agent: $agent} else {} end)
-         + (if $provider != "" then {provider: $provider} else {} end))' \
-      --arg phase "$phase" --arg model "$model" --arg agent "$agent" --arg provider "$provider" >/dev/null 2>&1 || return 1
     if [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE}" ]]; then
       state_mutate "$STATE_FILE" \
         'if .tasks[$issue] != null then .tasks[$issue][$key] = $model else . end' \
-        --arg issue "$primary_issue" --arg key "$state_key" --arg model "$model" >/dev/null 2>&1 || true
+        --arg issue "$primary_issue" --arg key "${changed_state_keys[$i]}" --arg model "${changed_models[$i]}" >/dev/null 2>&1 || true
     fi
-    changed="${changed:+$changed,}$role"
   done
 
-  if [[ -n "$changed" ]]; then
-    log_route_lifecycle "challenge_primary_resealed" "issue=$primary_issue" "fields=$changed"
-  fi
+  log_route_lifecycle "challenge_primary_resealed" "issue=$primary_issue" "fields=$changed"
   return 0
 }
 
@@ -2090,31 +2094,19 @@ challenge_intent_files_valid() {
 }
 
 # HOK-3156 — point a review-stage challenger's own route artifacts at its
-# sealed reviewer. Planning/coding entries are left as inherited.
+# sealed reviewer. Planning/coding entries are left as inherited. HOK-3511:
+# the writer derives the reviewer's agent and provider from the model; the
+# caller passes no agent.
 #
-# Usage: challenge_write_review_arm_route <challenger_feature_dir> <reviewer_model> <reviewer_agent> <review_mode>
+# Usage: challenge_write_review_arm_route <challenger_feature_dir> <reviewer_model> <review_mode>
 challenge_write_review_arm_route() {
-  local feature_dir="$1" reviewer_model="$2" reviewer_agent="${3:-}" review_mode="${4:-}"
+  local feature_dir="$1" reviewer_model="$2" review_mode="${3:-}"
   [[ -n "$feature_dir" && -n "$reviewer_model" ]] || return 1
-  if [[ -z "$reviewer_agent" ]] && declare -F agent_resolve_from_model >/dev/null 2>&1; then
-    reviewer_agent="$(agent_resolve_from_model "$reviewer_model" "review" 2>/dev/null || true)"
-  fi
-  local provider
-  provider="$(phase_config_provider_for_agent "$reviewer_agent")"
 
   ensure_phase_config_state_file "$feature_dir"
-  state_mutate "$feature_dir/.phase-config.json" \
-    '.review = {
-       model: $model,
-       stageRole: "review",
-       challengeSide: "challenger",
-       selectedAt: (now | todateiso8601),
-       mode: (if $mode != "" then $mode else (.review.mode // "") end)
-     }
-     + (if $agent != "" then {agent: $agent} else {} end)
-     + (if $provider != "" then {provider: $provider} else {} end)' \
-    --arg model "$reviewer_model" --arg agent "$reviewer_agent" \
-    --arg provider "$provider" --arg mode "$review_mode" || return 1
+  local -a write_args=(--reviewer "$reviewer_model" --challenge-side challenger --reset)
+  [[ -n "$review_mode" ]] && write_args+=(--review-mode "$review_mode")
+  phase_config_write_stages "$feature_dir" "${write_args[@]}" >/dev/null || return 1
 
   if [[ -f "$feature_dir/.routing-complete" ]]; then
     state_mutate "$feature_dir/.routing-complete" \
@@ -2159,7 +2151,7 @@ challenge_materialize_challenger_arm() {
 
   local arm_key arm_slug arm_branch varied_stage
   local coder_model planner_model reviewer_model
-  local coder_agent planner_agent reviewer_agent
+  local coder_agent planner_agent
   local plan_depth code_depth review_mode
   arm_key=$(challenge_arm_read_field "$arm_json" '.key')
   arm_slug=$(challenge_arm_read_field "$arm_json" '.slug')
@@ -2170,7 +2162,6 @@ challenge_materialize_challenger_arm() {
   reviewer_model=$(challenge_arm_read_field "$arm_json" '.models.reviewer')
   coder_agent=$(challenge_arm_read_field "$arm_json" '.agents.coder')
   planner_agent=$(challenge_arm_read_field "$arm_json" '.agents.planner')
-  reviewer_agent=$(challenge_arm_read_field "$arm_json" '.agents.reviewer')
   plan_depth=$(challenge_arm_read_field "$arm_json" '.planDepth')
   code_depth=$(challenge_arm_read_field "$arm_json" '.codeDepth')
   review_mode=$(challenge_arm_read_field "$arm_json" '.reviewMode')
@@ -2204,7 +2195,6 @@ challenge_materialize_challenger_arm() {
       [[ -n "$reviewer_model" ]] && \
         log_warn "  $arm_key: arm record reviewer ($reviewer_model) differs from the sealed intent ($sealed_value) — using the sealed reviewer"
       reviewer_model="$sealed_value"
-      reviewer_agent="$(jq -r '.challenger.reviewer.agent // .challenger.expectedStageAgent // ""' <<<"$sealed_intent" 2>/dev/null || true)"
     fi
     sealed_value="$(jq -r '.challenger.expectedRoute.reviewMode // ""' <<<"$sealed_intent" 2>/dev/null || true)"
     [[ -n "$sealed_value" ]] && review_mode="$sealed_value"
@@ -2358,7 +2348,7 @@ challenge_materialize_challenger_arm() {
   # sealed reviewer so every relaunch, stage-result write and route stamp sees
   # the reviewer that actually runs. Planning and coding stay inherited: the
   # preflight above proved they match the challenger's sealed route.
-  challenge_write_review_arm_route "$challenger_feature_dir" "$reviewer_model" "$reviewer_agent" "$review_mode" || {
+  challenge_write_review_arm_route "$challenger_feature_dir" "$reviewer_model" "$review_mode" || {
     log_error "  $arm_key: failed to write the challenger's own review route"
     return 1
   }
@@ -2420,7 +2410,8 @@ challenge_materialize_challenger_arm() {
     "$planner_model" "$coder_model" "$reviewer_model" \
     "$plan_depth" "$code_depth" "$review_mode" \
     "$varied_stage" "review" "" "$arm_title"
-  challenge_set_varied_model "$arm_key" "$reviewer_model" "$reviewer_agent"
+  challenge_set_varied_model "$arm_key" "$reviewer_model" \
+    "$(read_phase_config "$challenger_feature_dir" "review" "agent")"
 
   # Register in monitor arrays so subsequent monitor_issue_state ticks find
   # the arm through the same lookup as any other task.
@@ -2445,7 +2436,10 @@ challenge_materialize_challenger_arm() {
   if declare -F agent_resolve_from_model >/dev/null 2>&1; then
     resolved_reviewer_agent="$(agent_resolve_from_model "$reviewer_launch_model" "review" 2>/dev/null || echo "")"
   fi
-  [[ -n "$resolved_reviewer_agent" ]] || resolved_reviewer_agent="${reviewer_agent:-$coder_agent}"
+  # HOK-3511: the fallback is the agent the contract writer derived, never one
+  # carried from the arm record or the intent.
+  [[ -n "$resolved_reviewer_agent" ]] || \
+    resolved_reviewer_agent="$(read_phase_config "$challenger_feature_dir" "review" "agent")"
 
   set_task_phase "$arm_key" "review"
   write_stage_result_with_history "$challenger_feature_dir" "review" "running" \
@@ -2698,20 +2692,12 @@ challenge_materialize_implementation_arm() {
       log_warn "  $arm_key: failed to stamp source=inherited on .planning-result.json"
     fi
   fi
+  # HOK-3511: the contract writer derives the coder's agent and provider from
+  # the model; the arm record's carried agent is never persisted.
   if [[ -f "$challenger_feature_dir/.phase-config.json" && -n "$coder_model" ]]; then
-    local coder_provider=""
-    if declare -F _provider_for_model >/dev/null 2>&1; then
-      coder_provider="$(_provider_for_model "$coder_model" 2>/dev/null || true)"
-    fi
-    tmp="$(mktemp)" && if jq --arg m "$coder_model" --arg a "$coder_agent" --arg d "$code_depth" --arg p "$coder_provider" \
-      '.coding = (((.coding // {}) | del(.agent, .provider)) + {model: $m, depth: $d}
-         + (if $a != "" then {agent: $a} else {} end)
-         + (if $p != "" then {provider: $p} else {} end))' \
-      "$challenger_feature_dir/.phase-config.json" > "$tmp" 2>/dev/null; then
-      mv "$tmp" "$challenger_feature_dir/.phase-config.json"
-    else
-      rm -f "$tmp"
-    fi
+    phase_config_write_stages "$challenger_feature_dir" \
+      --coder "$coder_model" --code-depth "$code_depth" >/dev/null || \
+      log_warn "  $arm_key: failed to write the challenger's own coding route"
   fi
 
   # Step 5: fork identity + descriptor. Only the plan is inherited.
@@ -2747,7 +2733,8 @@ challenge_materialize_implementation_arm() {
     "$planner_model" "$coder_model" "$reviewer_model" \
     "$plan_depth" "$code_depth" "$review_mode" \
     "implementation" "coding" "" "$arm_title"
-  challenge_set_varied_model "$arm_key" "$coder_model" "$coder_agent"
+  challenge_set_varied_model "$arm_key" "$coder_model" \
+    "$(read_phase_config "$challenger_feature_dir" "coding" "agent")"
   BRANCH_BY_ISSUE["$arm_key"]="$arm_branch"
   SLUG_BY_ISSUE["$arm_key"]="$arm_slug"
   state_mutate "$STATE_FILE" \
@@ -2764,7 +2751,10 @@ challenge_materialize_implementation_arm() {
   if declare -F agent_resolve_from_model >/dev/null 2>&1; then
     resolved_coder_agent="$(agent_resolve_from_model "$coder_launch_model" "coding" 2>/dev/null || echo "")"
   fi
-  [[ -n "$resolved_coder_agent" ]] || resolved_coder_agent="$coder_agent"
+  # HOK-3511: the fallback is the agent the contract writer derived, never one
+  # carried from the arm record.
+  [[ -n "$resolved_coder_agent" ]] || \
+    resolved_coder_agent="$(read_phase_config "$challenger_feature_dir" "coding" "agent")"
   if [[ -z "$resolved_coder_agent" ]]; then
     log_error "  $arm_key: cannot resolve a coding agent for $coder_launch_model — arm left for retry"
     return 1
@@ -3071,9 +3061,8 @@ challenge_materialize_expanded_route_arm() {
 
   # Challenger route: sealed varied planner + shared coder/reviewer. Depths come
   # from the primary's expanded phase-config (applied before finalize).
-  local challenger_planner challenger_planner_agent shared_coder shared_reviewer
+  local challenger_planner shared_coder shared_reviewer
   challenger_planner="$(echo "$enriched_intent" | jq -r '.challenger.planner.model // ""')"
-  challenger_planner_agent="$(echo "$enriched_intent" | jq -r '.challenger.planner.agent // ""')"
   shared_coder="$(echo "$enriched_intent" | jq -r '.challenger.coder.model // ""')"
   shared_reviewer="$(echo "$enriched_intent" | jq -r '.challenger.reviewer.model // ""')"
   if [[ -z "$challenger_planner" ]]; then
@@ -3191,8 +3180,11 @@ challenge_materialize_expanded_route_arm() {
   # Save the challenger's task-state entry and register it in the monitor maps.
   local linear_issue
   linear_issue="$(get_linear_issue_id "$primary_issue" 2>/dev/null || echo "$primary_issue")"
-  local planner_agent="$challenger_planner_agent"
-  [[ -n "$planner_agent" ]] || planner_agent="$(challenge_arm_read_field "$arm_json" '.agents.planner')"
+  # HOK-3511: the planner agent is the one the contract writer derived from
+  # the sealed planner model (write_phase_config above), never one carried
+  # from the intent or the arm record.
+  local planner_agent
+  planner_agent="$(read_phase_config "$challenger_feature_dir" "planning" "agent")"
   [[ -n "$planner_agent" ]] || planner_agent="${AGENT_CMD:-claude}"
   local arm_title
   arm_title=$(pass_task_field "$primary_issue" title)
@@ -3204,7 +3196,7 @@ challenge_materialize_expanded_route_arm() {
     "$challenger_planner" "$shared_coder" "$shared_reviewer" \
     "$plan_depth" "$code_depth" "$review_mode" \
     "$varied_stage" "" "" "$arm_title"
-  challenge_set_varied_model "$arm_key" "$challenger_planner" "$challenger_planner_agent"
+  challenge_set_varied_model "$arm_key" "$challenger_planner" "$planner_agent"
 
   BRANCH_BY_ISSUE["$arm_key"]="$arm_branch"
   SLUG_BY_ISSUE["$arm_key"]="$arm_slug"
@@ -5937,19 +5929,17 @@ _plan_packet_needs_user() {
 #     (prepare_task_inputs_gate), never on the monitor hot path; planning
 #     holds at `running` meanwhile. A packet the controller regenerated after
 #     the planner wrote plan.md re-plans (HOK-3099) instead of being offered.
-#   * Failure is bounded (expansion-recovery-job bucket) and surfaced as a
-#     needs-user `inputs_preparation_failed` hook — never as awaiting_user.
+#   * Failure is bounded (expansion-recovery-job bucket) and escalated
+#     through escalate_operator_attention (HOK-3505) — never as awaiting_user.
 #
 # HOK-3099's handoff guard (enforce_plan_packet_binding) stays armed: a packet
 # that changes after the request still voids the approval and re-plans.
 
-# Evidence of a surfaced preparation failure (detail + next action).
-task_inputs_failure_marker() { printf '%s/.task-inputs-failure.json\n' "$1"; }
-
 # task_inputs_prepare <issue> <slug> <feature_dir>
 # Make the local packet + expansion handshake ready. Sets TASK_INPUTS_VIA
 # (existing | materialized | warn) on success and TASK_INPUTS_DETAIL on
-# failure. Returns 0 = ready, 4 = pending (tracked expansion in flight or
+# failure; TASK_INPUTS_EXHAUSTED=true when the failure is the spent
+# expansion-recovery budget (escalated by prepare_task_inputs_gate). Returns 0 = ready, 4 = pending (tracked expansion in flight or
 # backing off), 1 = failed (policy blocks, invalid route artifact, or the
 # bounded expansion budget is spent).
 task_inputs_prepare() {
@@ -5957,6 +5947,7 @@ task_inputs_prepare() {
   local reason policy rc=0
   TASK_INPUTS_VIA=""
   TASK_INPUTS_DETAIL=""
+  TASK_INPUTS_EXHAUSTED=false
 
   reason="$(mill_expansion_handshake_reason "$feature_dir")"
   if [[ "$reason" == "missing" ]] && task_inputs_materialize_detailed "$feature_dir"; then
@@ -6002,38 +5993,10 @@ task_inputs_prepare() {
       ;;
     *)
       TASK_INPUTS_DETAIL="${PREPARE_TASK_INPUTS_LAST_DETAIL:-expansion recovery failed}"
+      TASK_INPUTS_EXHAUSTED=true
       return 1
       ;;
   esac
-}
-
-# Surface a preparation failure once per distinct detail: needs-user attention
-# every pass, one warn line and one `inputs_preparation_failed` hook with the
-# operator's next action. Planning stays `running`: no approval is offered.
-task_inputs_surface_failure() {
-  local issue="$1" feature_dir="$2" win="$3" current_agent="${4:-}" detail="$5"
-  local marker next_action hook_protocol
-  marker="$(task_inputs_failure_marker "$feature_dir")"
-
-  set_window_attention_state "$win" "needs-user"
-  if [[ -f "$marker" ]] && [[ "$(jq -r '.detail // ""' "$marker" 2>/dev/null)" == "$detail" ]]; then
-    return 0
-  fi
-  next_action="Run: wavemill expand $issue (writes $feature_dir/task-packet.md); the plan is offered for approval once inputs are ready."
-  jq -cn --arg issue "$issue" --arg detail "$detail" --arg next "$next_action" \
-    '{issue: $issue, detail: $detail, nextAction: $next, at: (now | todateiso8601)}' \
-    | write_json_artifact "$marker" || true
-  log_warn "$issue → task-input preparation failed before plan approval: $detail"
-
-  hook_protocol="$LIB_DIR/../hooks/wavemill-hook-protocol.sh"
-  if [[ -f "$hook_protocol" ]]; then
-    # shellcheck disable=SC1090
-    source "$hook_protocol" || true
-    if declare -F wavemill_hook_write >/dev/null 2>&1; then
-      WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$issue" \
-        wavemill_hook_write "blocked" "inputs_preparation_failed" "$detail" "${current_agent:-unknown}" "$next_action" "monitor" || true
-    fi
-  fi
 }
 
 # Take back an approval-ready (or approved) planning stage whose inputs are
@@ -6077,11 +6040,15 @@ ensure_task_inputs_ready() {
       log "debug" "  $issue: [task-inputs] preparation pending, holding the approval request"
       set_window_attention_state "$win" "clear"
     else
-      task_inputs_surface_failure "$issue" "$feature_dir" "$win" "$current_agent" "$detail"
+      # Budget exhaustion is escalated by prepare_task_inputs_gate and the
+      # attention projection owns the window (HOK-3505). Any other failure
+      # (invalid route artifact, policy=block) has no escalation basis and
+      # needs the operator now.
+      [[ "${TASK_INPUTS_EXHAUSTED:-false}" == "true" ]] || set_window_attention_state "$win" "needs-user"
+      log_warn "$issue → task-input preparation failed before plan approval: $detail"
     fi
     return 1
   fi
-  rm -f "$(task_inputs_failure_marker "$feature_dir")" 2>/dev/null || true
 
   declare -F plan_packet_record_binding >/dev/null 2>&1 || return 0
   recorded="$(plan_packet_recorded_packet_hash "$feature_dir")"
@@ -8446,7 +8413,7 @@ stage_failure_owned_by_bucket() {
 # The default retry for a failed stage (HOK-3176). Anything the failure policy
 # does not allowlist as terminal — including an unrecognised failure — is
 # relaunched under the stage-failure-<stage> bounded-retry bucket, keyed on
-# (worktree head, merge-base) per HOK-3103:
+# stage input per HOK-3491 (review/Ready retain head + merge-base):
 #   attempts 1..N-1  retry after exponential backoff;
 #   attempt N        one fresh relaunch: the failed run's envelope/handoff are
 #                    archived so the new run is classified on its own evidence;
@@ -8493,7 +8460,7 @@ archive_review_scope_baseline() {
 _dispatch_failed_stage_recovery() {
   local issue="$1" feature_dir="$2" stage="$3" win="$4" action="${6:-retry-stage}"
   local bucket="stage-failure-$stage" decision failure_class failure_kind detail next_action
-  local head base limit disposition attempts retry_phase fresh="" artifact
+  local head base retry_identity retry_key limit disposition attempts retry_phase fresh="" artifact
 
   case "$stage" in
     planning) retry_phase="routing" ;;
@@ -8524,10 +8491,12 @@ _dispatch_failed_stage_recovery() {
   next_action="$(jq -r '.nextAction' <<<"$decision")"
 
   head="$(phase_launch_head "$feature_dir")"
-  base="$(phase_launch_base "$feature_dir")"
+  retry_identity="$(stage_failure_retry_key "$issue" "$feature_dir" "$stage")"
+  retry_key="$(jq -r .head <<<"$retry_identity")"
+  base="$(jq -r .base <<<"$retry_identity")"
   limit="${WAVEMILL_STAGE_FAILURE_MAX_ATTEMPTS:-3}"
   [[ "$limit" =~ ^[0-9]+$ ]] || limit=3
-  attempts="$(bounded_retry_increment "$feature_dir" "$bucket" "$head" "$base")"
+  attempts="$(bounded_retry_increment "$feature_dir" "$bucket" "$retry_key" "$base")"
   if (( attempts >= limit )); then
     fresh=" (fresh relaunch)"
     for artifact in ".${stage}-failure-envelope.json" ".coding-failure-handoff.json" ".${stage}-failure-decision.json"; do
@@ -8627,7 +8596,8 @@ _dispatch_failed_stage_recovery() {
 _monitor_claim_failed_stage_action() {
   local issue="$1" feature_dir="$2" stage="$3" context="${4:-}"
   [[ -n "$context" ]] || context='{}'
-  local decision_json head base retry_verdict run_id evidence_id snapshot_file result original_result failure_class contract_available="null"
+  local decision_json head base retry_identity retry_key retry_verdict run_id evidence_id snapshot_file result original_result failure_class execution_contract="null"
+  local disposition="null"
   local limit="${WAVEMILL_STAGE_FAILURE_MAX_ATTEMPTS:-3}"
   [[ "$limit" =~ ^[0-9]+$ ]] || limit=3
 
@@ -8636,30 +8606,44 @@ _monitor_claim_failed_stage_action() {
   failure_class="$(jq -r '.class // "retryable"' <<<"$decision_json" 2>/dev/null || echo retryable)"
   head="$(phase_launch_head "$feature_dir")"
   base="$(phase_launch_base "$feature_dir")"
-  retry_verdict="$(bounded_retry_gate "$feature_dir" "stage-failure-$stage" "$head" "$limit" "" "" "$base")"
+  retry_identity="$(stage_failure_retry_key "$issue" "$feature_dir" "$stage")"
+  retry_key="$(jq -r .head <<<"$retry_identity")"
+  local retry_base
+  retry_base="$(jq -r .base <<<"$retry_identity")"
+  retry_verdict="$(bounded_retry_gate "$feature_dir" "stage-failure-$stage" "$retry_key" "$limit" "" "" "$retry_base")"
   run_id="${recovery_control_run_id:-$(task_run_id "$issue" 2>/dev/null || true)}"
   evidence_id="$(jq -r '.fingerprint // empty' <<<"$decision_json" 2>/dev/null || true)"
   [[ -n "$evidence_id" ]] || evidence_id="${stage}:${head:-unknown}:${run_id:-legacy}"
 
-  if [[ "$stage" == "coding" ]]; then
-    if jq -e '.ok == true' <<<"$(recovery_contract_json "$issue" "$feature_dir" coding)" >/dev/null 2>&1; then
-      contract_available=true
-    else
-      contract_available=false
-    fi
+  if [[ "$(jq -r '.launchRecovery // false' <<<"$context")" == true ]]; then
+    # The operator may repair the route while this supervised job is queued.
+    execution_contract="$(recovery_contract_json "$issue" "$feature_dir" "$stage")"
+  elif jq -e 'has("executionContract")' <<<"$context" >/dev/null; then
+    execution_contract="$(jq -c '.executionContract' <<<"$context")"
+  elif [[ "$stage" == "coding" ]]; then
+    execution_contract="$(recovery_contract_json "$issue" "$feature_dir" coding)"
   fi
 
+  if [[ "$(jq -r '.launchRecovery // false' <<<"$context")" == true ]]; then
+    disposition="$(stage_agent_disposition "$issue" "$feature_dir" "$(dirname "$(dirname "$feature_dir")")" "$head" "$stage")"
+  fi
   original_result="$(read_stage_result "$feature_dir" "$stage" 2>/dev/null || true)"
   [[ -n "$original_result" ]] || original_result=null
   evidence_id+=":$head:$base:$(jq -r '.startedAt // ""' <<<"$original_result"):$(jq -r '.finishedAt // ""' <<<"$original_result"):$(jq -c '{baseDrift:(.baseDrift // false),source:(.source // "ci"),siblingGreen:(.siblingGreen // false),baseUpdateOutcome}' <<<"$context")"
+  # A repaired route is new evidence even when the failed result/head is
+  # unchanged. Otherwise an applied refusal claim can suppress its recovery.
+  evidence_id+=":$execution_contract"
+  # An explicit operator release also starts a new assessment, even if the
+  # route remains refused. Its reconciled attention must be publishable again.
+  evidence_id+=":operator:$(operator_event_seq "$feature_dir" 2>/dev/null || printf '0')"
   snapshot_file="$(mktemp "${TMPDIR:-/tmp}/wavemill-recovery.XXXXXX")" || return 1
   jq -cn --arg issue "$issue" --arg stage "$stage" --arg runId "$run_id" \
     --arg evidenceId "$evidence_id" --arg retry "$retry_verdict" --argjson failure "$decision_json" \
-    --argjson contractAvailable "$contract_available" --argjson context "$context" \
+    --argjson executionContract "$execution_contract" --argjson disposition "$disposition" --argjson context "$context" \
     --argjson originalResult "$original_result" '
       {issue:$issue, stage:$stage, evidence:{stageResult:$originalResult},
        attempt:{currentRunId:(if $runId == "" then null else $runId end), controlRunId:(if $runId == "" then null else $runId end)},
-       disposition:null, stageResult:{kind:"failed"}, contractAvailable:$contractAvailable,
+       disposition:$disposition, stageResult:{kind:"failed"}, executionContract:$executionContract,
        outstandingEffect:null, wait:null, baseDrift:($context.baseDrift // false), failure:{decision:$failure,retry:$retry,source:($context.source // "ci")}}' >"$snapshot_file" || {
       rm -f "$snapshot_file"; return 1;
     }
@@ -8667,7 +8651,7 @@ _monitor_claim_failed_stage_action() {
     --state-dir "$feature_dir" --state-file "$STATE_FILE" --owner-pid "${recovery_owner_pid:-$$}" --evidence-id "$evidence_id" --snapshot "$snapshot_file" 2>/dev/null)"
   rm -f "$snapshot_file"
   [[ -n "$result" ]] && jq -e . >/dev/null 2>&1 <<<"$result" || return 1
-  jq --argjson failure "$decision_json" '. + {failure:$failure}' <<<"$result"
+  jq --argjson failure "$decision_json" '. + {failure:(.decision.failure // $failure)}' <<<"$result"
 }
 
 # HOK-3277: the one failed-stage recovery decision+claim+dispatch for an agent
@@ -8934,6 +8918,28 @@ check_stage_aborted() {
   return 1
 }
 
+# One input identity for stage-failure admission AND accounting (HOK-3491).
+# Planning/coding produce HEAD; their own commits cannot buy more retries.
+# Reuse the recorded launch contract and run identity, never mint another field.
+# A legacy row without either holds one stable unknown-input allowance; it must
+# not fall back to its changing output. The non-SHA prefix also prevents an
+# exhausted companion from expiring against the worktree's unrelated HEAD.
+# Review/Ready keep separate head/base arguments so bounded-retry preserves its
+# existing "missing git information never resets" behavior.
+stage_failure_retry_key() {
+  local issue="$1" feature_dir="$2" stage="$3" key
+  case "$stage" in
+    planning|coding)
+      key="$(jq -r --arg issue "$issue" '
+        .tasks[$issue] | "input:\(.runId // "legacy"):\(.lifecycle.launchContract.baseSha // "unknown")"
+      ' "$STATE_FILE" 2>/dev/null || true)"
+      jq -cn --arg key "$key" '{head:$key,base:""}'
+      ;;
+    *) jq -cn --arg head "$(phase_launch_head "$feature_dir")" \
+         --arg base "$(phase_launch_base "$feature_dir")" '{head:$head,base:$base}' ;;
+  esac
+}
+
 # Resolve the worktree HEAD for a feature dir (…/<wt>/features/<slug>).
 # Empty output means git failed; bounded-retry helpers treat that as
 # "no new information" and never reset on it.
@@ -9103,7 +9109,7 @@ coding_launch_refusal_limit() {
 coding_launch_refusal_is_transient() {
   local reason="${1:-}" certification="${2:-}"
   local transient_certifications=" missing-tsx missing-jq mktemp-failed resolver-failed malformed-json "
-  local deterministic_reasons=" uncertified no-native-capability native-unsupported lifecycle-blocked role-ineligible tool-support-insufficient context-window-insufficient codex-chatgpt-ineligible unknown-model "
+  local deterministic_reasons=" uncertified no-native-capability native-unsupported lifecycle-blocked role-ineligible tool-support-insufficient context-window-insufficient codex-chatgpt-ineligible unknown-model provider-disabled native-disabled "
   [[ -n "$certification" && "$transient_certifications" == *" $certification "* ]] && return 0
   [[ -n "$reason" && "$deterministic_reasons" == *" $reason "* ]] && return 1
   return 0
@@ -9503,7 +9509,9 @@ _persist_phase() {
   mv "$tmp" "$feature_dir/.resolved-phase"
 }
 
-# Write .phase-config.json with resolved per-stage configuration.
+# Write .phase-config.json with resolved per-stage configuration. HOK-3511:
+# one contract-writer call derives every stage's agent and provider from its
+# model; this function carries models only.
 # Usage: write_phase_config <feature_dir> <planner_model> <coder_model> <reviewer_model> \
 #                           <plan_depth> <code_depth> <review_mode> [force_model]
 write_phase_config() {
@@ -9511,78 +9519,17 @@ write_phase_config() {
   local planner_model="$2" coder_model="$3" reviewer_model="$4"
   local plan_depth="$5" code_depth="$6" review_mode="$7"
   local force_model="${8:-}"
-  local now
-  now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
   mkdir -p "$feature_dir"
-  local tmp
-  tmp=$(mktemp) || { log_warn "write_phase_config: mktemp failed"; return 0; }
-
-  local force_model_json="null"
-  [[ -n "$force_model" ]] && force_model_json="\"$force_model\""
-
-  local planner_agent coder_agent reviewer_agent
-  if declare -F agent_resolve_models_for_roles >/dev/null 2>&1; then
-    if agent_resolve_models_for_roles "$planner_model" "$coder_model" "$reviewer_model"; then
-      :
-    fi
-    planner_agent="$(agent_resolve_batch_agent_for_role "planner")"
-    coder_agent="$(agent_resolve_batch_agent_for_role "coder")"
-    reviewer_agent="$(agent_resolve_batch_agent_for_role "reviewer")"
-  else
-    planner_agent="$(agent_resolve_from_model "$planner_model" "planning" || true)"
-    coder_agent="$(agent_resolve_from_model "$coder_model" "coding" || true)"
-    reviewer_agent="$(agent_resolve_from_model "$reviewer_model" "review" || true)"
-  fi
-
-  local planner_provider coder_provider reviewer_provider
-  planner_provider="$(_provider_for_model "$planner_model")"
-  coder_provider="$(_provider_for_model "$coder_model")"
-  reviewer_provider="$(_provider_for_model "$reviewer_model")"
-
-  jq -n \
-    --arg plannerModel "$planner_model" \
-    --arg plannerAgent "$planner_agent" \
-    --arg plannerProvider "$planner_provider" \
-    --arg planDepth "$plan_depth" \
-    --arg coderModel "$coder_model" \
-    --arg coderAgent "$coder_agent" \
-    --arg coderProvider "$coder_provider" \
-    --arg codeDepth "$code_depth" \
-    --arg reviewerModel "$reviewer_model" \
-    --arg reviewerAgent "$reviewer_agent" \
-    --arg reviewerProvider "$reviewer_provider" \
-    --arg reviewMode "$review_mode" \
-    --arg selectedAt "$now" \
-    --argjson forceModel "$force_model_json" \
-    '{
-      planning: {model:$plannerModel, provider:$plannerProvider, agent:$plannerAgent, stageRole:"planning", challengeSide:null, selectedAt:$selectedAt, depth:$planDepth},
-      coding: {model:$coderModel, provider:$coderProvider, agent:$coderAgent, stageRole:"coding", challengeSide:null, selectedAt:$selectedAt, depth:$codeDepth},
-      review: {model:$reviewerModel, provider:$reviewerProvider, agent:$reviewerAgent, stageRole:"review", challengeSide:null, selectedAt:$selectedAt, mode:$reviewMode},
-      resolvedAt: $selectedAt,
-      forceModel: $forceModel
-    }' > "$tmp" 2>/dev/null || {
-      rm -f "$tmp"
-      log_warn "write_phase_config: jq failed"
-      return 0
-    }
-  mv "$tmp" "$feature_dir/.phase-config.json"
-}
-
-_provider_for_model() {
-  local model="$1" provider_json provider
-  if [[ -n "${TOOLS_DIR:-}" && -n "$model" ]]; then
-    provider_json="$(wavemill_run_tool "recovery-contract.ts" provider --model "$model" --json 2>/dev/null || true)"
-    provider="$(printf '%s' "$provider_json" | jq -r '.provider // empty' 2>/dev/null || true)"
-    [[ -n "$provider" ]] && printf '%s\n' "$provider" && return 0
-  fi
-  case "$(agent_resolve_from_model "$model" "coding" 2>/dev/null || true)" in
-    native-openrouter) printf '%s\n' 'native-openrouter' ;;
-    native-openai) printf '%s\n' 'native-openai' ;;
-    claude) printf '%s\n' 'anthropic' ;;
-    codex) printf '%s\n' 'openai' ;;
-    *) printf '%s\n' '' ;;
-  esac
+  local -a write_args=(--replace)
+  [[ -n "$planner_model" ]] && write_args+=(--planner "$planner_model" --plan-depth "$plan_depth")
+  [[ -n "$coder_model" ]] && write_args+=(--coder "$coder_model" --code-depth "$code_depth")
+  [[ -n "$reviewer_model" ]] && write_args+=(--reviewer "$reviewer_model" --review-mode "$review_mode")
+  [[ -n "$force_model" ]] && write_args+=(--force-model "$force_model")
+  phase_config_write_stages "$feature_dir" "${write_args[@]}" >/dev/null || {
+    log_warn "write_phase_config: contract writer failed"
+    return 0
+  }
 }
 
 # Read a field from .phase-config.json for a given stage.
@@ -10054,23 +10001,19 @@ _append_recovery_contract_trace() {
   printf '%s\n' "$line" >> "$feature_dir/trace.jsonl"
 }
 
-_stop_task_recovery_contract_unavailable() {
-  local issue="$1" phase="$2" feature_dir="$3" sub_reason="$4" detail="$5"
-  if [[ -f "${STATE_FILE:-}" ]] && jq -e --arg issue "$issue" '.tasks[$issue]? // empty' "$STATE_FILE" >/dev/null 2>&1; then
-    state_mutate "$STATE_FILE" \
-      '.tasks[$issue].status = "stopped"
-       | .tasks[$issue].stopReason = "recovery_contract_unavailable"
-       | .tasks[$issue].stopSubReason = $subReason
-       | .tasks[$issue].stopDetail = $detail
-       | .tasks[$issue].updated = (now | todate)' \
-      --arg issue "$issue" \
-      --arg subReason "$sub_reason" \
-      --arg detail "$detail" >/dev/null 2>&1 || true
-  fi
-  write_stage_result "$feature_dir" "$phase" "failed" "" "" "recovery_contract_unavailable: $sub_reason - $detail"
-  if declare -F wavemill_hook_write >/dev/null 2>&1; then
-    wavemill_hook_write "blocked" "recovery_contract_unavailable" "$detail" "" "$sub_reason" "monitor" || true
-  fi
+# A missing launch surface enters the same controller/claim/escalation chain
+# as a failed stage. Preserve positive validator evidence; write/launch failures
+# are ordinary bounded retries, not proof that the saved route is invalid.
+_request_launch_recovery() {
+  local issue="$1" phase="$2" feature_dir="$3" reason="$4" detail="$5" contract="${6:-null}"
+  local failure="${7:-}" context
+  [[ -n "$failure" ]] || failure="$(failure_policy_decide "$phase" native-unclassified "$reason: $detail")"
+  context="$(jq -cn --argjson failure "$failure" --arg detail "$reason: $detail" --argjson contract "$contract" \
+    '{failure:($failure + {detail:$detail}),executionContract:$contract,launchRecovery:true}')"
+  maybe_retry_failed_stage "$issue" "$feature_dir" "$phase" "${WIN:-}" "$context" || true
+  # Pending is only the return value of this adapter; persisted task state and
+  # operator attention remain owned by the asynchronous recovery controller.
+  _RESTORE_STATE="pending"
 }
 
 # Prepare observable runtime surfaces before launching recovered work.
@@ -10149,6 +10092,7 @@ _prepare_recovery_phase_launch() {
 # `_RESTORE_STATE`:
 #   none       — window already existed, caller should continue normal processing
 #   restored   — agent was relaunched, caller should mark task active and return
+#   pending    — the supervised recovery controller owns the next action
 #   failed     — restoration failed, caller should flag needs-user and return
 _RESTORE_STATE=""
 _restore_inflight_task_window_if_missing() {
@@ -10192,20 +10136,6 @@ _restore_inflight_task_window_if_missing() {
     set_task_task_owned "$issue" "active" || true
   fi
 
-  # A prior resume may already have determined that this task has no valid
-  # recovery contract.  Its phase remains persisted for diagnosis, but it is
-  # terminal from the resume controller's perspective; retrying it every poll
-  # only produces a missing-window log storm.
-  if [[ -f "${STATE_FILE:-}" ]] \
-    && jq -e --arg issue "$issue" '
-      .tasks[$issue]
-      | select(.status == "stopped")
-      | select(.stopReason == "recovery_contract_unavailable")
-    ' "$STATE_FILE" >/dev/null 2>&1; then
-    _RESTORE_STATE="failed"
-    return 0
-  fi
-
   if _tmux_task_window_target "$SESSION" "$issue" "$slug" "${STATE_FILE:-}" "$wt_dir" >/dev/null 2>&1; then
     return 0
   fi
@@ -10226,6 +10156,21 @@ _restore_inflight_task_window_if_missing() {
     return 0
   fi
 
+  # Coding replay has one owner even while its old pane is absent. A direct
+  # restore can race the supervised retry between its running-result write
+  # and window creation, launching a second agent (HOK-3512).
+  if [[ "$phase" == coding ]]; then
+    local coding_contract prior_failure=""
+    coding_contract="$(recovery_contract_json "$issue" "$feature_dir" coding)"
+    if [[ "$(read_stage_status "$feature_dir" coding 2>/dev/null || true)" == failed ]]; then
+      prior_failure="$(stage_failure_decision "$issue" "$feature_dir" coding)"
+    fi
+    log "status" "⚡ $issue → tmux window missing after resume, requesting coding recovery"
+    _request_launch_recovery "$issue" coding "$feature_dir" window_missing \
+      "coding window absent, reassess through the shared recovery controller" "$coding_contract" "$prior_failure"
+    return 0
+  fi
+
   log "status" "⚡ $issue → tmux window missing after resume, relaunching $phase phase"
 
   local title issue_json
@@ -10241,8 +10186,17 @@ _restore_inflight_task_window_if_missing() {
   if [[ "$contract_ok" != "true" ]]; then
     reason="$(printf '%s' "$contract_json" | jq -r '.reason // "contract_malformed"' 2>/dev/null || echo "contract_malformed")"
     detail="$(printf '%s' "$contract_json" | jq -r '.detail // "Persisted recovery contract is unavailable."' 2>/dev/null || echo "Persisted recovery contract is unavailable.")"
-    _stop_task_recovery_contract_unavailable "$issue" "$phase" "$feature_dir" "$reason" "$detail"
-    _RESTORE_STATE="failed"
+    _request_launch_recovery "$issue" "$phase" "$feature_dir" "$reason" "$detail" "$contract_json"
+    return 0
+  fi
+
+  # A failed stage remains a failed-stage obligation even after its saved route
+  # is repaired. Do not bypass its controller claim and bounded allowance just
+  # because the old window is also missing (HOK-3512).
+  if [[ "$(read_stage_status "$feature_dir" "$phase" 2>/dev/null || true)" == failed ]]; then
+    _request_launch_recovery "$issue" "$phase" "$feature_dir" stage_failed \
+      "missing window after a failed stage, replay the saved route under its allowance" "$contract_json" \
+      "$(stage_failure_decision "$issue" "$feature_dir" "$phase")"
     return 0
   fi
 
@@ -10253,8 +10207,7 @@ _restore_inflight_task_window_if_missing() {
   provider="$(printf '%s' "$contract_payload" | jq -r '.provider // empty')"
 
   if ! _append_recovery_contract_trace "$feature_dir" "$issue" "$slug" "$phase" "$model" "$agent_cmd" "$contract_payload"; then
-    _stop_task_recovery_contract_unavailable "$issue" "$phase" "$feature_dir" "state_transition_failed" "failed to write recovery contract trace event"
-    _RESTORE_STATE="failed"
+    _request_launch_recovery "$issue" "$phase" "$feature_dir" "state_transition_failed" "failed to write recovery contract trace event"
     return 0
   fi
 
@@ -10270,8 +10223,7 @@ _restore_inflight_task_window_if_missing() {
       --arg agent "$agent_cmd" \
       --arg provider "$provider" \
       --arg stageRole "$phase" >/dev/null 2>&1; then
-      _stop_task_recovery_contract_unavailable "$issue" "$phase" "$feature_dir" "state_transition_failed" "failed to update workflow task state"
-      _RESTORE_STATE="failed"
+      _request_launch_recovery "$issue" "$phase" "$feature_dir" "state_transition_failed" "failed to update workflow task state"
       return 0
     fi
   fi
@@ -10282,23 +10234,10 @@ _restore_inflight_task_window_if_missing() {
       [[ -z "$depth" ]] && depth=$(get_task_meta "$issue" "planDepth")
       [[ -z "$depth" ]] && depth="light"
       if ! _prepare_recovery_phase_launch "$issue" "$slug" "planning" "$feature_dir" "$wt_dir" "$agent_cmd" "$model" "$contract_payload"; then
-        _stop_task_recovery_contract_unavailable "$issue" "$phase" "$feature_dir" "state_transition_failed" "failed to prepare recovery launch surfaces"
-        _RESTORE_STATE="failed"
+        _request_launch_recovery "$issue" "$phase" "$feature_dir" "state_transition_failed" "failed to prepare recovery launch surfaces"
         return 0
       fi
       launch_planning_phase "$issue" "$slug" "$title" "$wt_dir" "$branch" "$BASE_BRANCH" \
-        "$model" "$agent_cmd" "$depth" || rc=$?
-      ;;
-    coding)
-      depth=$(read_phase_config "$feature_dir" "coding" "depth")
-      [[ -z "$depth" ]] && depth=$(get_task_meta "$issue" "codeDepth")
-      [[ -z "$depth" ]] && depth="medium"
-      if ! _prepare_recovery_phase_launch "$issue" "$slug" "coding" "$feature_dir" "$wt_dir" "$agent_cmd" "$model" "$contract_payload"; then
-        _stop_task_recovery_contract_unavailable "$issue" "$phase" "$feature_dir" "state_transition_failed" "failed to prepare recovery launch surfaces"
-        _RESTORE_STATE="failed"
-        return 0
-      fi
-      launch_coding_phase "$issue" "$slug" "$title" "$wt_dir" "$branch" "$BASE_BRANCH" \
         "$model" "$agent_cmd" "$depth" || rc=$?
       ;;
     review)
@@ -10307,8 +10246,7 @@ _restore_inflight_task_window_if_missing() {
       [[ -z "$review_mode" ]] && review_mode=$(get_task_meta "$issue" "reviewMode")
       [[ -z "$review_mode" ]] && review_mode="static"
       if ! _prepare_recovery_phase_launch "$issue" "$slug" "review" "$feature_dir" "$wt_dir" "$agent_cmd" "$model" "$contract_payload" "review"; then
-        _stop_task_recovery_contract_unavailable "$issue" "$phase" "$feature_dir" "state_transition_failed" "failed to prepare recovery launch surfaces"
-        _RESTORE_STATE="failed"
+        _request_launch_recovery "$issue" "$phase" "$feature_dir" "state_transition_failed" "failed to prepare recovery launch surfaces"
         return 0
       fi
       launch_review_phase "$issue" "$slug" "$title" "$wt_dir" "$branch" "$BASE_BRANCH" \
@@ -10323,8 +10261,7 @@ _restore_inflight_task_window_if_missing() {
 
   if [[ "$rc" -ne 0 ]]; then
     log_warn "$issue → Failed to relaunch $phase phase after resume (rc=$rc)"
-    _stop_task_recovery_contract_unavailable "$issue" "$phase" "$feature_dir" "launch_failed" "recovery launch command exited with status $rc"
-    _RESTORE_STATE="failed"
+    _request_launch_recovery "$issue" "$phase" "$feature_dir" "launch_failed" "recovery launch command exited with status $rc"
     return 0
   fi
 
@@ -21373,6 +21310,9 @@ monitor_issue_state() {
             set_window_attention_state "$WIN" "clear"
             active_count=$((active_count + 1))
             return 0
+          elif [[ "$_RESTORE_STATE" == "pending" ]]; then
+            active_count=$((active_count + 1))
+            return 0
           elif [[ "$_RESTORE_STATE" == "failed" ]]; then
             set_window_attention_state "$WIN" "needs-user"
             active_count=$((active_count + 1))
@@ -21801,6 +21741,9 @@ monitor_issue_state() {
             set_window_attention_state "$WIN" "clear"
             active_count=$((active_count + 1))
             return 0
+          elif [[ "$_RESTORE_STATE" == "pending" ]]; then
+            active_count=$((active_count + 1))
+            return 0
           elif [[ "$_RESTORE_STATE" == "failed" ]]; then
             set_window_attention_state "$WIN" "needs-user"
             active_count=$((active_count + 1))
@@ -22095,6 +22038,9 @@ monitor_issue_state() {
             _restore_inflight_task_window_if_missing "$ISSUE" "$SLUG" "$BRANCH" "review"
             if [[ "$_RESTORE_STATE" == "restored" ]]; then
               set_window_attention_state "$WIN" "clear"
+              active_count=$((active_count + 1))
+              return 0
+            elif [[ "$_RESTORE_STATE" == "pending" ]]; then
               active_count=$((active_count + 1))
               return 0
             elif [[ "$_RESTORE_STATE" == "failed" ]]; then
@@ -22481,6 +22427,10 @@ monitor_issue_state() {
           if [[ "$_RESTORE_STATE" == "restored" ]]; then
             log "status" "⚡ $ISSUE → review window missing, relaunching review phase"
             set_window_attention_state "$WIN" "clear"
+            active_count=$((active_count + 1))
+            return 0
+          fi
+          if [[ "$_RESTORE_STATE" == "pending" ]]; then
             active_count=$((active_count + 1))
             return 0
           fi
