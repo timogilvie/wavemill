@@ -48,6 +48,24 @@ export const RETRY_SENTINEL_GUARD: GuardSpec = {
       re: /['"`/]\.[a-z0-9][a-z0-9_-]*-(?:attempts|retries|retry-count|attempt-count)(?:\.json)?\b/,
     },
   ],
+  structuralChecks: [{
+    name: 'stage-retry-input',
+    description: 'stage-failure admission and accounting must use stage_failure_retry_key, never the stage output',
+    paths: ['shared/lib/wavemill-monitor.sh'],
+    find(source) {
+      const findings: {line: number; detail: string}[] = [];
+      const functions = /^(_monitor_claim_failed_stage_action|_dispatch_failed_stage_recovery)\(\) \{[\s\S]*?^\}/gm;
+      for (const match of source.matchAll(functions)) {
+        const body = match[0];
+        const hasInputKey = /retry_identity="\$\(stage_failure_retry_key "\$issue" "\$feature_dir" "\$stage"\)"/.test(body);
+        const calls = body.split('\n').filter(line => /bounded_retry_(gate|increment)\s/.test(line));
+        if (!hasInputKey || calls.length !== 1 || calls.some(line => !line.includes('"$retry_key"'))) {
+          findings.push({line: source.slice(0, match.index).split('\n').length, detail: match[1]});
+        }
+      }
+      return findings;
+    },
+  }],
   remediation: [
     'Every path that relaunches work after a failure must count attempts through',
     'shared/lib/bounded-retry.{sh,ts} (HOK-2924): a (state_dir, bucket, head SHA) key,',

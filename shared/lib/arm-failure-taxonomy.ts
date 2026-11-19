@@ -17,6 +17,7 @@ export type ArmFailureKind =
   | 'provider-transient-error'
   | 'provider-credit-exhausted'
   | 'provider-config-error'
+  | 'recovery_contract_unavailable'
   | 'tool-use-unsupported'
   | 'empty-model-turn'
   | 'native-provider-error'

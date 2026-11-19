@@ -1,0 +1,18 @@
+{
+  "issue": "HOK-3512",
+  "source": "https://linear.app/hokusai/issue/HOK-3512",
+  "occurredOn": "2026-11-17",
+  "affectedTask": "HOK-3500",
+  "evidenceKind": "sanitized facts transcribed from owning issue, not a raw transcript",
+  "stage": "coding",
+  "originalFailure": "native-stage-timeout",
+  "validator": {
+    "ok": false,
+    "reason": "agent_unsupported_for_model",
+    "detail": "Persisted coding route refused: agent_unsupported_for_model"
+  },
+  "observed": "recovery job returned success each pass without launch, budget consumption or an attention item",
+  "reportedSilentHours": 2.5,
+  "unknowns": ["incident-time harness manifest", "provider-confirmed executed model", "exact metered cost"],
+  "events": ["poll", "poll", "poll", "repair-route", "poll"]
+}

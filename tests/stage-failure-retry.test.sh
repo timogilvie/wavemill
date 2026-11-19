@@ -3,11 +3,11 @@
 #
 # _maybe_retry_failed_stage_now owns the default path for a failed planning /
 # coding / review stage: bounded retry with backoff through bounded-retry.sh
-# (bucket stage-failure-<stage>, keyed on (head, merge-base) per HOK-3103),
+# (bucket stage-failure-<stage>, keyed on stage input per HOK-3491),
 # then one fresh relaunch, then escalation to needs-user — never a terminal
 # park. Only an allowlisted cause (failure-policy.ts TERMINAL_ALLOWLIST) skips
-# the retry. The escalation does not latch: a new head refills the budget and
-# the HOK-3172 reconciler expires the exhausted sentinel.
+# the retry. Planning/coding output cannot refill the budget. A new input/run resets it;
+# review/Ready retain the head + merge-base reset.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,6 +52,7 @@ for fn in \
   read_stage_result \
   phase_launch_head \
   phase_launch_base \
+  stage_failure_retry_key \
   native_hook_terminal_failure_detail \
   native_coding_failure_handoff_reason \
   native_stage_failure_envelope_json \
@@ -216,8 +217,8 @@ if [[ "$rc" -eq 1 ]] \
   && [[ "$reason" == *"$unknown_detail"* ]] \
   && grep -q 'escalating to needs-user' "$STATUS_LOG" \
   && [[ -f "$companion" ]] \
-  && [[ "$(jq -r '.condition.expiresOn | join(",")' "$companion" 2>/dev/null)" == *head* ]]; then
-  pass "exhausted budget escalates with the evidence and a head-expiring condition companion"
+  && [[ "$(jq -r '.condition.expiresOn | join(",")' "$companion" 2>/dev/null)" == "operator-event" ]]; then
+  pass "exhausted budget escalates with evidence and an input-safe condition companion"
 else
   fail "escalation incomplete (rc=$rc reason=$reason)"
 fi
@@ -225,36 +226,40 @@ fi
 rc=0; _maybe_retry_failed_stage_now T-1 "$fd" coding win-1 || rc=$?
 [[ "$rc" -eq 1 ]] && pass "already-escalated stage holds quietly (exhausted-quiet)" || fail "exhausted-quiet rc=$rc"
 
-# ── Escalation never latches ──────────────────────────────────────────
+# ── Coding output cannot undo exhaustion; a replacement run is new input ──
 wt="${fd%/features/*}"
-git -C "$wt" commit -q --allow-empty -m "operator fix"
+git -C "$wt" commit -q --allow-empty -m "partial coding output"
 condition_reconcile_task T-1 "$wt" "$fd" >/dev/null 2>&1 || true
-if ! bounded_retry_is_exhausted "$fd" "$bucket" && [[ ! -f "$companion" ]]; then
-  pass "HOK-3172 reconciler expires the escalation on a new head"
+if bounded_retry_is_exhausted "$fd" "$bucket" && [[ -f "$companion" ]]; then
+  pass "reconciliation preserves coding exhaustion across output commits"
 else
-  fail "escalation latched across a new head"
+  fail "output commit expired coding exhaustion"
 fi
+fixture_workflow_state "$STATE_FILE" T-1 phase=coding runId=replacement-input
 rc=0; _maybe_retry_failed_stage_now T-1 "$fd" coding win-1 || rc=$?
 [[ "$rc" -eq 0 && "$(bounded_retry_count "$fd" "$bucket")" == "1" ]] \
-  && pass "a later failure at the new head gets a fresh budget" || fail "budget did not refill (rc=$rc)"
+  && pass "a replacement input/run receives a fresh allowance" || fail "new input did not refill (rc=$rc)"
 
-# ── HOK-3103: a new merge-base refills the budget at the same head ────
+# ── HOK-3103 remains valid for review: a new merge-base is new input ──
+export WAVEMILL_RETRY_BACKOFF_STAGE_FAILURE_REVIEW_BASE_SECONDS=0
 seed false
+fixture_workflow_state "$STATE_FILE" T-1 phase=review
 fd="$(new_worktree wt-base)"
 wt="${fd%/features/*}"
-write_stage_result "$fd" coding failed native kimi-k2 "$unknown_detail"
-_maybe_retry_failed_stage_now T-1 "$fd" coding win-b >/dev/null || true
-write_stage_result "$fd" coding failed native kimi-k2 "$unknown_detail"
-_maybe_retry_failed_stage_now T-1 "$fd" coding win-b >/dev/null || true
-before="$(bounded_retry_count "$fd" "$bucket")"
+for n in 1 2; do
+  write_stage_result "$fd" review failed claude claude-opus-4-7 "$unknown_detail"
+  _maybe_retry_failed_stage_now T-1 "$fd" review win-b >/dev/null || true
+done
+before="$(bounded_retry_count "$fd" stage-failure-review)"
 git -C "$wt" update-ref "refs/remotes/origin/$BASE_BRANCH" HEAD~2
-write_stage_result "$fd" coding failed native kimi-k2 "$unknown_detail"
-_maybe_retry_failed_stage_now T-1 "$fd" coding win-b >/dev/null || true
-if [[ "$before" == "2" && "$(bounded_retry_count "$fd" "$bucket")" == "1" \
-  && "$(bounded_retry_base "$fd" "$bucket")" == "$(git -C "$wt" rev-parse HEAD~2)" ]]; then
-  pass "(head, base) key: a new merge-base resets the budget"
+write_stage_result "$fd" review failed claude claude-opus-4-7 "$unknown_detail"
+_maybe_retry_failed_stage_now T-1 "$fd" review win-b >/dev/null || true
+expected_base="$(git -C "$wt" rev-parse HEAD~2)"
+if [[ "$before" == "2" && "$(bounded_retry_count "$fd" stage-failure-review)" == "1" \
+  && "$(bounded_retry_base "$fd" stage-failure-review)" == "$expected_base" ]]; then
+  pass "review still resets its allowance on a changed merge-base"
 else
-  fail "base change did not reset the budget (before=$before after=$(bounded_retry_count "$fd" "$bucket"))"
+  fail "review base change did not reset its allowance (before=$before)"
 fi
 
 # ── Allowlisted terminal cause: no retry, no budget spent ─────────────

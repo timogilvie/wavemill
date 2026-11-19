@@ -225,7 +225,7 @@ async function main(): Promise<void> {
       const snapshot = {
         issue: 'HOK-3500_c', stage: 'coding' as const,
         attempt: { currentRunId: null, controlRunId: null }, disposition: null,
-        stageResult: { kind: 'failed' as const }, recoveryContract: refusal,
+        stageResult: { kind: 'failed' as const }, executionContract: refusal,
         outstandingEffect: null, wait: null,
         failure: { decision: classifyFailure({ stage: 'coding', failureKind: 'native-stage-timeout' }), retry: 'proceed' as const },
       };

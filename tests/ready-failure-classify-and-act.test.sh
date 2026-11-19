@@ -78,6 +78,7 @@ for fn in \
   read_stage_result \
   phase_launch_head \
   phase_launch_base \
+  stage_failure_retry_key \
   _recovery_continuation_current \
   _maybe_retry_failed_stage_now \
   _monitor_claim_failed_stage_action \

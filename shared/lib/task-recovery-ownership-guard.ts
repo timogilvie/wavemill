@@ -49,6 +49,14 @@ export const TASK_RECOVERY_OWNERSHIP_GUARD: GuardSpec = {
   ],
   patterns: [
     {
+      name: 'private-route-refusal',
+      description:
+        'saved-route refusal must retain validator evidence and enter the canonical controller, not a boolean gate or private stopped-state writer (HOK-3512)',
+      lang: 'sh',
+      re: /\b(?:_stop_task_recovery_contract_unavailable|contract_available|contractAvailable)\b/,
+      scopedPaths: ['shared/lib/wavemill-monitor.sh'], // install-paths: guard scope
+    },
+    {
       name: 'recovery-decider',
       description:
         'a recovery decider declared outside the controller — author task recovery decisions in task-recovery-controller.ts (decideTaskRecovery), not a parallel ranker',
@@ -97,6 +105,17 @@ export const TASK_RECOVERY_OWNERSHIP_GUARD: GuardSpec = {
       scopedPaths: ['tools/observer.ts'], // install-paths: allow guard scope, not an argv target
     },
   ],
+  structuralChecks: [{
+    name: 'competing-coding-restore',
+    description: 'missing-window coding replay must enter the controller rather than racing its supervised retry (HOK-3512)',
+    paths: ['shared/lib/wavemill-monitor.sh'],
+    find(source) {
+      const match = /^_restore_inflight_task_window_if_missing\(\) \{[\s\S]*?^\}/m.exec(source);
+      if (!match || !/^\s*launch_coding_phase\s/m.test(match[0])) return [];
+      return [{line: source.slice(0, match.index).split('\n').length,
+        detail: 'direct coding launcher in missing-window restoration'}];
+    },
+  }],
   remediation: [
     'Task recovery is one control path (HOK-3277): decide through decideTaskRecovery',
     'and claim through claimRecoveryAction in shared/lib/task-recovery-controller.ts.',

@@ -57,6 +57,7 @@ source "$REPO_DIR/shared/lib/condition-reconciler.sh"
 for fn in \
   phase_launch_head \
   phase_launch_base \
+  stage_failure_retry_key \
   coding_output_dirty_paths \
   blocked_completion_commit_matches_head \
   blocked_completion_auto_allowed_dirty_path \

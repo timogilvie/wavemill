@@ -16,6 +16,19 @@ describe('task-recovery-ownership guard — HOK-3406 Observer migration', () => 
     assert.deepEqual(patternsOf('shared/lib/wavemill-monitor.sh', 'stopReason = "recovery_contract_unavailable"\n'), ['private-contract-refusal-stop']);
   });
 
+
+  it('rejects the retired route-refusal boolean and private stop adapter', () => {
+    for (const source of ['local contract_available=false', '_stop_task_recovery_contract_unavailable "$issue"']) {
+      assert.deepEqual(patternsOf('shared/lib/wavemill-monitor.sh', `${source}\n`), ['private-route-refusal']);
+    }
+    assert.deepEqual(patternsOf('shared/lib/wavemill-monitor.sh', 'execution_contract="$(recovery_contract_json "$issue" "$fd" coding)"\n'), []);
+  });
+  it('rejects a direct coding restore that races the supervised retry', () => {
+    assert.deepEqual(patternsOf('shared/lib/wavemill-monitor.sh',
+      '_restore_inflight_task_window_if_missing() {\n  launch_coding_phase "$issue"\n}\n'), ['competing-coding-restore']);
+    assert.deepEqual(patternsOf('shared/lib/wavemill-monitor.sh',
+      '_restore_inflight_task_window_if_missing() {\n  _request_launch_recovery "$issue" coding\n}\n'), []);
+  });
   it('flags a re-import of the deleted observer auto-fix engine', () => {
     assert.deepEqual(
       patternsOf('tools/observer.ts', "import { runObserverAutoFixes } from '../shared/lib/observer-auto-fix.ts';\n"),

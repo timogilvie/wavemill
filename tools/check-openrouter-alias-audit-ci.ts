@@ -45,7 +45,7 @@ export function checkOpenRouterAliasAuditCi(repoDir = defaultRepoRoot): OpenRout
 
 export function formatOpenRouterAliasAuditCi(result: OpenRouterAliasAuditCiResult): string {
   if (result.ok) {
-    return 'openrouter-alias-audit-ci: ok (PR-visible check, gated live audit, fail-closed path detection)';
+    return 'openrouter-alias-audit-ci: ok (PR-visible check, gated live audit, fail-closed path detection, change-scoped PR/push, unscoped schedule)';
   }
 
   return [
@@ -54,7 +54,8 @@ export function formatOpenRouterAliasAuditCi(result: OpenRouterAliasAuditCiResul
     '',
     'The OpenRouter Alias Audit job must report on PRs/protected-branch pushes,',
     'run the live audit for registry-adjacent changes and scheduled/manual runs,',
-    'and fail closed when path detection cannot determine relevance.',
+    'fail closed when path detection cannot determine relevance, scope PR/push',
+    'runs to the base commit registry, and keep scheduled/manual runs unscoped.',
   ].join('\n');
 }
 
@@ -109,6 +110,29 @@ function checkAuditJobContract(auditBlock: string): string[] {
 
   if (!skipStep.includes("env.RUN_OPENROUTER_ALIAS_AUDIT != 'true'")) {
     problems.push('OpenRouter alias audit job does not report a successful skip for irrelevant PR/push changes');
+  }
+
+  // Scoping to a baseline relaxes the audit, so it is contract-checked: only
+  // PR/push runs may resolve one, and it must come from the base commit.
+  const baselineStep = extractStepBlock(auditBlock, 'Resolve baseline registry') ?? '';
+  const baselineIf = baselineStep.match(/^        if:\s*(.+?)\s*$/m)?.[1] ?? '';
+  if (!baselineStep) {
+    problems.push('OpenRouter alias audit job has no `Resolve baseline registry` step; PRs would fail on catalog drift they did not introduce');
+  } else {
+    if (
+      !baselineIf.includes("github.event_name == 'pull_request'")
+      || !baselineIf.includes("github.event_name == 'push'")
+      || baselineIf.includes('schedule')
+      || baselineIf.includes('workflow_dispatch')
+    ) {
+      problems.push('baseline registry step must run only for pull_request/push; scheduled and manual audits stay unscoped');
+    }
+    if (!baselineStep.includes('github.event.pull_request.base.sha') || !baselineStep.includes('github.event.before')) {
+      problems.push('baseline registry must be read from the base commit (pull_request.base.sha or push before)');
+    }
+  }
+  if (/--baseline-registry/.test(auditStep)) {
+    problems.push('audit step hard-codes --baseline-registry; it must come only from the baseline step so scheduled runs stay unscoped');
   }
 
   if (!auditStep.includes("env.RUN_OPENROUTER_ALIAS_AUDIT == 'true'")) {

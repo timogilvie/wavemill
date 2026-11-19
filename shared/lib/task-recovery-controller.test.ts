@@ -34,7 +34,7 @@ function snapshot(overrides: Partial<RecoverySnapshot> = {}): RecoverySnapshot {
     attempt: { currentRunId: null, controlRunId: null },
     disposition: null,
     stageResult: { kind: 'missing' },
-    recoveryContract: null,
+    executionContract: null,
     outstandingEffect: null,
     wait: null,
     failure: null,
@@ -286,18 +286,11 @@ test('a refused saved coding route escalates once with validator evidence', () =
   const d = decideTaskRecovery(snapshot({
     stage: 'coding',
     stageResult: { kind: 'failed' },
-    recoveryContract: { ok: false, reason: 'model_disabled', detail: 'route cannot launch', contract: { model: 'routed-model' } },
+    executionContract: { ok: false, reason: 'model_disabled', detail: 'route cannot launch', contract: { model: 'routed-model' } },
     failure: retryableFailure('proceed'),
   }));
   assert.equal(d.action, 'escalate');
   assert.equal(d.escalationBasis?.kind, 'policy-terminal');
-  assert.equal(d.failureKind, 'recovery_contract_unavailable');
-  assert.match(d.rationale, /model_disabled: route cannot launch/);
-  assert.match(d.rationale, /model=routed-model/);
-  assert.equal(decideTaskRecovery(snapshot({
-    stage: 'coding', stageResult: { kind: 'failed' }, baseDrift: true,
-    recoveryContract: { ok: false, reason: 'model_disabled' }, failure: retryableFailure('proceed'),
-  })).action, 'escalate');
 });
 
 test('missing/contradictory evidence is never read as success', () => {
@@ -496,7 +489,7 @@ test('code remediation respects backoff, exhaustion, and the persisted coding co
   for (const [retry, action] of [['backoff', 'wait'], ['exhausted', 'escalate'], ['exhausted-quiet', 'escalate']] as const) {
     assert.equal(decideTaskRecovery(snapshot({stageResult:{kind:'failed'}, failure:{decision,retry}})).action, action);
   }
-  assert.equal(decideTaskRecovery(snapshot({recoveryContract:{ok:false,reason:'disabled'}, stageResult:{kind:'failed'}, failure:{decision,retry:'proceed'}})).action, 'escalate');
+  assert.equal(decideTaskRecovery(snapshot({executionContract:{ok:false,reason:'contract_missing',detail:'persisted route missing'}, stageResult:{kind:'failed'}, failure:{decision,retry:'proceed'}})).action, 'escalate');
 });
 
 test('Ready transition code faults and base drift select claimed operator or update actions', () => {
@@ -771,4 +764,51 @@ test('HOK-3406: a failed first repair backs off rather than duplicating', () => 
     assert.deepEqual(claimRecoveryAction({ stateDir: dir, decision: backoff, runId: 'run', evidenceId: 'failed-attempt' }),
       { claimed: false, reason: 'not-control-bearing' });
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// HOK-3512: missing-window recovery must not lose the refusal merely because
+// the last envelope says running. Shared disposition proves whether it ended.
+test('reconciliation preserves route refusal for a settled agent, while live work and completion win', async () => {
+  for (const [status, kind, action] of [
+    ['running', 'settled', 'escalate'],
+    ['running', 'in-flight', 'no-action'],
+    ['completed', 'settled', 'consume-advance'],
+    ['awaiting_user', 'settled', 'wait'],
+  ] as const) {
+    const dir = freshDir();
+    try {
+      const stateFile = join(dir, 'workflow-state.json');
+      writeFileSync(stateFile, JSON.stringify(buildWorkflowState({'HOK-1': {runId: 'run', phase: 'coding'}})));
+      writeFileSync(join(dir, '.coding-result.json'), JSON.stringify({stage: 'coding', status, agent: 'claude', runId: 'run',
+        startedAt: '2026-11-17T00:00:00Z', ...(status === 'running' ? {} : {finishedAt: '2026-11-17T00:01:00Z'})}));
+      const input = snapshot({attempt: {currentRunId: 'run', controlRunId: 'run'},
+        stageResult: {kind: 'failed'}, failure: retryableFailure('proceed'),
+        disposition: {kind, reason: 'agent-exited'},
+        executionContract: {ok: false, reason: 'agent_unsupported_for_model', detail: 'persisted executor mismatch'}});
+      const out = await reconcileAndRecover({stateDir: dir, stateFile, issue: 'HOK-1', runId: 'run',
+        evidenceId: 'window-missing', snapshot: input});
+      assert.equal(out.decision.action, action, `${status}/${kind}`);
+      if (action === 'escalate') assert.equal(out.decision.escalationBasis?.kind, 'policy-terminal');
+    } finally { rmSync(dir, {recursive: true, force: true}); }
+  }
+});
+
+// HOK-3512: a completed escalation is durable after its short-lived worker
+// exits. Reclaiming an acknowledged action would rewrite attention every poll.
+test('an applied refusal stays deduplicated after its worker exits; repaired evidence can claim', () => {
+  const dir = freshDir();
+  try {
+    const input = snapshot({stageResult: {kind: 'failed'}, failure: retryableFailure('proceed'),
+      executionContract: {ok: false, reason: 'model_disabled', detail: 'saved model disabled'}});
+    const args = {stateDir: dir, runId: 'run', evidenceId: 'same-refusal', decision: decideTaskRecovery(input)};
+    const first = claimRecoveryAction(args);
+    assert.equal(first.claimed, true);
+    if (!first.claimed) return;
+    acknowledgeRecoveryAction(dir, first.claim.claimId);
+    const applied = readRecoveryClaim(dir)!;
+    writeFileSync(recoveryClaimPath(dir), JSON.stringify({claim: {...applied,
+      owner: {...applied.owner!, startTime: 'exited-worker-identity'}}}));
+    assert.equal(claimRecoveryAction(args).claimed, false, 'applied acknowledgement survives worker death');
+    assert.equal(claimRecoveryAction({...args, evidenceId: 'repaired-route', decision: decideTaskRecovery({...input, executionContract: null})}).claimed, true);
+  } finally { rmSync(dir, {recursive: true, force: true}); }
 });

@@ -90,6 +90,8 @@ test('allowlist fault classes agree with classifyArmFault attribution', () => {
 });
 
 for (const code of [
+  // Positive saved-route refusal requires an audited intervention (HOK-3512).
+  'recovery_contract_unavailable',
   'policy-denied',
   'cancelled',
   'provider-config-error',

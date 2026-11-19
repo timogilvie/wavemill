@@ -179,7 +179,7 @@ export const TERMINAL_ALLOWLIST: readonly TerminalCause[] = Object.freeze([
   {
     code: 'varied_model_unresolvable',
     reason: 'the varied challenge model can never pass launch preflight (HOK-2920)',
-    faultClass: 'selection-fault',
+    faultClass: 'harness-fault',
     testRef: 'failure-policy.test.ts:terminal:varied_model_unresolvable',
   },
   {
@@ -543,6 +543,7 @@ function excerpt(text: string, maxChars = 4000): string {
 // ── Next actions ────────────────────────────────────────────────────────────
 
 const NEXT_ACTIONS: Readonly<Record<string, string>> = {
+  recovery_contract_unavailable: 'inspect the saved route and validator reason; use wavemill reroute for an audited replacement, then resume',
   'context-exhausted': 'session compacted to the floor and still overflowed; re-launch on a larger-context model or split the task',
   'context-window-exceeded': 'relaunch with compressed context or a larger-context model; the prompt exceeded the model context window',
   'provider-config-error': 'check provider auth/model configuration, then rerun. The provider rejected the request',
