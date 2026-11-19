@@ -379,6 +379,49 @@ test('HOK-3422: per-tick ready-result rewrite without agent evidence settles as 
   }
 });
 
+// protects: HOK-3461 — conflict remediation uses the ownership stage name,
+// not the Ready result's `ci`/`conflict` classification. The latter is not a
+// stage bucket, so it would hide the launch and leave a settled resolver
+// in-flight forever.
+test('HOK-3461: conflict remediation gathers progress from conflict-resolution', () => {
+  const worktree = mkdtempSync(join(os.tmpdir(), 'hok3461-conflict-remediation-'));
+  try {
+    const dir = join(worktree, 'features', 'hok3461-conflict');
+    mkdirSync(dir, { recursive: true });
+    const launchHead = 'c0ffee0000000000000000000000000000003461';
+    const running = readyResult('running', '2026-11-05T13:00:00.000Z', 'CONFLICTED');
+    writeMarker({ path: join(dir, '.conflict-remediation.json'), kind: 'conflict-remediation' }, {
+      headSha: launchHead,
+      detail: { launchHead },
+    });
+    appendOwnershipRow(dir, {
+      sessionRef: 'conflict-resolver',
+      harness: 'claude-code',
+      kind: 'conflict-resolution',
+      model: 'claude-opus-4-7',
+      launchedAt: '2026-11-05T13:00:00.000Z',
+      cwd: worktree,
+    });
+
+    const disposition = evaluateReadyRemediationDisposition({
+      stateDir: dir,
+      readyResult: running,
+      currentHead: launchHead,
+      getProgress: () => gatherReadyTaskProgress({
+        issue: 'HOK-3461',
+        session: `hok3461-${process.pid}`,
+        worktree,
+        stateDir: dir,
+        readyResult: running,
+        now: new Date('2026-11-05T13:45:00.000Z'),
+      }),
+    });
+    assert.deepEqual([disposition.kind, disposition.reason], ['settled', 'agent-stalled']);
+  } finally {
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
 // protects: a healthy controller-owned Ready CI wait (no remediation launched)
 // being reported stalled by the new launch-anchored stall clock. The gatherer
 // must NOT synthesize a launch anchor from the ready-result startedAt when no

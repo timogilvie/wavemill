@@ -35,8 +35,8 @@
  *
  * Enforced by `tools/check-ready-remediation-disposition.ts` (extended, not
  * replaced). Ready remediation decides here too: the Ready module
- * (`ready-remediation-disposition.ts`) only reads Ready's launch identity
- * (sub-stage and launch head) and maps the result onto Ready's actions.
+ * performs Ready's launch-identity read (sub-stage and launch head) and maps
+ * the result onto Ready's actions.
  *
  * @module stage-agent-disposition
  */
@@ -101,9 +101,26 @@ export function evaluateReadyRemediationDisposition(opts: {
   if (!launch) return { kind: 'inactive', reason: opts.readyResult?.status === 'running' ? 'no-launch' : 'not-running', remediation: null, launchHead: null, currentHead: opts.currentHead, launchedAt: null };
   const disposition = evaluateStageAgentDisposition({ stateDir: opts.stateDir, stage: launch.stage, stageResult: opts.readyResult,
     currentHead: opts.currentHead, launchHead: launch.launchHead, getProgress: opts.getProgress });
+  return readyDispositionFromStage(disposition, launch, opts.currentHead);
+}
+
+/** Map the shared decision onto Ready's action contract. */
+export function readyDispositionFromStage(
+  disposition: Pick<StageAgentDisposition, 'kind' | 'reason' | 'blockingPrompt' | 'launch'>,
+  launch: ReadyRemediationLaunch,
+  currentHead: string | null,
+): ReadyRemediationDisposition {
+  // Ready must hold a recognised prompt: its `settled` action re-runs Ready,
+  // while the shared stage actor escalates once and leaves the agent alive.
   const parkedAtPrompt = disposition.kind === 'settled' && disposition.blockingPrompt !== null;
-  return { kind: parkedAtPrompt ? 'in-flight' : disposition.kind, reason: disposition.reason, remediation: launch.remediation,
-    launchHead: launch.launchHead, currentHead: opts.currentHead, launchedAt: disposition.launch.launchedAt };
+  return {
+    kind: parkedAtPrompt ? 'in-flight' : disposition.kind,
+    reason: disposition.reason,
+    remediation: launch.remediation,
+    launchHead: launch.launchHead,
+    currentHead,
+    launchedAt: disposition.launch.launchedAt,
+  };
 }
 
 export function gatherReadyTaskProgress(opts: {
@@ -111,7 +128,7 @@ export function gatherReadyTaskProgress(opts: {
   task?: Pick<TaskRecord, 'updated' | 'branch' | 'slug' | 'worktree' | 'status' | 'phase' | 'lifecycle' | 'windowId'>;
   readyResult: Pick<StageResult, 'startedAt' | 'finishedAt' | 'artifacts'> | null; paneText?: string; panePid?: number | null; now?: Date;
 }): TaskProgress {
-  return gatherStageTaskProgress({ ...opts, stage: remediationKind(opts.readyResult) });
+  return gatherStageTaskProgress({ ...opts, stage: REMEDIATION_STAGE[remediationKind(opts.readyResult)] });
 }
 
 export type StageAgentDispositionKind = 'inactive' | 'advanced' | 'in-flight' | 'settled';

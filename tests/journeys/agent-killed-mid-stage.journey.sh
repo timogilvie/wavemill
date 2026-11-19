@@ -45,7 +45,8 @@ journey_wait_until "$ISSUE" 5  "task launched into planning" phase_is planning
 journey_wait_until "$ISSUE" 8  "coding launched"             phase_is coding
 
 # The fake agent writes a commit but exits before .coding-complete. The monitor
-# should detect the exit, classify it as retryable (not terminal), and relaunch.
+# should detect the recorded exit through the canonical stage disposition,
+# classify it as retryable (not terminal), and relaunch.
 # This wait gives enough ticks for the monitor to detect the dead agent.
 journey_log "waiting for agent to exit and recovery to launch..."
 coding_relaunched() { [[ "$(journey_agent_launch_count "$ISSUE" coding)" -ge 2 ]]; }

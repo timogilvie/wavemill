@@ -4342,12 +4342,11 @@ ready_remediation_attempts() {
 # ready_remediation_disposition <issue> <state_dir> <wt_dir> <current_head>
 # Prints "<kind> <reason>": kind is inactive|advanced|in-flight|settled. The
 # one Ready remediation in-flight/completion decision (CI fix or conflict
-# resolver) lives in shared/lib/ready-remediation-disposition.ts (HOK-3322);
-# this wrapper only spawns it. A running result and a launch head equal to
+# resolver) lives in shared/lib/stage-agent-disposition.ts (HOK-3322/HOK-3461);
+# this wrapper only formats its answer. A running result and a launch head equal to
 # HEAD are facts about the launch, never liveness: only the agent's own
-# progress (HOK-3101) holds the arm. Two cheap existence reads keep the
-# monitor hot pass from spawning for a task with nothing launched. A failed
-# spawn prints "in-flight progress-unavailable" (fail safe: hold this tick).
+# progress (HOK-3101) holds the arm. A failed spawn prints "in-flight
+# progress-unavailable" (fail safe: hold this tick).
 ready_remediation_disposition() {
   local issue="$1" state_dir="$2" wt_dir="$3" current_head="$4"
   local out kind reason
