@@ -170,9 +170,12 @@ function makeRepo(coderHistory: string[], opts: {
     router: {
       defaultAgent: 'claude',
     },
-    ...(opts.patchCodingEnabled
-      ? { nativeAgent: { patchCoding: { enabled: true } } }
-      : {}),
+    // Native challengers need native execution on (the launcher refuses them otherwise).
+    nativeAgent: {
+      enabled: true,
+      allowedPhases: ['planning', 'review'],
+      ...(opts.patchCodingEnabled ? { patchCoding: { enabled: true } } : {}),
+    },
     providers: {
       openrouter: {
         enabled: true,
