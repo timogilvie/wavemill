@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url';
 import {
   auditOpenRouterAliases,
   fetchEndpointsForAliases,
+  hasBlockingAliasFindings,
   parseEndpointsFixture,
+  scopeAliasAuditToBaseline,
   type AliasAuditReport,
 } from '../shared/lib/openrouter-alias-audit.ts';
 import {
@@ -19,6 +21,7 @@ import {
   type OpenRouterModel,
 } from '../shared/lib/openrouter-catalog.ts';
 import { DEFAULT_MODEL_REGISTRY, type ModelRegistry } from '../shared/lib/model-registry.ts';
+import { loadModelRegistryCatalog } from '../shared/lib/model-registry-loader.ts';
 import { runTool, resolveRepoDir, type ParsedArgs } from '../shared/lib/tool-runner.ts';
 
 const DEFAULT_OUT_PATH = '.wavemill/audits/openrouter-alias-drift.json';
@@ -31,6 +34,10 @@ const options = {
   'repo-dir': { type: 'string', description: 'Repository directory' },
   json: { type: 'boolean', description: 'Print the full audit report as JSON' },
   'no-write': { type: 'boolean', description: 'Do not write the audit report artifact' },
+  'baseline-registry': {
+    type: 'string',
+    description: 'Registry catalog JSON from the base commit; fail only on findings for aliases this change added or edited',
+  },
 } as const;
 
 type CliArgs = ParsedArgs<typeof options>;
@@ -40,6 +47,8 @@ export interface OpenRouterAliasAuditToolDeps {
   fetchEndpoints: (modelId: string) => Promise<OpenRouterEndpoint[]>;
   registry: ModelRegistry;
   now: () => Date;
+  /** The checked-out registry catalog, compared with `--baseline-registry`. */
+  loadHeadCatalog?: () => unknown;
 }
 
 const defaultDeps: OpenRouterAliasAuditToolDeps = {
@@ -89,7 +98,9 @@ function renderHumanSummary(report: AliasAuditReport): void {
   }
   console.log('Alias drift findings:');
   for (const finding of report.findings) {
-    const suffix = finding.selectable ? '' : ' (retired - expected)';
+    const suffix = !finding.selectable
+      ? ' (retired - expected)'
+      : finding.inheritedFromBaseline ? ' (inherited - registry entry unchanged by this change)' : '';
     console.log(`  ${finding.alias}\t${finding.reason}\t${finding.wireModelId ?? 'unresolved'}${suffix}`);
     if (finding.reason === 'pricing-drift') {
       console.log(`    ${finding.detail}`);
@@ -133,13 +144,24 @@ export async function runOpenRouterAliasAuditCommand(
     return 2;
   }
 
-  const report = auditOpenRouterAliases({
+  let report = auditOpenRouterAliases({
     registry: deps.registry,
     openRouterModels: catalog,
     openRouterEndpoints: endpoints,
     now: deps.now(),
     catalogSource,
   });
+  const baselinePath = args['baseline-registry'];
+  if (baselinePath) {
+    // An unreadable baseline must not relax the audit: exit before scoping.
+    try {
+      const baseline: unknown = JSON.parse(readFileSync(baselinePath, 'utf-8'));
+      report = scopeAliasAuditToBaseline(report, (deps.loadHeadCatalog ?? loadModelRegistryCatalog)(), baseline);
+    } catch (error) {
+      console.error(`OpenRouter alias audit could not read baseline registry ${baselinePath}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+  }
   const serialized = `${JSON.stringify(report, null, 2)}\n`;
 
   if (args['no-write'] !== true) {
@@ -149,7 +171,15 @@ export async function runOpenRouterAliasAuditCommand(
   if (args.json === true) {
     console.log(serialized.trimEnd());
   }
-  return report.selectableFindings > 0 ? 1 : 0;
+  if (report.baseline && report.baseline.inheritedSelectableFindings > 0) {
+    // GitHub renders this as a run annotation; elsewhere it is a plain line.
+    console.log(
+      `::warning title=OpenRouter alias drift not caused by this change::${report.baseline.inheritedSelectableFindings} `
+        + 'selectable finding(s) sit on registry entries this change did not edit. They do not fail this run; '
+        + 'the scheduled audit fails on them until the registry is reconciled (docs/model-additions.md).',
+    );
+  }
+  return hasBlockingAliasFindings(report) ? 1 : 0;
 }
 
 export async function runOpenRouterAliasAuditCli(
@@ -164,6 +194,7 @@ export async function runOpenRouterAliasAuditCli(
       'npx tsx tools/audit-openrouter-aliases.ts --json',
       'npx tsx tools/audit-openrouter-aliases.ts --catalog-json catalog.json --output reports/openrouter-alias-drift.json',
       'npx tsx tools/audit-openrouter-aliases.ts --fixture --no-write',
+      'npx tsx tools/audit-openrouter-aliases.ts --no-write --baseline-registry /tmp/base-registry.json',
     ],
     async run({ args }) {
       const code = await runOpenRouterAliasAuditCommand(args, deps);
