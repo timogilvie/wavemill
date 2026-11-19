@@ -6,6 +6,7 @@ import { resolveStageExecutor } from '../shared/lib/model-agent-resolution.ts';
 import { isChallengerTaskId } from '../shared/lib/task-identity.ts';
 import { readWorkflowState } from '../shared/lib/workflow-state.ts';
 import { appendRouteOverrideToFeatureDir } from '../shared/lib/route-artifact.ts';
+import { recordOperatorEvent } from '../shared/lib/operator-intervention.ts';
 import type { RouteStageRole } from '../shared/lib/route-override-record.ts';
 import {
   appendRerouteAudit,
@@ -130,6 +131,8 @@ await runTool({
       ...(process.env.USER ? { actor: process.env.USER } : {}),
     });
 
+    // HOK-3512: the reroute is the operator event that expires a refused-route escalation.
+    if (changed) recordOperatorEvent(stateTask.featureDir, 'reroute', taskId, `${phase} → ${after.model}`);
     console.log(JSON.stringify({ ok: true, taskId, phase, changed, routeRecord, before, after }));
   },
 });

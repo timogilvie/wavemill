@@ -67,6 +67,21 @@ export interface RecoveryFailure {
   retry: BoundedRetryDecision;
 }
 
+/**
+ * The saved-route validator result (`validateContractLaunchable`, HOK-3326),
+ * carried intact (HOK-3512) — reason, detail and the persisted contract —
+ * so a refusal reaches the decision and the inbox with its cause.
+ */
+export interface RecoveryContractValidation {
+  ok: boolean;
+  reason?: string | null;
+  detail?: string | null;
+  contract?: { model?: string | null; agent?: string | null; provider?: string | null } | null;
+}
+
+/** The failure kind a refused saved route is classified under (`failure-policy.ts`). */
+export const RECOVERY_CONTRACT_UNAVAILABLE = 'recovery_contract_unavailable';
+
 export type RecoveryDisposition = Pick<
   StageAgentDisposition,
   'kind' | 'reason' | 'evidenceConfidence' | 'waitingOn' | 'blockingPrompt'
@@ -98,6 +113,8 @@ export interface RecoverySnapshot {
   attempt: RecoveryAttempt;
     disposition: RecoveryDisposition | null;
   stageResult: RecoveryStageResult;
+  /** HOK-3512: the saved route's launch validation, when the caller replays one. */
+  contract?: RecoveryContractValidation | null;
   executionContract: ReturnType<typeof readValidatedContract>
     | {ok: false; reason: 'contract_read_failed'; detail: string} | null;
   outstandingEffect: RecoveryOutstandingEffect | null;
@@ -254,6 +271,25 @@ export function decideTaskRecovery(snapshot: RecoverySnapshot): RecoveryDecision
     }
   }
 
+  // 4b. HOK-3512: the saved route cannot launch. This is the one refusal
+  //     outcome for the failed-stage, window-lost and launch-surface paths:
+  //     failure-policy classifies it and the escalation step pages, so a
+  //     refusal is never a wait on a wake nothing produces.
+  //     The shell adapter replays the saved route as `executionContract`; a
+  //     positive validator refusal there is the same outcome. A read failure
+  //     is not a refusal and keeps its bounded retry in decideFromFailure.
+  const executionRefusal = snapshot.executionContract?.ok === false
+    && snapshot.executionContract.reason !== 'contract_read_failed' ? snapshot.executionContract : null;
+  const routeRefusal = snapshot.contract?.ok === false ? snapshot.contract : executionRefusal;
+  if (routeRefusal) {
+    if (unverifiableIdentity) {
+      return decision(stage, 'wait', 'saved route refused but the attempt identity is unverifiable; holding for reassessment', {
+        wait: { owner: 'tool', wake: 'attempt-identity-resolved' },
+      });
+    }
+    return decideFromContractRefusal(snapshot, routeRefusal);
+  }
+
   // 5. Legitimate non-human wait.
   if (snapshot.wait && snapshot.failure === null) {
     return decision(stage, 'wait', `legitimate wait owned by ${snapshot.wait.owner} (${snapshot.wait.wake})`, { wait: snapshot.wait });
@@ -342,6 +378,28 @@ function decideFromFailure(snapshot: RecoverySnapshot, failure: RecoveryFailure)
     ...base,
     retryBucket: bucket,
   });
+}
+
+/**
+ * A refused saved route becomes failure evidence under one stable kind; the
+ * class comes from `classifyFailure`, never a controller-local verdict. The
+ * rationale names the stage, the route's model and the validator reason, so
+ * the inbox item and Hokusai see the same fault.
+ */
+function decideFromContractRefusal(snapshot: RecoverySnapshot, refusal: RecoveryContractValidation): RecoveryDecision {
+  const { stage } = snapshot;
+  const reason = refusal.reason?.trim() || 'contract_unavailable';
+  const detail = refusal.detail?.trim() || 'the persisted recovery contract is unavailable';
+  const model = refusal.contract?.model?.trim() || 'unknown';
+  const fd = classifyFailure({ stage, failureKind: RECOVERY_CONTRACT_UNAVAILABLE, detail: `${reason}: ${detail}` });
+  const selected = decideFromFailure({ ...snapshot, baseDrift: false }, {
+    decision: fd,
+    retry: snapshot.failure?.retry ?? 'proceed',
+  });
+  return {
+    ...selected,
+    rationale: `saved ${stage} route (model ${model}) refused by launch validation: ${reason}: ${detail}`,
+  };
 }
 
 // ── Claim seam ───────────────────────────────────────────────────────────────
