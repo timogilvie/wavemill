@@ -1,8 +1,20 @@
 #!/usr/bin/env -S npx tsx
 
 import { getEffectiveRegistry } from '../shared/lib/model-registry.ts';
-import { resolveModelAgent, resolveLaunchPreflight, type AgentResolutionPhase } from '../shared/lib/model-agent-resolution.ts';
+import {
+  providerForAgent,
+  resolveModelAgent,
+  resolveLaunchPreflight,
+  type AgentResolutionPhase,
+} from '../shared/lib/model-agent-resolution.ts';
 import { runTool } from '../shared/lib/tool-runner.ts';
+
+/** HOK-3511: every emitted resolution carries the derived provider beside the agent. */
+function withProvider<T extends { ok: boolean }>(result: T): T & { provider?: string } {
+  if (!result.ok) return result;
+  const agent = (result as { agent?: Parameters<typeof providerForAgent>[0] }).agent;
+  return agent ? { ...result, provider: providerForAgent(agent) } : result;
+}
 
 type BatchRole = 'planner' | 'coder' | 'reviewer';
 
@@ -92,7 +104,7 @@ runTool({
             repoDir,
             registry,
           });
-        results[role] = result;
+        results[role] = withProvider(result);
         if (!result.ok) {
           diagnostics.push(result.diagnostic);
         }
@@ -130,7 +142,7 @@ runTool({
         registry,
       });
 
-    console.log(JSON.stringify(result));
+    console.log(JSON.stringify(withProvider(result)));
     if (!result.ok) {
       console.error(result.diagnostic);
       process.exit(1);

@@ -23,6 +23,17 @@ MONITOR_SCRIPT_FILE="$REPO_DIR/shared/lib/wavemill-monitor.sh"
 
 source "$REPO_DIR/shared/lib/wavemill-common.sh"
 
+# HOK-3511: the expanded-route consumer writes .phase-config.json through
+# phase_config_write_stages → recovery-contract.ts; resolve the tool from this
+# checkout, never from an installed copy. The writer derives agents through
+# the certification-gated resolver, so seed a hermetic cert store for the
+# native coder this suite routes (hermetic on populated dev machines too).
+export TOOLS_DIR="$REPO_DIR/tools"
+WAVEMILL_NATIVE_CERTIFICATION_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/wavemill-cert-root.XXXXXX")"
+export WAVEMILL_NATIVE_CERTIFICATION_ROOT
+trap 'rm -rf "$WAVEMILL_NATIVE_CERTIFICATION_ROOT"' EXIT
+node --import tsx "$REPO_DIR/tests/fixtures/write-native-certification.ts" qwen-3-coder >/dev/null
+
 log() {
   local level="${1:-}" message="${2:-}"
   if [[ "$level" == "warn" ]]; then
