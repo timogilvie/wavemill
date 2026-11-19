@@ -146,22 +146,65 @@ An explicit release also changes recovery evidence even if the route remains
 refused, so reconciliation cannot clear attention and leave an applied old
 claim silently suppressing the next assessment. The adapter checks this case.
 
-## Assessment
+## Revised decision after external review (2026-11-19)
 
-This second application supports making the recipe a targeted part of
-specification and root-cause work: state the obligation and preservation rules
-before coding, reject the old implementation and a plausible incomplete fix,
-then run the real journey. Keep the pure checks in the normal testing suite.
-It does not justify installing TLA+, mandating a model language for every task,
-or changing all phase prompts. Revisit formal model checking when the state
-space or concurrency assumptions can no longer be covered economically by
-these finite checks.
+Land the bug fixes and retain their regression tests. Defer packaging a recipe,
+workflow-wide prompt changes, a new specification framework and TLA+ installation.
+An independent reuse test comes before any packaging decision.
 
-This is the same author's second application to a known backlog defect, not a
-blind discovery benchmark or an independent-agent adoption trial. It measures
-regression detection and reuse, not production reliability gains. HOK-3505 stays
-a landing dependency; HOK-3511 still owns saved-route construction. General
-recovery of a missing window with no exit evidence remains outside this slice.
+The generated sequence count is not a state-coverage claim. The HOK-3512 generated
+case projects its history onto four booleans: refused, held, complete and stale.
+That is at most 16 configurations in a fixed failure context, with a handwritten
+priority oracle. Its one-event counterexample is also catchable by a table test.
+Other table/preservation cases check additional dimensions, but the useful new
+composition findings came from the journeys and persisted-claim test. Neither
+journey explores all interleavings. HOK-3491's generated test uses 12 samples and
+a fixed suffix through a relatively expensive shell adapter.
+
+Revised sequence:
+
+1. Finish the existing bug-fix PR: repair the schema/type retirement and JSON
+   fixture-loading CI failures, verify a clean checkout, and retain the HOK-3505
+   landing dependency. At review time HOK-3505 is In Progress in PR #1894;
+   its earlier PR #1886 closed without merging. Keep unrelated pricing work in
+   PR #1895 separate. Do not deploy the new retry key into active old-key tasks.
+2. Run one bounded independent trial on the next suitable, unfixed recovery
+   issue (HOK-3514 or HOK-3504 are candidates, subject to their current status).
+   A different model receives issue evidence and the public contract, without
+   the proposed patch, implementation priority ladder or previous oracle.
+   Freeze its expectations before the implementation is changed. Require it
+   to reject the original code and a held-out plausible incomplete fix, accept
+   the correct fix, and preserve legitimate holds/completion/stale-control
+   behavior. Record its incremental authoring effort. If it cannot do that,
+   stop this adoption experiment; do not package the recipe first.
+3. Only if that trial succeeds, extend existing suites with the demonstrated
+   general obligation. A standing controller property should be scoped to
+   current, unfinished recovery obligations and distinguish live work,
+   completion consumption, effect verification and stale rejection. A wait
+   needs an actual reachable producer or deadline; a producer name alone is
+   insufficient. Keep retry-allowance accounting at its existing owner and
+   exercise adapter/claim interleavings where the pure function has no state.
+   Do not create a second all-purpose recovery model.
+4. Move a decision out of bash when fixing a concrete duplicated-owner defect,
+   deleting the competing path in the same change. File relocation and line
+   counts alone are not evidence of reduced ownership or better liveness.
+5. Use the existing weekly review for a three-to-four-week decision checkpoint
+   if the independent trial passes. Track regressed/partial fixes per eligible
+   recovery change, incremental engineering effort, and unattended completion
+   in that cohort alongside the overall unattended rate. Use existing operator
+   touch classification. If the trial fails or the follow-on evaluation shows
+   no benefit, stop additional methodology work and retain useful regression
+   tests. Insufficient sample volume does not justify a rollout.
+
+The helper property "a new head resets the bucket" is valid when that head is
+its caller's input (for example review). HOK-3491 passed a coder's output as that
+input. A standing requirement must constrain this binding rather than globally
+forbid head-based resets. Correct requirement selection remains the problem.
+
+This was one author's work on two known defects. There is no independent-agent
+adoption result, production reliability gain, development-time saving or formal
+liveness proof. HOK-3511 owns route construction. Missing windows without exit
+evidence and complete Hokusai feedback coverage remain separate work.
 
 
 Fault injection in both golden journeys targets coding. Planning/review refusal

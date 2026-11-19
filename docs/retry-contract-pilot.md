@@ -143,3 +143,16 @@ The second application is recorded in
 [Recovery refusal contract pilot](recovery-refusal-contract-pilot.md). It reuses
 this recipe on HOK-3512 and adds a fast in-process action oracle, then uses real
 journeys to expose integration defects that the pure oracle alone did not catch.
+
+
+Post-review landing gate (2026-11-19): this PR does not migrate persisted retry
+buckets. A live old head-keyed bucket would receive a fresh allowance under the
+new input key. Drain existing task runs before starting a monitor bundle with
+this change, preserving their normal outcomes and evidence. If a deployment
+cannot wait for that boundary, it needs a separately reviewed/tested counter
+migration before rollout. Do not reset buckets or mint replacement runs to work
+around this restriction. Merge is not evidence that the running bundle changed.
+
+The revised adoption decision is in the second report: independent reuse comes
+before packaging or broader workflow changes. The helper's head-reset property
+remains valid for input heads; the defect was the caller's choice of identity.
