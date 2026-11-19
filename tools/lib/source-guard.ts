@@ -74,15 +74,20 @@ export interface StructuralMatch {
 
 /**
  * A whole-file check for rules a single-line regex cannot express (e.g. "every
- * exported router entry point reaches finalizeDecision"). Runs only on the
- * listed paths; findings go through the same suppression and allowlist logic.
+ * exported router entry point reaches finalizeDecision", or anything that needs
+ * a parser). Findings go through the same suppression and allowlist logic.
  */
 export interface StructuralCheck {
   name: string;
   description: string;
-  /** Repo-relative paths the check runs on. */
-  paths: readonly string[];
-  find(sourceText: string): StructuralMatch[];
+  /**
+   * Repo-relative paths the check runs on. Omit to run on every scanned file,
+   * optionally narrowed by `scopedPaths`.
+   */
+  paths?: readonly string[];
+  /** Path prefixes the check is limited to when `paths` is omitted. */
+  scopedPaths?: readonly string[];
+  find(sourceText: string, file: string): StructuralMatch[];
 }
 
 export interface GuardSpec {
@@ -298,7 +303,11 @@ function scanSource(resolved: ResolvedSpec, file: string, sourceText: string): G
     && !(pattern.excludePaths ?? []).includes(file)
     && (!pattern.scopedPaths || pattern.scopedPaths.some((prefix) => file.startsWith(prefix)))
   ));
-  const checks = (spec.structuralChecks ?? []).filter((check) => check.paths.includes(file));
+  const checks = (spec.structuralChecks ?? []).filter((check) => (
+    check.paths
+      ? check.paths.includes(file)
+      : !check.scopedPaths || check.scopedPaths.some((prefix) => file.startsWith(prefix))
+  ));
   if (patterns.length === 0 && checks.length === 0) return [];
 
   const lines = sourceText.split(/\r?\n/);
@@ -324,7 +333,7 @@ function scanSource(resolved: ResolvedSpec, file: string, sourceText: string): G
   }
 
   for (const check of checks) {
-    for (const match of check.find(sourceText)) {
+    for (const match of check.find(sourceText, file)) {
       const index = match.line - 1;
       if (isSuppressed(lines, index, spec.suppressionMarker)) continue;
       const line = lines[index] ?? '';
