@@ -254,11 +254,11 @@ function reconcileSimpleRole(
 
   if (result.source === 'inherited' || result.executionEvidence?.status === 'inherited') {
     if (!result.executedModel) {
-      return {
-        status: 'inherited',
-        ...(requestedSelector ? { requested_selector: requestedSelector } : {}),
-        evidence: evidenceFor(stage, result, result.executionEvidence?.source ?? 'stage-result', 'inherited', headSha, 'inherited_without_executed_model'),
-      };
+      // An inherited stage whose source run left no provider-reported model
+      // (e.g. a CLI planner with missing execution evidence) is unknown, not
+      // inherited: the executed_route contract requires resolved_model for
+      // `inherited`, and substituting the requested id would forge identity.
+      return unknownRole(role, stage, requestedSelector, result, 'inherited_without_executed_model');
     }
     return {
       status: 'inherited',
