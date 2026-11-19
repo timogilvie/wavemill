@@ -213,3 +213,24 @@ each phase. The existing planning/review valid-route restoration remains outside
 this consolidation. The stronger local result is that the coding retry and
 missing-window paths now share control and cannot race through the retired
 direct coding launcher; the ownership guard rejects reintroducing that shape.
+
+## Integration compatibility update (2026-11-19)
+
+CI at `aa2f37f5` failed both refusal journeys after the integration merge brought
+in HOK-3511. The journeys corrupted only the saved agent. Recovery now correctly
+re-derives the executor from the saved model, so that historical mismatch is
+repaired and the task completes instead of escalating. The test was waiting for
+an outcome that the new executor contract intentionally makes unreachable.
+
+The journey fault now removes the saved coding model after a correctly routed
+agent starts. The real validator must confirm `contract_missing`; stale executor
+metadata remains repairable. The operator restores the exact original model
+through `reroute-task.ts`, which derives its executor through the canonical
+resolver. This changes test injection and expectations, not production routing
+or refusal policy. The historical issue fixture remains historical evidence;
+`stage-executor-replay.test.ts` covers its now-correct repair behavior.
+
+Local verification after the fixture update: both full journeys pass (19 ticks,
+263 seconds and 278 seconds), as do 25 execution-contract, stage-executor replay
+and recovery-contract checks, full preflight and `git diff --check`. These are
+local results; the new remote run must test the pushed remediation commit.

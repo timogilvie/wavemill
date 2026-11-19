@@ -29,10 +29,14 @@ fi
 refusal_visible() {
   FEATURE_DIR="$(journey_feature_dir "$ISSUE" 2>/dev/null || true)"
   [[ -n "$FEATURE_DIR" ]] || return 1
-  jq -e '.detail.escalationBasis == "policy-terminal:terminal" and (.reason | contains("agent_unsupported_for_model"))' \
+  jq -e '.detail.escalationBasis == "policy-terminal:terminal" and (.reason | contains("contract_missing"))' \
     "$FEATURE_DIR/.needs-attention" >/dev/null 2>&1
 }
 journey_wait_until "$ISSUE" 30 'saved route refusal reaches operator attention' refusal_visible
+node "$JOURNEY_INSTALL_DIR/tools/recovery-contract.ts" read-and-validate \
+  --feature-dir "$FEATURE_DIR" --stage coding --repo "$REPO_DIR" --json > "$JOURNEY_TMP/refused-contract.json"
+journey_assert 'the real validator confirms the injected refusal' \
+  jq -e '.ok == false and .reason == "contract_missing"' "$JOURNEY_TMP/refused-contract.json"
 if [[ "${REFUSAL_DROP_WINDOW:-0}" == 1 ]]; then
   journey_assert 'the monitor observed the missing window' \
     grep -q 'tmux window missing after resume' "$JOURNEY_TMP/logs/status.log"
@@ -48,13 +52,15 @@ journey_assert 'no coding relaunch before operator intervention' test "$(journey
 journey_assert 'no private stopped state' test "$(journey_task_field "$ISSUE" status)" != stopped
 # A deliberate test-operator intervention: the existing audited reroute CLI,
 # followed by an explicit release event consumed by the condition reconciler.
-node "$JOURNEY_INSTALL_DIR/tools/reroute-task.ts" "$ISSUE" --phase coding --agent claude \
+original_model="$(jq -er '.model' "$FEATURE_DIR/refusal-original-coding.json")"
+node "$JOURNEY_INSTALL_DIR/tools/reroute-task.ts" "$ISSUE" --phase coding --model "$original_model" \
   --feature-dir "$FEATURE_DIR" --repo "$REPO_DIR" > "$JOURNEY_TMP/reroute.json"
 source "$JOURNEY_INSTALL_DIR/shared/lib/transient-marker.sh"
-operator_event_record "$FEATURE_DIR" reroute "$ISSUE" 'operator repaired executor and released recovery'
+operator_event_record "$FEATURE_DIR" reroute "$ISSUE" 'operator restored the original model and released recovery'
 recovered() { [[ "$(journey_agent_launch_count "$ISSUE" coding)" -eq 2 ]]; }
 journey_wait_until "$ISSUE" 15 'operator repair resumes the same coding task' recovered
-journey_assert 'reroute is audited' jq -e '.changed and .after.agent == "claude"' "$JOURNEY_TMP/reroute.json"
+journey_assert 'reroute audit restores the original model' \
+  jq -e --arg model "$original_model" '.changed and .after.model == $model' "$JOURNEY_TMP/reroute.json"
 journey_assert 'canonical retry claimed after refusal' \
   jq -s -e 'any(.[]; .action == "retry-stage" and .stage == "coding")' "$FEATURE_DIR/.recovery-actions.jsonl"
 pr_merged() { [[ "$(fakes_gh_pr_field 1 state)" == MERGED ]]; }

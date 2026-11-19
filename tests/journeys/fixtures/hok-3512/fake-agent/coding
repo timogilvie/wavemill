@@ -1,10 +1,13 @@
 # shellcheck shell=bash
-# Inject the saved-route mismatch only after the correctly routed agent runs.
-# A test operator must repair this evidence; no model substitution is automatic.
+# Inject an incomplete saved route after the correctly routed agent runs.
+# HOK-3511 repairs stale executor metadata, so that no longer forces refusal.
+# Preserve the original model for an explicit audited operator restoration.
 if [[ ! -f "$FEATURE_DIR/refusal-injected" ]]; then
-  touch "$FEATURE_DIR/refusal-injected"
-  jq '.coding.agent = "codex"' "$FEATURE_DIR/.phase-config.json" > "$FEATURE_DIR/.phase-config.json.tmp"
+  jq '.coding' "$FEATURE_DIR/.phase-config.json" > "$FEATURE_DIR/refusal-original-coding.json"
+  # Deliberate corruption, not a production route writer.
+  jq 'del(.coding.model)' "$FEATURE_DIR/.phase-config.json" > "$FEATURE_DIR/.phase-config.json.tmp"
   mv "$FEATURE_DIR/.phase-config.json.tmp" "$FEATURE_DIR/.phase-config.json"
+  touch "$FEATURE_DIR/refusal-injected"
   exit 143
 fi
 default_coding
