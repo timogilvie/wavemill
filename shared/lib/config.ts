@@ -382,6 +382,8 @@ export interface UiConfig {
 export interface ReviewConfig {
   maxIterations?: number;
   enabled?: boolean;
+  /** Per-call cap for claude/codex CLI review calls (ms). Default 300000. */
+  cliTimeoutMs?: number;
   nativeTimeoutMs?: number;
   nativeTimeoutMaxMs?: number;
   nativeTimeoutMultiplier?: number;

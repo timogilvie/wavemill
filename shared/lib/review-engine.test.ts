@@ -357,8 +357,11 @@ describe('review-engine per-model dispatch (HOK-3247)', () => {
     return { calls, nativeCalls };
   }
 
-  async function review(model?: string) {
+  async function review(model?: string, wavemillConfig?: Record<string, unknown>) {
     const repoDir = mkdtempSync(join(tmpdir(), 'review-engine-dispatch-'));
+    if (wavemillConfig) {
+      writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify(wavemillConfig));
+    }
     try {
       const { runReview } = await import('./review-engine.ts');
       return await runReview(makeReviewContext(), repoDir, {
@@ -389,6 +392,18 @@ describe('review-engine per-model dispatch (HOK-3247)', () => {
     assert.equal(result.substantiveAnalysisIdentity?.agent, 'claude-cli');
     assert.equal(result.substantiveAnalysisIdentity?.source, 'artifact');
     assert.equal(result.substantiveAnalysisIdentity?.pinned, true);
+  });
+
+  it('caps each CLI review call at the 300s default when review.cliTimeoutMs is unset', async () => {
+    const { calls } = setup({ agents: { 'claude-opus-5-5': 'claude' } });
+    await review('claude-opus-5-5');
+    assert.equal(calls[0]?.timeout, 300_000);
+  });
+
+  it('uses review.cliTimeoutMs as the per-call cap for CLI review calls', async () => {
+    const { calls } = setup({ agents: { 'claude-opus-5-5': 'claude' } });
+    await review('claude-opus-5-5', { review: { cliTimeoutMs: 1_200_000 } });
+    assert.equal(calls[0]?.timeout, 1_200_000);
   });
 
   it('runs an OpenAI reviewer on the codex CLI and records it unverified (codex reports no model)', async () => {
