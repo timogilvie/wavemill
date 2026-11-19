@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "hok3409-expansion-outcomes/1",
+  "issue": "HOK-FIXTURE-1",
+  "bucket": "expansion-recovery-job",
+  "provenance": "Three prepare-task-inputs job results recorded for HOK-3409 on 2026-11-16 (incident 33485219c636 and 114cbdbc4d75). The expansion log ends in 'Terminated: 15' (SIGTERM from the handshake timeout), which recover_missing_expansion_artifact records as expand-issue-timed-out with exit 143.",
+  "outcomes": [
+    {
+      "jobFinishedAt": "2026-11-16T21:25:30.006Z",
+      "jobReason": "job_failed",
+      "status": "failed",
+      "detail": "expand-issue-timed-out",
+      "exitCode": "143"
+    },
+    {
+      "jobFinishedAt": "2026-11-16T21:31:18.469Z",
+      "jobReason": "no_result_file",
+      "status": "failed",
+      "detail": "expand-issue-timed-out",
+      "exitCode": "143"
+    },
+    {
+      "jobFinishedAt": "2026-11-16T21:35:00.000Z",
+      "jobReason": "job_failed",
+      "status": "failed",
+      "detail": "expand-issue-timed-out",
+      "exitCode": "143"
+    }
+  ],
+  "expected": {
+    "jobLaunches": 3,
+    "escalationBasis": "exhausted:expansion-recovery-job",
+    "inboxItems": 1,
+    "rawBlockedHook": false,
+    "privateMarker": false
+  }
+}
