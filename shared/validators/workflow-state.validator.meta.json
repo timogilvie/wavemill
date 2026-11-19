@@ -1,8 +1,8 @@
 {
   "name": "workflow-state",
   "schemaPath": "shared/schemas/workflow-task.schema.json",
-  "schemaSha256": "5e80e874e31f3358594ee4685fef4d1bfb3eee804005d61b9a06882b820f5d80",
-  "codeSha256": "01fbcc4a57b3c248d9ec5c3dc29bf35047f377b0f27e02fb1bfdc0a05ff81e5b",
+  "schemaSha256": "1535af4113b762c7ca6de474e38ad872f4b5b0f0345dfabf3638091c48ed0ee9",
+  "codeSha256": "c82bf4ea2d0d551896d066ae5ba8556d383abe6223dedc16b794b61164dcb9db",
   "ajvOptions": {
     "allErrors": true,
     "strict": false

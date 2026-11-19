@@ -37,6 +37,7 @@ import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ExecutionEconomicsStageRole } from './eval-schema.ts';
+import { validateTaskAttemptRef, type TaskAttemptRef } from './sdk-task-cost/contract.ts';
 
 /** File name, identical live and in the archive. */
 export const SESSION_OWNERSHIP_FILE = '.session-ownership.jsonl';
@@ -88,6 +89,14 @@ export interface SessionOwnershipRow {
   attemptId: string;
   /** Working directory of the launch (Codex rollouts are matched on it). */
   cwd?: string;
+  /**
+   * SDK `task_attempt/v1` identity for this launch (HOK-3476), minted by
+   * `attempt-identity.ts` (`projectStageAttempt`/`taskAttemptRef`) before the
+   * child starts. Absent on rows written before this field existed, and on
+   * any launch path not yet migrated — their lineage reads as unknown; it is
+   * never reconstructed from `attemptId`/`head`/timestamp.
+   */
+  attemptRef?: TaskAttemptRef;
 }
 
 interface LaunchLine extends SessionOwnershipRow {
@@ -115,6 +124,8 @@ export interface AppendOwnershipRowInput {
   cwd?: string;
   /** Worktree HEAD used for the default attempt id. */
   head?: string | null;
+  /** SDK identity for this launch (HOK-3476); see {@link SessionOwnershipRow.attemptRef}. */
+  attemptRef?: TaskAttemptRef;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -279,6 +290,10 @@ export function appendOwnershipRow(stateDir: string, input: AppendOwnershipRowIn
   const launchedAt = input.launchedAt instanceof Date
     ? input.launchedAt
     : input.launchedAt ? new Date(input.launchedAt) : new Date();
+  // HOK-3476: validate before append — a malformed ref must never reach the
+  // lossless history as if it were real lineage. Absence (no ref passed) is
+  // the honest "unknown lineage" case and is never rejected.
+  if (input.attemptRef !== undefined) validateTaskAttemptRef(input.attemptRef);
   const row: SessionOwnershipRow = {
     sessionRef: input.sessionRef.trim(),
     harness: input.harness,
@@ -288,6 +303,7 @@ export function appendOwnershipRow(stateDir: string, input: AppendOwnershipRowIn
     launchedAt: launchedAt.toISOString(),
     attemptId: input.attemptId ?? buildAttemptId(input.kind, input.head, launchedAt),
     ...(input.cwd ? { cwd: input.cwd } : {}),
+    ...(input.attemptRef ? { attemptRef: input.attemptRef } : {}),
   };
   appendLine(stateDir, { schemaVersion: SESSION_OWNERSHIP_SCHEMA_VERSION, type: 'launch', ...row });
   return row;
@@ -344,13 +360,29 @@ export interface OwnershipReadResult {
   malformedLines: number;
 }
 
+/**
+ * A row's `attemptRef` only when it is a well-formed {@link TaskAttemptRef}
+ * (HOK-3476). Malformed or legacy-absent lineage is dropped, never
+ * fabricated — the row still reads with its other fields intact.
+ */
+function parsedAttemptRef(value: unknown): TaskAttemptRef | undefined {
+  if (value === undefined) return undefined;
+  try {
+    validateTaskAttemptRef(value);
+  } catch {
+    return undefined;
+  }
+  return value as TaskAttemptRef;
+}
+
 function parseLaunch(value: Record<string, unknown>): SessionOwnershipRow | null {
-  const { sessionRef, harness, kind, stage, model, launchedAt, attemptId, cwd } = value;
+  const { sessionRef, harness, kind, stage, model, launchedAt, attemptId, cwd, attemptRef } = value;
   if (typeof sessionRef !== 'string' || sessionRef === '') return null;
   if (!SESSION_HARNESSES.includes(harness as SessionHarness)) return null;
   if (!isOwnershipKind(kind)) return null;
   if (typeof launchedAt !== 'string' || !Number.isFinite(Date.parse(launchedAt))) return null;
   const validStage = (OWNERSHIP_STAGES as readonly unknown[]).includes(stage) ? stage as OwnershipStage : undefined;
+  const ref = parsedAttemptRef(attemptRef);
   return {
     sessionRef,
     harness: harness as SessionHarness,
@@ -360,6 +392,7 @@ function parseLaunch(value: Record<string, unknown>): SessionOwnershipRow | null
     launchedAt,
     attemptId: typeof attemptId === 'string' ? attemptId : '',
     ...(typeof cwd === 'string' && cwd ? { cwd } : {}),
+    ...(ref ? { attemptRef: ref } : {}),
   };
 }
 

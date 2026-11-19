@@ -55,6 +55,7 @@ All business logic lives in `shared/lib/`, reusable across CLI tools, commands a
 
 #### Utilities
 - **Bounded retry (HOK-2924)** — New relaunch paths must use this helper — never implement a private retry counter. Guard: `tools/check-retry-sentinel.ts`. → [docs/invariants/bounded-retry.md](docs/invariants/bounded-retry.md)
+- **Attempt lineage (HOK-3476)** — Mint and validate SDK `task_attempt/v1` identity only through `attempt-identity.ts`; never hand-build a `TaskAttemptRef` or set `retry_of`/`retryOf` elsewhere. Guard: `tools/check-attempt-lineage.ts`. → [docs/invariants/attempt-lineage.md](docs/invariants/attempt-lineage.md)
 - **Install-health verdict (HOK-3315)** — Never compare lockfile bytes or hand-roll a `.packages` diff outside this file. Guard: `tools/check-install-verdict.ts`. → [docs/invariants/install-health-verdict.md](docs/invariants/install-health-verdict.md)
 - **Failure policy (HOK-3176/HOK-3513)** — Never add a classifier branch that parks; add a fixture to `failure-policy.fixtures.test.ts`. Only `invalidate_ready_verdict` invalidates a passed Ready; never park a conflict. Guard: `tools/check-failure-policy.ts`, `tools/check-ready-failure-policy.ts`. → [docs/invariants/failure-policy.md](docs/invariants/failure-policy.md)
 - **Scope stop record (HOK-3457)** — Scope-guard refusals write `.review-scope-stop.json`. Guard: `tools/check-scope-stop-record.ts`. → [docs/invariants/scope-stop-record.md](docs/invariants/scope-stop-record.md)

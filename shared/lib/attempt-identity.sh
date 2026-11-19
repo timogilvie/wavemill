@@ -7,6 +7,12 @@
 #   attempt_identity_mint_run_id <issue> <run_epoch> <launched_at_epoch>
 #       Prints "<issue>:<run_epoch>:<launched_at_epoch>" (byte-identical to
 #       TS mintRunId; pinned by tests/attempt-identity.test.sh).
+#   attempt_identity_mint_sdk_id
+#       Prints a fresh lowercase UUID v4 — the shell boundary's mint of the
+#       SDK task_attempt/v1 run id (HOK-3476). Minted once per launch in
+#       save_task_state; never derived from a head, timestamp or session, and
+#       never recomputed by a reader (`MINTED_ID_PATTERN` in
+#       `@hokusai/core`/`sdk-task-cost/contract.ts`).
 #   task_run_id <issue> [state_file]
 #       Prints the row's runId (empty for legacy rows / missing rows).
 #   task_settled_outcome <issue> [state_file]
@@ -43,6 +49,21 @@ attempt_identity_mint_run_id() {
   [[ -n "$issue" ]] || return 1
   [[ "$launched_at" =~ ^[0-9]+$ ]] || launched_at="$(date +%s)"
   printf '%s:%s:%s\n' "$issue" "$run_epoch" "$launched_at"
+}
+
+attempt_identity_mint_sdk_id() {
+  local ref=""
+  if command -v uuidgen >/dev/null 2>&1; then
+    ref="$(uuidgen 2>/dev/null)"
+  elif [[ -r /proc/sys/kernel/random/uuid ]]; then
+    ref="$(cat /proc/sys/kernel/random/uuid)"
+  fi
+  if [[ -z "$ref" ]]; then
+    local hex
+    hex="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+    ref="${hex:0:8}-${hex:8:4}-4${hex:13:3}-a${hex:17:3}-${hex:20:12}"
+  fi
+  printf '%s\n' "$ref" | tr 'A-Z' 'a-z'
 }
 
 task_run_id() {

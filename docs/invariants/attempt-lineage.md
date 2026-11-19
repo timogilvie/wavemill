@@ -1,0 +1,7 @@
+---
+title: Attempt lineage
+---
+
+# Attempt lineage
+
+`attempt-identity.ts` (HOK-3476) is the one projector of Wavemill's legacy identity (`task.runId`, ownership `attemptId`) onto the SDK `task_attempt/v1` contract (`@hokusai/core`, re-exported from `shared/lib/sdk-task-cost/contract.ts`). `projectRunAttempt` and `projectStageAttempt` mint the SDK's own UUID identity and validate it with the SDK's own validators before any other module sees it; `taskAttemptRef` builds a `TaskAttemptRef` from already-minted ids. **Every other Wavemill module consumes these functions — never `@hokusai/core`'s attempt types directly, and never a hand-built `{task_id, run_id, ...}` object literal.** IDs are minted, not derived: never recompute a `run_id`/`stage_attempt_id` from a head SHA, a timestamp or a session (that is what the legacy `runId`/`attemptId` labels are for — they travel alongside the SDK ids in `legacy_ids`, never in place of them). `retry_of` is set only when a caller already knows the specific failed/abandoned sibling being replaced; a child stage/helper launch is never automatically treated as a retry of anything. Historical rows and launch paths not yet migrated carry no `attemptRef`/`sdkRunId` at all — that absence is read as unknown lineage and is never backfilled or fabricated by a reader. Enforced by `tools/check-attempt-lineage.ts` (ad-hoc `{task_id: ..., run_id: ...}` / `stage_attempt_id:` object literals, and a bare `retry_of:` assignment, outside the canonical module).

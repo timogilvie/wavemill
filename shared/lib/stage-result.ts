@@ -32,6 +32,7 @@ import type { ReviewExecutedIdentitySet } from './challenge-execution-contract.t
 import type { MergeQueueState } from './merge-queue.ts';
 export type { ReviewExecutedIdentitySet, ExecutedIdentity, ExecutedIdentityRole } from './challenge-execution-contract.ts';
 import { isSameRunId, runIdStartedAt } from './attempt-identity.ts';
+import type { TaskAttemptRef } from './sdk-task-cost/contract.ts';
 import { challengeModelIdsEquivalent } from './challenge-comparison.ts';
 import { acquireStateLockSync, releaseStateLock } from './state-lock.ts';
 import { readWorkflowState } from './workflow-state.ts';
@@ -524,6 +525,15 @@ export type StageArtifacts = (
 export interface StageResult {
   /** Task run captured at launch, when available. Never reassigned on completion. */
   runId?: string | null;
+  /**
+   * SDK `task_attempt/v1` stage-attempt identity captured at this stage's
+   * launch (HOK-3476), minted by `attempt-identity.ts`
+   * (`projectStageAttempt`). Carried unchanged through completion/failure,
+   * exactly like `runId`; absent on artifacts written before this field
+   * existed or by a launch path not yet migrated — read as unknown lineage,
+   * never reconstructed from `runId`/timestamps.
+   */
+  attemptRef?: TaskAttemptRef;
   stage: StageName;
   status: StageStatus;
   startedAt: string;
@@ -569,7 +579,7 @@ export interface StageResult {
 
 export type StageResultHistoryEntry = Pick<
   StageResult,
-  'runId' | 'status' | 'agent' | 'model' | 'intendedModel' | 'executedModel' | 'startedAt' | 'finishedAt' | 'notes'
+  'runId' | 'attemptRef' | 'status' | 'agent' | 'model' | 'intendedModel' | 'executedModel' | 'startedAt' | 'finishedAt' | 'notes'
 > & {
   error?: string;
   failureReason?: string | null;
@@ -1257,6 +1267,7 @@ export async function writeStageResultWithHistory(
     ? [{
       status: existing.status,
       runId: existing.runId,
+      ...(existing.attemptRef ? { attemptRef: existing.attemptRef } : {}),
       agent: existing.agent,
       model: existing.model,
       startedAt: existing.startedAt,

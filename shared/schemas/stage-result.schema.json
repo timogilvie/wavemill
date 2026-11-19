@@ -30,6 +30,16 @@
       "type": ["string", "null"],
       "description": "Task run captured at stage launch; preserved across completion writes."
     },
+    "attemptRef": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "SDK task_attempt/v1 stage-attempt identity captured at launch (HOK-3476); preserved across completion writes exactly like runId.",
+      "properties": {
+        "task_id": { "type": "string" },
+        "run_id": { "type": "string" },
+        "stage_attempt_id": { "type": "string" }
+      }
+    },
     "startedAt": {
       "type": "string"
     },

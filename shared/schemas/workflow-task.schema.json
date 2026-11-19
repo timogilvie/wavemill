@@ -391,6 +391,10 @@
           "type": "string",
           "description": "Run identity minted at launch, never changed for the life of the row (HOK-3373, attempt-identity.ts). A relaunch of a settled issue mints a new one. save_task_state."
         },
+        "sdkRunId": {
+          "type": "string",
+          "description": "SDK task_attempt/v1 run-attempt id minted at launch alongside runId, never changed for the life of the row (HOK-3476, attempt-identity.ts). save_task_state."
+        },
         "slug": {
           "type": "string",
           "description": "Worktree/feature slug. save_task_state."

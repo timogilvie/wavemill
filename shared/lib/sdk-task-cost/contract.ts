@@ -39,3 +39,29 @@ export type {
   TaskCostSummaryV1,
   TaskCostTokenUsage,
 } from '@hokusai/core';
+
+/**
+ * The `task_attempt/v1` identity contract (HOK-3372, adopted HOK-3476). One
+ * definition of *which attempt* a fact belongs to; `shared/lib/attempt-identity.ts`
+ * is the only module that mints or projects these — every other Wavemill
+ * module imports the types/validators from here, never from `@hokusai/core`
+ * directly (`tools/check-attempt-lineage.ts`).
+ */
+export {
+  TASK_ATTEMPT_ARM_ROLES,
+  TASK_ATTEMPT_KINDS,
+  TASK_ATTEMPT_RECORD_TYPES,
+  TASK_ATTEMPT_SCHEMA_VERSION,
+  isTaskAttemptLogEntryV1,
+  validateTaskAttemptLogEntryV1,
+  validateTaskAttemptRef,
+  MINTED_ID_PATTERN,
+} from '@hokusai/core';
+
+export type {
+  TaskAttemptArmRole,
+  TaskAttemptKind,
+  TaskAttemptRecordV1,
+  TaskAttemptRef,
+  TaskAttemptSessionRef,
+} from '@hokusai/core';

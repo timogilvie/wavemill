@@ -8296,8 +8296,12 @@ save_task_state() {
   # a settled row (that row's outcome, abort markers and PR stay with the old
   # run), and mints a fresh runId. Every other save keeps the row's runId and
   # still refuses to resurrect a reaped row from its tombstone (HOK-3125).
-  local launch_mode="${SAVE_TASK_STATE_LAUNCH:-0}" new_run_id
+  local launch_mode="${SAVE_TASK_STATE_LAUNCH:-0}" new_run_id new_sdk_run_id
   new_run_id="$(attempt_identity_mint_run_id "$issue" "$run_epoch" "$(date +%s)")"
+  # HOK-3476: the SDK task_attempt/v1 run identity, minted alongside the
+  # legacy runId above. Always minted (cheap, local) but only adopted below
+  # when the row has none yet — same one-mint-per-run rule as runId.
+  new_sdk_run_id="$(attempt_identity_mint_sdk_id)"
   if [[ "$launch_mode" == "1" ]]; then
     if task_last_run_delivered "$issue"; then
       if declare -F log_warn >/dev/null 2>&1; then
@@ -8327,6 +8331,7 @@ save_task_state() {
         status: $effectiveStatus,
         linearIssueId: (if $linearIssue != "" then $linearIssue else ($existing.linearIssueId // $issue) end),
         runId: (if ($existing.runId // "") != "" then $existing.runId else $runId end),
+        sdkRunId: (if ($existing.sdkRunId // "") != "" then $existing.sdkRunId else $sdkRunId end),
         updated: (now | todate)
       })
       | if $agent != "" then .tasks[$issue].agent = $agent else . end
@@ -8365,7 +8370,7 @@ save_task_state() {
      --arg requireConfirmSource "$require_confirm_source" \
      --arg mergeMethodSource "$merge_method_source" \
      --arg remoteDeletionAllowed "$remote_deletion_allowed" --arg session "${SESSION:-}" \
-     --arg runEpoch "$run_epoch" --arg runId "$new_run_id" --arg launch "$launch_mode"; then
+     --arg runEpoch "$run_epoch" --arg runId "$new_run_id" --arg sdkRunId "$new_sdk_run_id" --arg launch "$launch_mode"; then
     # log_warn is caller-provided (the mill and monitor define it; the startup
     # runner intentionally surfaces the failure through wavemill_lock_run).
     if declare -F log_warn >/dev/null 2>&1; then

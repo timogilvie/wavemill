@@ -96,6 +96,14 @@ export type TaskRecord = {
    * (`task-settlement.ts`).
    */
   runId?: string;
+  /**
+   * SDK `task_attempt/v1` run-attempt id minted at launch (HOK-3476),
+   * alongside (never instead of) `runId`. Absent on rows written before
+   * this field existed; never reconstructed from `runId`. Stage/session
+   * writers project a `TaskAttemptRef` from it via `attempt-identity.ts`'s
+   * `taskAttemptRef`/`projectStageAttempt`.
+   */
+  sdkRunId?: string;
   /** Linear state last rendered from the settled outcome (HOK-3373). */
   linearSyncedState?: string;
   /** Validated against `task-lifecycle-state.schema.json`; legacy rows may be partial. */

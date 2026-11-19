@@ -32,6 +32,7 @@ import {
   stageForKind,
   type SessionOwnershipRow,
 } from './session-ownership.ts';
+import { projectRunAttempt, projectStageAttempt } from './attempt-identity.ts';
 
 const SHELL_TWIN = join(dirname(fileURLToPath(import.meta.url)), 'session-ownership.sh');
 const cleanups: Array<() => void> = [];
@@ -182,6 +183,55 @@ describe('session-ownership record (HOK-3328)', () => {
     assert.equal(extractLaunchNonce(`${launchNonceLine(nonce)}\nDo the work`), nonce);
     assert.equal(extractLaunchNonce('no marker'), null);
     assert.equal(buildAttemptId('helper:judge', null, new Date('2026-10-27T00:00:00Z')), 'helper:judge@nohead#1793059200');
+  });
+
+  // protects (HOK-3476): the SDK identity being dropped on read, or a bad ref
+  // reaching the lossless history as if it were real lineage.
+  it('round-trips a validated SDK attemptRef and rejects a malformed one', () => {
+    const dir = tempDir();
+    const run = projectRunAttempt({ taskId: 'HOK-9999' });
+    const stage = projectStageAttempt({ taskId: 'HOK-9999', runId: run.record.id, stage: 'coding' });
+    appendOwnershipRow(dir, { sessionRef: 's1', harness: 'native', kind: 'native-arm', stage: 'coding', model: 'm', attemptRef: stage.ref });
+    assert.deepEqual(readOwnershipRows(dir)[0].attemptRef, stage.ref);
+
+    assert.throws(
+      () => appendOwnershipRow(dir, {
+        sessionRef: 's2',
+        harness: 'native',
+        kind: 'native-arm',
+        stage: 'coding',
+        model: 'm',
+        attemptRef: { task_id: 'HOK-9999', run_id: 'not-a-minted-id' },
+      }),
+      /minted/,
+    );
+  });
+
+  // protects (HOK-3476): a historical row with no SDK identity being mistaken
+  // for one, or a malformed one on disk crashing or poisoning the whole read.
+  it('reads unknown lineage on a legacy row and drops a malformed attemptRef without losing the row', () => {
+    const dir = tempDir();
+    appendOwnershipRow(dir, { sessionRef: 'legacy', harness: 'claude-code', kind: 'coding', model: 'm', launchedAt: '2026-10-27T00:00:00.000Z' });
+    appendFileSync(
+      join(dir, SESSION_OWNERSHIP_FILE),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        type: 'launch',
+        sessionRef: 'bad-ref',
+        harness: 'claude-code',
+        kind: 'coding',
+        stage: 'coding',
+        model: 'm',
+        launchedAt: '2026-10-27T00:00:01.000Z',
+        attemptId: 'a',
+        attemptRef: { task_id: 'HOK-9999', run_id: 'not-a-minted-id' },
+      })}\n`,
+    );
+    const rows = readOwnershipRows(dir);
+    assert.deepEqual(rows.map((row) => [row.sessionRef, 'attemptRef' in row]), [
+      ['legacy', false],
+      ['bad-ref', false],
+    ]);
   });
 });
 

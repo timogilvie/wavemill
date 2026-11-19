@@ -67,6 +67,8 @@ export const TASK_CONTROL_FIELDS: ReadonlySet<string> = new Set([
   'phase',
   'pr',
   'runId',
+  /** SDK task_attempt/v1 run identity (HOK-3476), minted alongside runId; same run-identity rule. */
+  'sdkRunId',
   'slug',
   'branch',
   'worktree',

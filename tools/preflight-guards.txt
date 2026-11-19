@@ -18,6 +18,7 @@ tools/check-test-tracked-writes.ts
 tools/check-task-identity.ts
 tools/check-task-record-shape.ts
 tools/check-retry-sentinel.ts
+tools/check-attempt-lineage.ts
 tools/check-session-capabilities.ts
 tools/check-cost-ownership.ts
 tools/check-session-ownership.ts

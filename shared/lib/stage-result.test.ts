@@ -14,6 +14,7 @@ import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
 import { appendOwnershipRow } from './session-ownership.ts';
+import { projectRunAttempt, projectStageAttempt } from './attempt-identity.ts';
 import { fileURLToPath } from 'node:url';
 import { MERGE_QUEUE_STATES } from './merge-queue.ts';
 
@@ -95,6 +96,16 @@ describe('writeStageResult and readStageResult', () => {
 
     const read = await readStageResult(testDir, 'planning');
     assert.deepEqual(read, result);
+  });
+
+  it('HOK-3476: round-trips a minted SDK attemptRef', async () => {
+    const run = projectRunAttempt({ taskId: 'HOK-9999' });
+    const stageAttempt = projectStageAttempt({ taskId: 'HOK-9999', runId: run.record.id, stage: 'coding' });
+    const result = makeResult({ attemptRef: stageAttempt.ref });
+    await writeStageResult(testDir, result);
+
+    const read = await readStageResult(testDir, 'planning');
+    assert.deepEqual(read?.attemptRef, stageAttempt.ref);
   });
 
   it('round-trips native agent and model fields', async () => {
@@ -598,6 +609,26 @@ describe('writeStageResultWithHistory', () => {
     assert.equal(read?.history?.length, 2);
     assert.equal(read?.history?.[0]?.notes, 'first failure');
     assert.equal(read?.history?.[1]?.status, 'aborted');
+  });
+
+  it('HOK-3476: a late, superseded attempt keeps its own attemptRef in history', async () => {
+    const staleAttemptRef = { task_id: 'HOK-9999', run_id: '0b1e5c1a-5d8a-4c0e-9c1a-5b1e5c1a5d8a', stage_attempt_id: '1b1e5c1a-5d8a-4c0e-9c1a-5b1e5c1a5d8a' };
+    await writeStageResult(testDir, makeResult({
+      stage: 'coding',
+      status: 'failed',
+      finishedAt: '2026-04-09T11:00:00Z',
+      attemptRef: staleAttemptRef,
+    }));
+
+    const freshAttemptRef = { task_id: 'HOK-9999', run_id: '0b1e5c1a-5d8a-4c0e-9c1a-5b1e5c1a5d8a', stage_attempt_id: '2b1e5c1a-5d8a-4c0e-9c1a-5b1e5c1a5d8a' };
+    await writeStageResultWithHistory(testDir, 'coding', {
+      status: 'running',
+      attemptRef: freshAttemptRef,
+    });
+
+    const read = await readStageResult(testDir, 'coding');
+    assert.deepEqual(read?.attemptRef, freshAttemptRef);
+    assert.deepEqual(read?.history?.[0]?.attemptRef, staleAttemptRef);
   });
 });
 
