@@ -73,6 +73,7 @@ function writeMinimalConfig(repoDir: string): void {
     JSON.stringify({
       configVersion: CANONICAL_CONFIG_TEMPLATE.configVersion,
       providers: CANONICAL_CONFIG_TEMPLATE.providers,
+      nativeAgent: { enabled: true, allowedPhases: ['planning', 'coding', 'review'] },
       router: {
         availableModels: CANONICAL_CONFIG_TEMPLATE.router?.availableModels,
       },
