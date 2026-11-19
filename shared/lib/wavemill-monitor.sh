@@ -6046,7 +6046,6 @@ ensure_task_inputs_ready() {
       set_window_attention_state "$win" "clear"
     else
       log_warn "$issue → task-input preparation failed before plan approval: $detail"
-      set_window_attention_state "$win" "needs-user"
     fi
     return 1
   fi
