@@ -1,0 +1,26 @@
+11:34:57  HOK-3500: Launching - One NativePatch contract: the tool schema is the validator, and errors name the keys received
+11:34:58  HOK-3500 title and raw description saved (agent will expand)
+11:34:58  HOK-3500: routing in background; launch deferred to a later pass
+11:35:23  HOK-3500: Launching - One NativePatch contract: the tool schema is the validator, and errors name the keys received
+11:35:26  HOK-3500 Route: planner=gpt-5.6-terra (medium), coder=claude-opus-5-5 (medium), reviewer=claude-opus-4-7 (llm)
+11:35:31  HOK-3500: challenge selection health filtered candidates (reserved=2, circuit=0, reason=selected)
+11:35:31  HOK-3500: Planner challenge sealed (challenger deferred until expanded route, awaiting_expanded_route)
+11:35:45  [HOK-3500]  Launching planning phase for HOK-3500 (model: gpt-5.6-terra, depth: light, mode: normal)
+11:35:50  HOK-3500 Routing complete (direct), launched planning with gpt-5.6-terra
+11:35:50  HOK-3500 launched (phase: planning, agent: codex --model gpt-5.6-terra)
+11:35:50  HOK-3500: Routing: planner=gpt-5.6-terra, coder=claude-opus-5-5, reviewer=claude-haiku-4-5-20251001
+11:40:13  HOK-3500: [task-inputs] ready (via=existing) packet=618f56866e9d bound before approval
+11:40:13  HOK-3500 → plan.md detected, marking planning as awaiting_user
+11:43:40  HOK-3500 → Plan approved (via .plan-approved marker), marking as completed
+11:45:04  route.lifecycle: event=challenge_route_frozen issue=HOK-3500 side=primary fields=planner,coder,reviewer,planDepth,codeDepth,reviewMode
+11:45:05  [HOK-3500] [router] planner=gpt-5.6-terra,planDepth=light,coder=claude-opus-5-5,codeDepth=light,reviewer=claude-haiku-4-5-20251001,reviewMode=static,taskType=feature,complexity=5,band=xl,riskFlags=large-scope-refactor|test-infrastructure
+11:45:06  HOK-3500: plan_packet_check result=match recorded=618f56866e9d39a903a7ce1d4059cafc74d4bb3c6cfa221fad9f6cb822149977 current=618f56866e9d39a903a7ce1d4059cafc74d4bb3c6cfa221fad9f6cb822149977
+11:45:06  HOK-3500: Materialising sealed plan-stage challenger against the expanded route
+11:45:09  route.lifecycle: event=challenge_primary_resealed issue=HOK-3500 fields=coder,reviewer
+11:45:23  WARN: Window HOK-3500_c-one-nativepatch-contract-the-tool-schema-is-the-validator-and-errors-name-the-keys-received-challenger missing, recreating...
+11:45:25  [HOK-3500_c]  Launching planning phase for HOK-3500_c (model: kimi-k3.1-pro, depth: light, mode: normal)
+11:45:32  HOK-3500 → plan-stage challenger arm HOK-3500_c materialised at t=0 (base auto/integration)
+11:45:32  route.lifecycle: event=challenge_arm_materialized issue=HOK-3500 arm=HOK-3500_c stage=plan fork=t0
+11:45:47  [HOK-3500]  Launching coding phase for HOK-3500 (model: kimi-k2.7-code, depth: light, mode: normal)
+11:46:05  HOK-3500 → Plan approved, launching coding phase
+11:54:24  ♻ HOK-3500_c → planning failed (native-stage-timeout, retryable), relaunch 1/3 via routing
