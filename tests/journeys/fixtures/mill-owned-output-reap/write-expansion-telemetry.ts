@@ -1,3 +1,5 @@
+// Fixture provenance: hand-authored HOK-3503 production-incident replay. It
+// invokes the real expansion telemetry writer against a task worktree.
 import { annotateTaskSize } from '../../../../shared/lib/issue-expander.ts';
 const [repoDir, issueId] = process.argv.slice(2);
 if (!repoDir || !issueId) throw new Error('expected repoDir and issueId');

@@ -1,0 +1,55 @@
+{
+  "schemaVersion": "incident-fixture/1",
+  "chain": "hok3503_task_size_estimates_retain_dirty",
+  "incidents": ["sanitized-hok3503-retain-dirty"],
+  "initialState": {
+    "task": { "issue": "HOK-3503", "slug": "one-mill-output-list", "phase": "ready", "status": "idle" },
+    "jobs": [],
+    "worktreeFiles": { ".wavemill/task-size-estimates.jsonl": "{\"issueId\":\"HOK-3503\"}\n" }
+  },
+  "incident": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "cleanup_dirty_worktree",
+    "severity": "high",
+    "confidence": "high",
+    "summary": "Merged HOK-3503 worktree was retained solely for task-size estimate telemetry.",
+    "operatorAction": "None after the declared mill output is filtered and discarded during terminal cleanup.",
+    "metadata": { "classifierVerdict": "retain_dirty", "worktreeDirty": false, "commitsAhead": 0, "remoteContainsHead": true }
+  },
+  "observations": [{
+    "absentCyclesBefore": 0,
+    "evidence": [{
+      "type": "workflow_state",
+      "source": "sanitized terminal-inbox cleanup record",
+      "timestamp": "2026-11-17T00:00:00.000Z",
+      "redactedData": "classifierVerdict=retain_dirty dirtyPath=?? .wavemill/task-size-estimates.jsonl worktreeDirty=false commitsAhead=0 remoteContainsHead=true",
+      "key": "hok3503:task-size-estimates:retain-dirty"
+    }]
+  }],
+  "trailingAbsentCycles": 6,
+  "convergence": { "mustMerge": true, "maxTickCount": 15, "tickIntervalSeconds": 30 },
+  "journey": "mill-owned-output-reap",
+  "expected": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "cleanup_dirty_worktree",
+    "occurrenceCount": 1,
+    "lifecycleWhilePresent": "observed",
+    "finalLifecycle": "resolved",
+    "resolutionReasonPrefix": "not re-observed",
+    "recurrences": 0
+  },
+  "source": {
+    "category": "stale_orphaned_state",
+    "rootCauseClass": "cleanup_dirty_worktree",
+    "severity": "high",
+    "confidence": "high",
+    "recordedLifecycle": "resolved",
+    "recordedResolution": "auto_resolved",
+    "occurrenceCount": 1,
+    "firstObservedAt": "2026-11-17T00:00:00.000Z",
+    "lastObservedAt": "2026-11-17T00:00:00.000Z",
+    "stateSnapshot": null,
+    "convertedBy": "sanitized production terminal-inbox evidence",
+    "observationsTruncated": false
+  }
+}

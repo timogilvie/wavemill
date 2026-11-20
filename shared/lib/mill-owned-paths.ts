@@ -16,20 +16,24 @@ export const TASK_EVIDENCE_NAMES = [
 ] as const;
 
 export const MILL_OWNED_PATHS: readonly MillOwnedPath[] = [
-  { pattern: '.wavemill/observer-findings.jsonl', disposition: 'telemetry', destination: '.wavemill/observer-findings.jsonl' },
-  { pattern: '.wavemill/task-size-estimates.jsonl', disposition: 'telemetry', destination: '.wavemill/task-size-estimates.jsonl' },
-  { pattern: '.wavemill/evals/prompt-registry.jsonl', disposition: 'telemetry', destination: '.wavemill/evals/prompt-registry.jsonl' },
+  { pattern: '.wavemill/observer-findings.jsonl', disposition: 'telemetry', destination: '.wavemill/observer-findings.jsonl', gitignore: true },
+  { pattern: '.wavemill/task-size-estimates.jsonl', disposition: 'telemetry', destination: '.wavemill/task-size-estimates.jsonl', gitignore: true },
+  { pattern: '.wavemill/evals/prompt-registry.jsonl', disposition: 'telemetry', destination: '.wavemill/evals/prompt-registry.jsonl', gitignore: true },
   { pattern: 'prompt-registry.jsonl', disposition: 'telemetry', destination: '.wavemill/evals/prompt-registry.jsonl' },
-  { pattern: '.wavemill/audits/**', disposition: 'runtime' },
+  // Existing eval output is disposable runtime state; the registry row above
+  // wins first so its telemetry destination remains explicit.
+  { pattern: '.wavemill/evals/**', disposition: 'runtime', gitignore: true },
+  { pattern: '.wavemill/audits/**', disposition: 'runtime', gitignore: true },
   ...TASK_EVIDENCE_NAMES.map(pattern => ({ pattern: `features/*/${pattern}`, disposition: 'evidence' as const })),
   { pattern: 'features/*/.*-result.attempt-*.json', disposition: 'evidence' },
   ...['.needs-attention','.ready-bypass-warned','.coding-complete','.workflow-aborted','.coding-blocked-completion.json','.condition-reconcile.jsonl','.ready-waiting-on.json','.challenge-intent.json','challenge-intent.json','selected-task.json','.phase-config.json','.coding-uncommitted-output*','.coding-recovery-instruction.md','.blocked-completion-announced','.retry-coding-dirty-handoff-*','.plan-approved','.stale-artifacts/**'].map(pattern => ({ pattern: `features/*/${pattern}`, disposition: 'runtime' as const })),
   { pattern: '.claude/settings.local.json', disposition: 'runtime' },
   { pattern: '.wavemill-config.local.json', disposition: 'runtime' },
-  ...['.wavemill/workflow-state.json','.wavemill/native-status.json','.wavemill/quota-state.json','.wavemill/quota-state.lock','.wavemill/project-context.md','.wavemill/merge-queue-selection.json','.wavemill/cache/**','.wavemill/logs/**','.wavemill/hokusai/**','.wavemill/state/**','.wavemill/locks/**','.wavemill/runs/**','.wavemill/session-events/**','.wavemill/artifacts/**','.wavemill/tool-decisions/**','.wavemill/runtime-env/**','.wavemill/linear-retry-drain.last-run','.wavemill/workflow-state.json.bak-*','.wavemill/ledger.sqlite*'].map(pattern => ({ pattern, disposition: 'runtime' as const, gitignore: true })),
+  ...['.wavemill/workflow-state.json','.wavemill/native-status.json','.wavemill/quota-state.json','.wavemill/quota-state.lock','.wavemill/project-context.md','.wavemill/merge-queue-selection.json','.wavemill/cache/**','.wavemill/logs/**','.wavemill/hokusai/**','.wavemill/state/**','.wavemill/locks/**','.wavemill/runs/**','.wavemill/session-events/**','.wavemill/artifacts/**','.wavemill/tool-decisions/**','.wavemill/merge-retry/**','.wavemill/runtime-env/**','.wavemill/linear-retry-drain.last-run','.wavemill/workflow-state.json.bak-*','.wavemill/ledger.sqlite*'].map(pattern => ({ pattern, disposition: 'runtime' as const, gitignore: true })),
 ] as const;
 
 function globRegex(pattern: string): RegExp {
+  if (pattern.endsWith('/**')) return new RegExp(`^${globRegex(pattern.slice(0, -3)).source.slice(1, -1)}(?:/.*)?$`);
   return new RegExp(`^${pattern.split('/').map(segment => segment === '**' ? '.*' : segment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\\*/g, '[^/]*')).join('/')}$`);
 }
 export function millOwnedEntry(path: string): MillOwnedPath | undefined {
@@ -38,10 +42,10 @@ export function millOwnedEntry(path: string): MillOwnedPath | undefined {
   return MILL_OWNED_PATHS.find(entry => globRegex(entry.pattern).test(normalized));
 }
 export function isMillOwnedDirtyLine(line: string): boolean {
-  // Only untracked owned outputs may disappear from the dirty decision.
+  // Only untracked or ignored owned outputs may disappear from the dirty decision.
   // Every tracked change remains task work, regardless of its path.
   const match = /^([ MADRCU?!]{2}) (.+)$/.exec(line);
-  return !!match && match[1] === '??' && !!millOwnedEntry(match[2]);
+  return !!match && (match[1] === '??' || match[1] === '!!') && !!millOwnedEntry(match[2]);
 }
 export function filterMillOwnedDirtyStatus(raw: string): string[] {
   return raw.split('\n').filter(Boolean).filter(line => !isMillOwnedDirtyLine(line));
@@ -61,9 +65,9 @@ export function renderMillOwnedShell(): string {
 `WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT="${observer}"\n`+
 `wavemill_mill_owned_path() { local path="${arg}" pattern destination; while IFS='|' read -r pattern destination; do case "$path" in $pattern) return 0 ;; esac; done <<< "$MILL_OWNED_PATH_ROWS"; return 1; }\n`+
 `wavemill_mill_owned_telemetry_destination() { local path="${arg}" pattern destination; while IFS='|' read -r pattern destination; do if [[ "$path" == "$pattern" && -n "$destination" ]]; then printf '%s\n' "$destination"; return 0; fi; done <<< "$MILL_OWNED_PATH_ROWS"; return 1; }\n`+
-`wavemill_mill_owned_dirty_line() { [[ "${status}" == '??' ]] && wavemill_mill_owned_path "${linePath}"; }\n`+
-`wavemill_worktree_dirty_status() { local wt_dir="${arg}" raw_status line; raw_status="$(git -C "$wt_dir" status --porcelain --untracked-files=all 2>/dev/null)" || return 1; while IFS= read -r line; do [[ -z "$line" ]] && continue; wavemill_mill_owned_dirty_line "$line" || printf '%s\n' "$line"; done <<< "$raw_status"; }\n`+
-`wavemill_discard_mill_owned_untracked() { local wt_dir="${arg}" line path destination; [[ -n "$wt_dir" && -d "$wt_dir" ]] || return 0; while IFS= read -r line; do wavemill_mill_owned_dirty_line "$line" || continue; path="${extractedPath}"; [[ "$path" != /* && "$path" != *../* ]] || continue; git -C "$wt_dir" ls-files --error-unmatch -- "$path" >/dev/null 2>&1 && continue; destination="$(wavemill_mill_owned_telemetry_destination "$path" 2>/dev/null || true)"; if [[ -n "$destination" ]]; then [[ -n "${repo}" && -d "${repo}" ]] || return 1; mkdir -p "${repoValue}/$(dirname "$destination")" || return 1; cat "$wt_dir/$path" >> "${repoValue}/$destination" || return 1; fi; rm -rf -- "$wt_dir/$path" 2>/dev/null || return 1; done < <(git -C "$wt_dir" status --porcelain --untracked-files=all); }\n`;
+`wavemill_mill_owned_dirty_line() { [[ "${status}" == '??' || "${status}" == '!!' ]] && wavemill_mill_owned_path "${linePath}"; }\n`+
+`wavemill_worktree_dirty_status() { local wt_dir="${arg}" raw_status line; raw_status="$(git -C "$wt_dir" status --porcelain --untracked-files=all --ignored=matching 2>/dev/null)" || return 1; while IFS= read -r line; do [[ -z "$line" ]] && continue; wavemill_mill_owned_dirty_line "$line" || printf '%s\n' "$line"; done <<< "$raw_status"; }\n`+
+`wavemill_discard_mill_owned_untracked() { local wt_dir="${arg}" line path destination; [[ -n "$wt_dir" && -d "$wt_dir" ]] || return 0; while IFS= read -r line; do wavemill_mill_owned_dirty_line "$line" || continue; path="${extractedPath}"; [[ "$path" != /* && "$path" != *../* ]] || continue; git -C "$wt_dir" ls-files --error-unmatch -- "$path" >/dev/null 2>&1 && continue; destination="$(wavemill_mill_owned_telemetry_destination "$path" 2>/dev/null || true)"; if [[ -n "$destination" ]]; then [[ -n "${repo}" && -d "${repo}" ]] || return 1; mkdir -p "${repoValue}/$(dirname "$destination")" || return 1; cat "$wt_dir/$path" >> "${repoValue}/$destination" || return 1; fi; rm -rf -- "$wt_dir/$path" 2>/dev/null || return 1; done < <(git -C "$wt_dir" status --porcelain --untracked-files=all --ignored=matching); }\n`;
 }
 export function renderMillOwnedGitignore(): string {
   return MILL_OWNED_PATHS.filter(e => e.gitignore).map(e => e.pattern.replace(/\*\*$/, '')).join('\n') + '\n';

@@ -67,6 +67,11 @@ test-reg-*/
 __pycache__/
 
 # BEGIN GENERATED MILL-OWNED PATHS
+.wavemill/observer-findings.jsonl
+.wavemill/task-size-estimates.jsonl
+.wavemill/evals/prompt-registry.jsonl
+.wavemill/evals/
+.wavemill/audits/
 .wavemill/workflow-state.json
 .wavemill/native-status.json
 .wavemill/quota-state.json
@@ -82,6 +87,7 @@ __pycache__/
 .wavemill/session-events/
 .wavemill/artifacts/
 .wavemill/tool-decisions/
+.wavemill/merge-retry/
 .wavemill/runtime-env/
 .wavemill/linear-retry-drain.last-run
 .wavemill/workflow-state.json.bak-*

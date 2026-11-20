@@ -890,7 +890,7 @@ cleanup_episode_collect_inputs() {
     worktree_exists="true"
     worktree_identity="$(wavemill_task_worktree_identity "$wt_dir" "$REPO_DIR")"
     if [[ "$worktree_identity" == "valid" ]]; then
-      dirty_status="$(git -C "$wt_dir" status --porcelain --untracked-files=all 2>/dev/null || printf '__wavemill_status_failed__')"
+      dirty_status="$(wavemill_worktree_dirty_status "$wt_dir" 2>/dev/null || printf '__wavemill_status_failed__')"
     else
       dirty_status="orphan:${worktree_identity}:$(wavemill_orphan_dir_scan "$wt_dir" 2>/dev/null || printf '__wavemill_orphan_scan_failed__')"
     fi

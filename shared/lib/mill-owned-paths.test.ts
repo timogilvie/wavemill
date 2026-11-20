@@ -15,9 +15,10 @@ test('declares telemetry, evidence and runtime paths and leaves task context vis
   assert.ok(MILL_OWNED_PATHS.length > 10);
 });
 
-test('dirty status drops only untracked declared output', () => {
+test('dirty status drops only untracked or ignored declared output', () => {
   assert.deepEqual(filterMillOwnedDirtyStatus([
     '?? .wavemill/task-size-estimates.jsonl',
+    '!! .wavemill/evals/prompt-registry.jsonl',
     ' M prompt-registry.jsonl',
     'M  .wavemill/task-size-estimates.jsonl',
     '?? .wavemill/context/task-notes.md',
@@ -39,12 +40,12 @@ test('generated Bash matcher agrees with the TypeScript corpus', () => {
     const cases = [
       '.wavemill/task-size-estimates.jsonl', '.wavemill/audits/report.json',
       'features/a/.coding-complete', '.wavemill/context/task.md', '.wavemill/unknown',
-      'M  .wavemill/task-size-estimates.jsonl', '?? .wavemill/task-size-estimates.jsonl',
+      'M  .wavemill/task-size-estimates.jsonl', '?? .wavemill/task-size-estimates.jsonl', '!! .wavemill/evals/prompt-registry.jsonl',
     ];
-    const shell = `source ${JSON.stringify(shellFile)}; for value in "$@"; do if [[ "$value" == *'  '* || "$value" == '?? '* ]]; then wavemill_mill_owned_dirty_line "$value" && echo 1 || echo 0; else wavemill_mill_owned_path "$value" && echo 1 || echo 0; fi; done`;
+    const shell = `source ${JSON.stringify(shellFile)}; for value in "$@"; do if [[ "$value" == *'  '* || "$value" == '?? '* || "$value" == '!! '* ]]; then wavemill_mill_owned_dirty_line "$value" && echo 1 || echo 0; else wavemill_mill_owned_path "$value" && echo 1 || echo 0; fi; done`;
     const result = execFileSync('bash', ['-c', shell, 'bash', ...cases], { encoding: 'utf8' }).trim().split('\n');
-    const expected = cases.map(value => (value.startsWith('?? ') || value.startsWith('M  '))
-      ? Number(value.startsWith('?? ') && !!millOwnedEntry(value.slice(3)))
+    const expected = cases.map(value => (value.startsWith('?? ') || value.startsWith('!! ') || value.startsWith('M  '))
+      ? Number((value.startsWith('?? ') || value.startsWith('!! ')) && !!millOwnedEntry(value.slice(3)))
       : Number(!!millOwnedEntry(value))).map(String);
     assert.deepEqual(result, expected);
   } finally { rmSync(tmp, { recursive: true, force: true }); }

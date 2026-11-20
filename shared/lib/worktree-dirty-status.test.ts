@@ -53,17 +53,14 @@ test('filter treats empty and trailing-blank porcelain output as clean', () => {
   assert.deepEqual(filterWorktreeDirtyStatus('\n\n'), []);
 });
 
-test('filter keeps every non-controller change under .wavemill/', () => {
+test('filter drops declared eval runtime output but keeps unknown .wavemill changes', () => {
   const raw = [
     `?? ${OBSERVER}`,
     '?? .wavemill/evals/artifacts/HOK-3056/notes.md',
     ' M .wavemill/registry/session.jsonl',
   ].join('\n');
   const filtered = filterWorktreeDirtyStatus(raw);
-  assert.deepEqual(filtered, [
-    '?? .wavemill/evals/artifacts/HOK-3056/notes.md',
-    ' M .wavemill/registry/session.jsonl',
-  ]);
+  assert.deepEqual(filtered, [' M .wavemill/registry/session.jsonl']);
 });
 
 function makeGitRepo(): string {
@@ -191,16 +188,14 @@ test('filter drops only untracked features/<slug> mill artifacts', () => {
   ]);
 });
 
-test('filter does NOT drop arbitrary files under .wavemill/ outside the audits allowlist', () => {
+test('filter does NOT drop arbitrary files under .wavemill/ outside declared output', () => {
   const raw = [
     '?? .wavemill/notes.md',
     '?? .wavemill/registry/session.jsonl',
-    '?? .wavemill/evals/artifacts/HOK-3056/user-notes.md',
   ].join('\n');
   assert.deepEqual(filterWorktreeDirtyStatus(raw), [
     '?? .wavemill/notes.md',
     '?? .wavemill/registry/session.jsonl',
-    '?? .wavemill/evals/artifacts/HOK-3056/user-notes.md',
   ]);
 });
 
