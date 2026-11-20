@@ -31,7 +31,7 @@ export const MILL_OWNED_PATHS_GUARD: GuardSpec = {
   findingNoun: 'parallel mill-owned path declaration(s)',
   suppressionMarker: 'allow-mill-owned-paths',
   allowlistFile: 'tools/mill-owned-paths-allowlist.txt',
-  invariantPaths: ['tools/check-mill-owned-paths.ts', 'shared/lib/mill-owned-paths.ts', 'shared/lib/mill-owned-paths.sh'],
+  invariantPaths: ['tools/check-mill-owned-paths.ts', 'shared/lib/mill-owned-paths.ts', 'shared/lib/mill-owned-paths.sh'], // install-paths: allow source guard and generated twin
   invariantDocs: ['docs/invariants/mill-owned-paths.md'],
   patterns: [{
     name: 'per-path-dirty-allowlist',
