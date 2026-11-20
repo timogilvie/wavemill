@@ -24,7 +24,7 @@ Shared tooling for Claude and Codex workflows:
 
 ### Shared Business Logic Modules
 
-**Guards cap new invariants (HOK-3236).** A "never do X" rule lives in a file under `docs/invariants/<name>.md`, with one index line naming the rule, guard and path. A PR adding an invariant adds the file, index line and guard (`tools/check-<name>.ts`, built on `tools/lib/source-guard.ts` with `invariantDocs` set, listed in `tools/preflight-guards.txt`); a rule that cannot be enforced mechanically gets no file. `source-guard.ts` provides the semantics: tracked files only, invariant source auto-excluded, whole-line comments skipped, `// allow-<name>: <reason>` on the line or the line above, and a ratcheting allowlist (`<path> [<count>]  # reason`) that only shrinks.
+**Guards cap invariants (HOK-3236).** Put enforceable rules in `docs/invariants/<name>.md`, indexed with guard and path. Add `tools/check-<name>.ts` using `tools/lib/source-guard.ts` and `invariantDocs` to `tools/preflight-guards.txt`. The guard scans tracked files, excludes invariant sources, skips whole-line comments and supports `// allow-<name>: <reason>` and ratcheting allowlists (`<path> [<count>]  # reason`).
 
 All business logic lives in `shared/lib/`, reusable across CLI tools, commands and workflows:
 
@@ -89,6 +89,7 @@ All business logic lives in `shared/lib/`, reusable across CLI tools, commands a
 - **Task recovery (HOK-3277)** — Use `task-recovery-controller.ts` for decisions and claims. Guard: `tools/check-task-recovery-ownership.ts`. → [docs/invariants/task-recovery-ownership.md](docs/invariants/task-recovery-ownership.md)
 - **Live-state invariants (HOK-3229)** — New structural invariants belong in this evaluator — never add a private detector. Guard: none (evaluator rule). → [docs/invariants/state-invariants.md](docs/invariants/state-invariants.md)
 - **Task evidence retention (HOK-3475)** — Use one typed inventory for cleanup and readers; archive owned transcripts and Ready results before resource release. Guard: `tools/check-task-evidence.ts`. → [docs/invariants/task-evidence.md](docs/invariants/task-evidence.md)
+- **Mill-owned paths (HOK-3503)** — Declare task-worktree outputs once with a disposition; unknown paths stay dirty and telemetry resolves to the milled repo. Guard: `tools/check-mill-owned-paths.ts`. → [docs/invariants/mill-owned-paths.md](docs/invariants/mill-owned-paths.md)
 - **Session ownership and cost (HOK-3077)** — Record launch costs only through `recordLaunch` / `session_ownership_append`; never add a private cost engine. Guard: `tools/check-cost-ownership.ts`, `tools/check-session-ownership.ts`. → [docs/invariants/session-ownership-cost.md](docs/invariants/session-ownership-cost.md)
 - **Inputs before approval (HOK-3253)** — Never write planning `awaiting_user` without passing this gate. Guard: journey only. → [docs/invariants/inputs-before-approval.md](docs/invariants/inputs-before-approval.md)
 - **Native loop budget** — Native coding uses the shared loop budget; whole tool batches, invalid calls included, are admitted before dispatch. Production launches supply the task spend limit (`resolveTaskSpendRemainder`, HOK-3492). Guard: `tools/check-stage-exit-identity.ts`. → [docs/invariants/native-loop-budget.md](docs/invariants/native-loop-budget.md)

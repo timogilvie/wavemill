@@ -465,8 +465,12 @@ else
     # Extract function definitions from stage-teardown.sh (sourced by wavemill-common.sh, HOK-3359)
     STAGE_TEARDOWN_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/stage-teardown.sh" | sed 's/()//' | sort -u)
 
+    # Mill-owned path helpers are sourced from the generated shell twin by the monitor.
+    MILL_OWNED_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/mill-owned-paths.sh" | sed 's/()//' | sort -u)
+
     # Combine all available function definitions
     ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$ASYNC_JOBS_FUNCS" "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$OPERATOR_ESCALATION_FUNCS" "$MILL_CLOCK_FUNCS" "$PLAN_PACKET_BINDING_FUNCS" "$TASK_PROGRESS_FUNCS" "$TASK_IDENTITY_FUNCS" "$TERMINAL_BACKEND_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$STATE_LOCK_FUNCS" "$RECONCILER_FUNCS" "$CONDITION_RECONCILER_FUNCS" "$REMEDIATION_DELIVERY_FUNCS" "$WORKTREE_DEPS_FUNCS" "$DEPS_DRIFT_FUNCS" "$PICKER_FUNCS" "$STAGE_TEARDOWN_FUNCS" | sort -u)
+    ALL_DEFINED="${ALL_DEFINED}"$'\n'"${MILL_OWNED_FUNCS}"
 
     # Known external commands and bash builtins that are NOT custom functions
     # This list covers standard utilities, coreutils, and tools used by wavemill
@@ -879,7 +883,6 @@ else
   if grep -qE '^validate_planning_phase_output\(\) \{' <<< "$HEREDOC_CONTENT" \
     && grep -qE '^handle_planning_overreach_rejection\(\) \{' <<< "$HEREDOC_CONTENT" \
     && grep -qE '^wavemill_owned_dirty_path\(\) \{' <<< "$HEREDOC_CONTENT" \
-    && grep -Fq 'prompt-registry.jsonl' <<< "$HEREDOC_CONTENT" \
     && grep -Fq 'validate_planning_phase_output "$WT_DIR"' <<< "$MONITOR_ISSUE_BLOCK" \
     && grep -Fq 'handle_planning_overreach_rejection "$ISSUE" "$FEATURE_DIR" "$WIN" "$current_agent"' <<< "$MONITOR_ISSUE_BLOCK" \
     && grep -Fq '.planning-rejected.json' <<< "$HEREDOC_CONTENT" \

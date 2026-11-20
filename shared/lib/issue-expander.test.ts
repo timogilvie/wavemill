@@ -1,6 +1,7 @@
 // wavemill-test-suite: custom
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -459,6 +460,27 @@ describe('annotateTaskSize', () => {
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
+  });
+
+  it('writes task-size telemetry to the main repository from a linked worktree', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'issue-expander-linked-worktree-'));
+    const main = join(root, 'main');
+    const worktree = join(root, 'task-worktree');
+    try {
+      execFileSync('git', ['init', '-q', '-b', 'main', main]);
+      execFileSync('git', ['-C', main, 'config', 'user.email', 'test@example.com']);
+      execFileSync('git', ['-C', main, 'config', 'user.name', 'Test']);
+      writeFileSync(join(main, 'README.md'), 'seed\n');
+      execFileSync('git', ['-C', main, 'add', 'README.md']);
+      execFileSync('git', ['-C', main, 'commit', '-q', '-m', 'seed']);
+      execFileSync('git', ['-C', main, 'worktree', 'add', '-q', '-b', 'task/test', worktree]);
+      await annotateTaskSize(oversizedPacket, {
+        repoDir: worktree, issueId: 'HOK-3503', limits, probe: null,
+        proposeSlices: async () => [slice('Slice A')],
+      });
+      assert.equal(existsSync(join(worktree, '.wavemill', 'task-size-estimates.jsonl')), false);
+      assert.match(readFileSync(join(main, '.wavemill', 'task-size-estimates.jsonl'), 'utf8'), /"issueId":"HOK-3503"/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   // protects: a failed proposal turns the hold off instead of holding an

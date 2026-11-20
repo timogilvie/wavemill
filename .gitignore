@@ -55,33 +55,6 @@ weekly-competitive-review-prompt.md
 !bugs/.gitkeep
 !epics/.gitkeep
 
-# Wavemill runtime state (per-repo, not committed)
-.wavemill/workflow-state.json
-.wavemill/native-status.json
-.wavemill/quota-state.json
-.wavemill/quota-state.lock
-.wavemill/project-context.md
-.wavemill/evals/
-.wavemill/cache/
-.wavemill/context/
-.wavemill/logs/
-.wavemill/registry/
-.wavemill/hokusai/
-.wavemill/state/
-.wavemill/locks/
-.wavemill/runs/
-.wavemill/session-events/
-.wavemill/artifacts/
-.wavemill/tool-decisions/
-.wavemill/runtime-env/
-.wavemill/linear-retry-drain.last-run
-.wavemill/workflow-state.json.bak-*
-prompt-registry.jsonl
-# Hotfix: expansion telemetry written into task worktrees made terminal cleanup
-# classify merged worktrees as dirty and retain them forever. Removed by the
-# one-mill-output-list consolidation, which moves this path onto a declared list.
-.wavemill/task-size-estimates.jsonl
-
 worktrees/
 test-reg-*/
 
@@ -93,4 +66,30 @@ test-reg-*/
 # Python
 __pycache__/
 
+# BEGIN GENERATED MILL-OWNED PATHS
+.wavemill/observer-findings.jsonl
+.wavemill/task-size-estimates.jsonl
+.wavemill/evals/prompt-registry.jsonl
+.wavemill/evals/
+.wavemill/audits/
+.wavemill/workflow-state.json
+.wavemill/native-status.json
+.wavemill/quota-state.json
+.wavemill/quota-state.lock
+.wavemill/project-context.md
+.wavemill/merge-queue-selection.json
+.wavemill/cache/
+.wavemill/logs/
+.wavemill/hokusai/
+.wavemill/state/
+.wavemill/locks/
+.wavemill/runs/
+.wavemill/session-events/
+.wavemill/artifacts/
+.wavemill/tool-decisions/
+.wavemill/merge-retry/
+.wavemill/runtime-env/
+.wavemill/linear-retry-drain.last-run
+.wavemill/workflow-state.json.bak-*
 .wavemill/ledger.sqlite*
+# END GENERATED MILL-OWNED PATHS
