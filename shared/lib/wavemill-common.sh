@@ -1500,43 +1500,6 @@ _wavemill_record_cleanup_decision() {
     "$detail" "$extras" "$marker_subdir"
 }
 
-# Migrate (or drop) the controller-owned observer artifact out of a task
-# worktree before that worktree is reaped. Appends its content to the
-# repository-level findings file when REPO_DIR is a different checkout so no
-# recorded findings are lost. Only removes the exact untracked artifact.
-# For orphan worktrees (no valid .git), copies the artifact directly without
-# git tracking checks.
-wavemill_migrate_controller_observer_artifact() {
-  local wt_dir="${1:-}" artifact
-  [[ -n "$wt_dir" && -d "$wt_dir" ]] || return 0
-  artifact="$wt_dir/$WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT"
-  [[ -f "$artifact" ]] || return 0
-
-  local identity_check
-  identity_check="$(wavemill_task_worktree_identity "$wt_dir")" || true
-
-  if [[ "$identity_check" == "valid" ]]; then
-    if git -C "$wt_dir" ls-files --error-unmatch "$WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT" >/dev/null 2>&1; then
-      return 0
-    fi
-  fi
-
-  # HOK-3102 (D7): with the observer off, nothing will ever read the migrated
-  # artifact; deleting the stray file avoids growing dead state on disk.
-  local _observer_on=1
-  if declare -F wavemill_session_has >/dev/null 2>&1; then
-    if ! wavemill_session_has observer "${REPO_DIR:-$PWD}" 2>/dev/null; then
-      _observer_on=0
-    fi
-  fi
-
-  if (( _observer_on == 1 )) && [[ -n "${REPO_DIR:-}" && -d "${REPO_DIR:-}" && "$REPO_DIR" != "$wt_dir" ]]; then
-    mkdir -p "$REPO_DIR/.wavemill" 2>/dev/null || true
-    cat "$artifact" >> "$REPO_DIR/$WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT" 2>/dev/null || true
-  fi
-  rm -f "$artifact" 2>/dev/null || true
-}
-
 # Validate that a directory is registered as a task worktree with correct identity.
 # Returns one of: valid, no_git_metadata, toplevel_mismatch:<resolved>,
 # unregistered_worktree, or identity_unverifiable. Only 'valid' authorizes
@@ -2422,13 +2385,12 @@ safe_remove_task_worktree_and_branch() {
         return 20
       fi
     else
-      wavemill_migrate_controller_observer_artifact "$wt_dir"
       wavemill_discard_mill_owned_untracked "$wt_dir" || {
         log_warn "  Could not discard declared mill output from task worktree: $wt_dir"
         WAVEMILL_CLEANUP_OUTCOME="operation_failed"
         return 20
       }
-      if wavemill_cleanup_run git -C "$REPO_DIR" worktree remove "$wt_dir" >>"${MILL_LOG_FILE:-/dev/null}" 2>/dev/null; then
+      if wavemill_cleanup_run git -C "$REPO_DIR" worktree remove --force "$wt_dir" >>"${MILL_LOG_FILE:-/dev/null}" 2>/dev/null; then
         log "debug" "Removed worktree: $wt_dir"
       else
         log_warn "  Worktree cleanup failed: $wt_dir"

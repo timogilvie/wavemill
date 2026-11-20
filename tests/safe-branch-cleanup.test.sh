@@ -69,7 +69,6 @@ helper_file="$tmp/safe-cleanup-helper.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_branch_deletion_mode"
   printf '\n'
-  printf '%s\n' 'WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT=".wavemill/observer-findings.jsonl"'
   extract_function "$COMMON_SCRIPT" "wavemill_task_worktree_identity"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_orphan_dir_scan"
@@ -85,8 +84,6 @@ helper_file="$tmp/safe-cleanup-helper.sh"
   extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_mill_owned_dirty_line"
   printf '\n'
   extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_worktree_dirty_status"
-  printf '\n'
-  extract_function "$COMMON_SCRIPT" "wavemill_migrate_controller_observer_artifact"
   printf '\n'
   extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_discard_mill_owned_untracked"
   printf '\n'
@@ -702,7 +699,11 @@ case_all_sites_refactored() {
   assert_contains "$helper_matches" "worktree remove" "helper worktree cleanup"
   assert_contains "$helper_matches" "branch \"\$branch_delete_flag\"" "helper branch cleanup"
   assert_contains "$helper_matches" "branch_delete_flag=\"-D\"" "helper force cleanup only after guard"
-  [[ "$helper_matches" != *"--force"* ]] || fail "helper still force-removes worktrees"
+  # Mill-owned output was already classified and discarded; --force is only
+  # permitted here so a failed best-effort telemetry migration cannot park a
+  # delivered worktree behind its non-dirty verdict.
+  assert_contains "$helper_matches" "wavemill_discard_mill_owned_untracked \"\$wt_dir\"" "helper mill-owned discard"
+  assert_contains "$helper_matches" "worktree remove --force \"\$wt_dir\"" "helper forced removal after mill-owned discard"
 }
 
 # Assertion 1 (HOK-3042/HOK-3033 shape): an orphan task directory (no task-local
@@ -1234,9 +1235,31 @@ case_wavemill_audit_plus_user_file_retained() {
   assert_exists "$wt/notes.md"
 }
 
+# HOK-3503 replay: exercise the recorded terminal-cleanup residue through the
+# real linked-worktree reaper, not merely the generic incident observation loop.
+case_hok3503_task_size_estimate_replay_reaped() {
+  local repo branch wt out fixture row
+  fixture="$REPO_ROOT/tests/fixtures/incident-replay/real/hok3503-task-size-estimates-retain-dirty.json"
+  row="$(jq -r '.initialState.worktreeFiles[".wavemill/task-size-estimates.jsonl"]' "$fixture")"
+  repo="$(setup_repo hok3503-task-size-replay)"
+  branch="task/hok3503-task-size-replay"
+  wt="$tmp/hok3503-task-size-replay/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  mkdir -p "$wt/.wavemill"
+  printf '%s' "$row" > "$wt/.wavemill/task-size-estimates.jsonl"
+
+  out="$(run_helper "$repo" "$wt" "$branch")"
+  assert_contains "$out" "rc=0" "HOK-3503 replay return"
+  branch_exists "$repo" "$branch" && fail "HOK-3503 replay branch was retained"
+  assert_absent "$wt"
+  cmp -s <(printf '%s' "$row") "$repo/.wavemill/task-size-estimates.jsonl" \
+    || fail "HOK-3503 replay telemetry was not migrated to milled repo"
+}
+
 case_tend_rebased_delivered_pr_head_cherry
 case_tend_rebased_pr_head_cherry_only
 case_wavemill_audit_only_cleaned
 case_wavemill_audit_plus_user_file_retained
+case_hok3503_task_size_estimate_replay_reaped
 
 echo "safe-branch-cleanup test passed"
