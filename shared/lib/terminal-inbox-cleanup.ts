@@ -420,7 +420,7 @@ function collectGitEvidence(repoDir: string, task: JsonRecord | undefined, branc
   let dirtyStatus = '';
   let worktreeDirty: boolean | 'unknown' = false;
   if (worktreeExists && checkWorktreeStatus) {
-    const status = safeGit(deps, ['-C', worktree, 'status', '--porcelain', '--untracked-files=all', '--ignored=matching'], repoDir);
+    const status = safeGit(deps, ['-C', worktree, 'status', '--porcelain', '--untracked-files=all'], repoDir);
     if (status === undefined) {
       worktreeDirty = 'unknown';
     } else {

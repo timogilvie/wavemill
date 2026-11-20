@@ -64,6 +64,9 @@ test('cleanup migrates declared telemetry, removes owned output, and leaves unkn
     execFileSync('git', ['-C', main, 'add', 'README.md']);
     execFileSync('git', ['-C', main, 'commit', '-q', '-m', 'seed']);
     execFileSync('git', ['-C', main, 'worktree', 'add', '-q', '-b', 'task/test', worktree]);
+    // Git reports this ignored directory as one `!! .wavemill/evals/` line;
+    // cleanup must still find and migrate its declared telemetry child.
+    writeFileSync(join(main, '.git', 'info', 'exclude'), '.wavemill/evals/\n');
     mkdirSync(join(worktree, '.wavemill/evals'), { recursive: true });
     writeFileSync(join(worktree, '.wavemill/task-size-estimates.jsonl'), 'estimate-row\n');
     writeFileSync(join(worktree, '.wavemill/evals/prompt-registry.jsonl'), 'eval-row\n');

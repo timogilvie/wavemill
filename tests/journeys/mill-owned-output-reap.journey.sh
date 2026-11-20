@@ -8,6 +8,9 @@ reason="$(journey_skip_reason)"
 if [[ -n "$reason" ]]; then echo "SKIP mill-owned-output-reap journey: $reason"; exit 0; fi
 
 ISSUE="JRN-3503"
+REPLAY_FIXTURE="$JOURNEY_INSTALL_DIR/tests/fixtures/incident-replay/real/hok3503-task-size-estimates-retain-dirty.json"
+journey_assert "HOK-3503 replay fixture names task-size telemetry" \
+  jq -e '.initialState.worktreeFiles[".wavemill/task-size-estimates.jsonl"]' "$REPLAY_FIXTURE"
 export FAKE_AGENT_SCRIPT_DIR
 FAKE_AGENT_SCRIPT_DIR="$(cd "$(dirname "$0")/fixtures/happy-path/fake-agent" && pwd)"
 journey_init mill-owned-output-reap

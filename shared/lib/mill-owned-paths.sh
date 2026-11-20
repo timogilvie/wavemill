@@ -28,6 +28,7 @@ features/*/.coding-result.json|
 features/*/.review-result.json|
 features/*/.ready-result.json|
 features/*/.*-result.attempt-*.json|
+features/*/.*|
 features/*/.needs-attention|
 features/*/.ready-bypass-warned|
 features/*/.coding-complete|
@@ -45,6 +46,7 @@ features/*/.blocked-completion-announced|
 features/*/.retry-coding-dirty-handoff-*|
 features/*/.plan-approved|
 features/*/.stale-artifacts/**|
+features/*/ready-checked-head|
 .claude/settings.local.json|
 .wavemill-config.local.json|
 .wavemill/workflow-state.json|
@@ -72,6 +74,6 @@ wavemill_mill_owned_path() { local path="${1:-}" pattern destination; while IFS=
 wavemill_mill_owned_telemetry_destination() { local path="${1:-}" pattern destination; while IFS='|' read -r pattern destination; do if [[ "$path" == "$pattern" && -n "$destination" ]]; then printf '%s
 ' "$destination"; return 0; fi; done <<< "$MILL_OWNED_PATH_ROWS"; return 1; }
 wavemill_mill_owned_dirty_line() { [[ "${1:0:2}" == '??' || "${1:0:2}" == '!!' ]] && wavemill_mill_owned_path "${1:3}"; }
-wavemill_worktree_dirty_status() { local wt_dir="${1:-}" raw_status line; raw_status="$(git -C "$wt_dir" status --porcelain --untracked-files=all --ignored=matching 2>/dev/null)" || return 1; while IFS= read -r line; do [[ -z "$line" ]] && continue; wavemill_mill_owned_dirty_line "$line" || printf '%s
+wavemill_worktree_dirty_status() { local wt_dir="${1:-}" raw_status line; raw_status="$(git -C "$wt_dir" status --porcelain --untracked-files=all --ignored=traditional 2>/dev/null)" || return 1; while IFS= read -r line; do [[ -z "$line" ]] && continue; wavemill_mill_owned_dirty_line "$line" || printf '%s
 ' "$line"; done <<< "$raw_status"; }
-wavemill_discard_mill_owned_untracked() { local wt_dir="${1:-}" line path destination; [[ -n "$wt_dir" && -d "$wt_dir" ]] || return 0; while IFS= read -r line; do wavemill_mill_owned_dirty_line "$line" || continue; path="${line:3}"; [[ "$path" != /* && "$path" != *../* ]] || continue; git -C "$wt_dir" ls-files --error-unmatch -- "$path" >/dev/null 2>&1 && continue; destination="$(wavemill_mill_owned_telemetry_destination "$path" 2>/dev/null || true)"; if [[ -n "$destination" ]]; then [[ -n "${REPO_DIR:-}" && -d "${REPO_DIR:-}" ]] || return 1; mkdir -p "${REPO_DIR}/$(dirname "$destination")" || return 1; cat "$wt_dir/$path" >> "${REPO_DIR}/$destination" || return 1; fi; rm -rf -- "$wt_dir/$path" 2>/dev/null || return 1; done < <(git -C "$wt_dir" status --porcelain --untracked-files=all --ignored=matching); }
+wavemill_discard_mill_owned_untracked() { local wt_dir="${1:-}" line path destination telemetry_path; [[ -n "$wt_dir" && -d "$wt_dir" ]] || return 0; while IFS= read -r line; do wavemill_mill_owned_dirty_line "$line" || continue; path="${line:3}"; [[ "$path" != /* && "$path" != *../* ]] || continue; git -C "$wt_dir" ls-files --error-unmatch -- "$path" >/dev/null 2>&1 && continue; if [[ -d "$wt_dir/$path" ]]; then while IFS= read -r -d '' telemetry_path; do destination="$(wavemill_mill_owned_telemetry_destination "${telemetry_path#"$wt_dir"/}" 2>/dev/null || true)"; [[ -z "$destination" ]] && continue; [[ -n "${REPO_DIR:-}" && -d "${REPO_DIR:-}" ]] || return 1; mkdir -p "${REPO_DIR}/$(dirname "$destination")" || return 1; cat "$telemetry_path" >> "${REPO_DIR}/$destination" || return 1; done < <(find "$wt_dir/$path" -type f -print0); fi; destination="$(wavemill_mill_owned_telemetry_destination "$path" 2>/dev/null || true)"; if [[ -n "$destination" ]]; then [[ -n "${REPO_DIR:-}" && -d "${REPO_DIR:-}" ]] || return 1; mkdir -p "${REPO_DIR}/$(dirname "$destination")" || return 1; cat "$wt_dir/$path" >> "${REPO_DIR}/$destination" || return 1; fi; rm -rf -- "$wt_dir/$path" 2>/dev/null || return 1; done < <(git -C "$wt_dir" status --porcelain --untracked-files=all --ignored=traditional); }
