@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash disable=SC2034,SC2153,SC2154
 
+# Fixture provenance: hand-authored HOK-3426 lifecycle replay. It models a
+# launcher-recorded SIGTERM exit while the pane shell survives, the exact
+# distinction the canonical stage disposition must preserve.
+#
 # HOK-2972 / HOK-2963: the coding agent exits (SIGTERM) before writing any
 # completion marker, leaving the pane alive at a bare shell and the stage
 # result stuck at "running". The monitor must reconcile phase state with
