@@ -69,24 +69,24 @@ runTool({
     try {
       if (!issue || !stateDir || !worktree) throw new Error('--issue, --state-dir and --worktree are required');
       if (!isStageAgentStage(stageArg)) throw new Error('--stage must be one of planning|coding|review|ready-remediation|conflict-resolution');
-      // Resolve the stage result backing this stage's `.<stage>-result.json`.
-      // ready-remediation and conflict-resolution are sub-activities of the
-      // Ready stage, so `running`/`awaiting_user` etc. come from `.ready-
-      // result.json` — there is no separate `.ready-remediation-result.json`
-      // or `.conflict-resolution-result.json` on disk.
-      const resultStage: StageName = stageArg === 'ready-remediation' || stageArg === 'conflict-resolution' ? 'ready' : stageArg;
-      const stageResult = await readStageResult(stateDir, resultStage);
+      const isReadyRemediationStage = stageArg === 'ready-remediation' || stageArg === 'conflict-resolution';
+      // Ready remediation and conflict resolution are sub-activities of
+      // Ready: their state always comes from `.ready-result.json`. Keep this
+      // distinct from an ordinary stage result so it cannot accidentally be
+      // changed to a nonexistent `.<sub-stage>-result.json` lookup.
+      const readyResult = isReadyRemediationStage ? await readStageResult(stateDir, 'ready') : null;
+      const stageResult = isReadyRemediationStage ? null : await readStageResult(stateDir, stageArg as StageName);
       const session = args.session?.trim() || process.env.WAVEMILL_SESSION || 'wavemill';
       let progressCache: ReturnType<typeof gatherStageTaskProgress> | null = null;
       const getProgress = () => {
-        progressCache = stageArg === 'ready-remediation' || stageArg === 'conflict-resolution'
+        progressCache = isReadyRemediationStage
           ? gatherReadyTaskProgress({
             issue,
             session,
             worktree,
             stateDir,
             task: args['state-file'] ? readWorkflowState(args['state-file'])?.tasks?.[issue] : undefined,
-            readyResult: stageResult,
+            readyResult,
             paneText: target ? termCapture(target, { lines: 200, timeoutMs: 3000 }) ?? undefined : undefined,
             panePid: target ? termListPanes({ target, timeoutMs: 3000 })[0]?.pid ?? null : null,
           })
@@ -103,10 +103,10 @@ runTool({
         });
         return progressCache;
       };
-      const disposition = stageArg === 'ready-remediation' || stageArg === 'conflict-resolution'
+      const disposition = isReadyRemediationStage
         ? evaluateReadyRemediationDisposition({
           stateDir,
-          readyResult: stageResult,
+          readyResult,
           currentHead,
           getProgress,
         })
