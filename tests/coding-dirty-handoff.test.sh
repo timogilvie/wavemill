@@ -18,6 +18,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MONITOR_SCRIPT_FILE="$REPO_DIR/shared/lib/wavemill-monitor.sh"
 REAL_REPO_DIR="$REPO_DIR"
+# Resolve monitor tools (record-arm-termination.ts) from this checkout, never
+# an operator's install.
+export WAVEMILL_INSTALL_DIR="$REPO_DIR"
+unset TOOLS_DIR
 
 PASS=0
 FAIL=0
@@ -77,6 +81,7 @@ for fn in \
   stage_agent_disposition_kind \
   guard_coding_complete_handoff \
   stage_budget_exhausted_json \
+  arm_termination_record \
   challenge_abort_pair \
   _challenge_side_for_issue \
   native_terminal_failure_next_action \
@@ -442,6 +447,31 @@ if [[ "$rc" == "0" ]] \
   pass "primary tick 2: stays needs-user, never aborted, sentinel + artifact action record the reason"
 else
   fail "primary exhaustion wrong (rc=$rc attention=$(cat "$ATTENTION_FILE"))"
+fi
+
+# HOK-3514: the primary's exhaustion reaches Hokusai through the one recorder
+# (executed model + fault class), exactly once, without an abort artifact.
+primary_rows() {
+  jq -c 'select(.issueId == "PAIR-7" and .abortReason == "terminal_stage_failure:coding-dirty-handoff")' \
+    "$REPO_DIR/.wavemill/evals/reliability-records.jsonl" 2>/dev/null || true
+}
+row="$(primary_rows)"
+if [[ "$(printf '%s\n' "$row" | grep -c .)" == "1" ]] \
+  && [[ "$(jq -r '.model' <<<"$row")" == "claude-opus-4-7" ]] \
+  && [[ "$(jq -r '.faultClass' <<<"$row")" == "model-fault" ]] \
+  && [[ "$(jq -r '.challengeRole' <<<"$row")" == "primary" ]] \
+  && [[ ! -f "$fd/.challenge-aborted.json" ]]; then
+  pass "primary exhaustion records executed model and fault class once, with no abort artifact"
+else
+  fail "primary exhaustion feedback wrong (rows=$row)"
+fi
+printf '{"stage":"coding","confidence":"high"}\n' > "$fd/.coding-complete"
+run_guard "PAIR-7" "primary-dirty"
+if [[ "$(primary_rows | grep -c .)" == "1" ]] \
+  && [[ "$(jq -r '.tasks["PAIR-7"].challengeAborted // "none"' "$STATE_FILE")" == "none" ]]; then
+  pass "a repeat exhausted tick does not re-record the primary's fault"
+else
+  fail "primary fault re-recorded (rows=$(primary_rows | grep -c .))"
 fi
 
 # ── 8. New head after exhaustion resets the budget → one more relaunch ───

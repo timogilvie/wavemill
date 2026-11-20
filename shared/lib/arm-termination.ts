@@ -91,6 +91,13 @@ export interface RecordArmTerminationInput {
   /** Skip workflow-state mutation (backfill: the row was reaped long ago). */
   skipStateMutation?: boolean;
   /**
+   * HOK-3514: the arm keeps its hold — a primary whose delivered work must
+   * still be reviewed. The fault reaches Hokusai (reliability record, failure
+   * eval record, selection outcome) but nothing marks the arm aborted: no
+   * `challengeAborted` stamp and no `.challenge-aborted.json`.
+   */
+  retainArm?: boolean;
+  /**
    * When true, the state-stamp step is a no-op if the task already has a
    * non-empty `challengeAborted`. Use this from the pair-resolver's
    * `stampStalledArm` so a concurrent operator/monitor abort is not clobbered
@@ -254,7 +261,7 @@ export async function recordArmTermination(input: RecordArmTerminationInput): Pr
   // so propagating does not crash the monitor loop; the operator CLI exits
   // non-zero instead of printing "phase: aborted" over an unchanged row.
   let stateMutated = false;
-  if (!input.skipStateMutation && existsSync(stateFile)) {
+  if (!input.skipStateMutation && !input.retainArm && existsSync(stateFile)) {
     const detail = input.detail;
     const nextAction = input.nextAction?.trim() || '';
     const actor = input.actor;
@@ -314,7 +321,7 @@ export async function recordArmTermination(input: RecordArmTerminationInput): Pr
 
   // ── 2. Write .challenge-aborted.json ─────────────────────────────────────
   let artifact: { path: string } | null = null;
-  if (featureDir) {
+  if (featureDir && !input.retainArm) {
     const role: ChallengeArmSide | 'single' = isChallengerTaskId(input.issueId) ? 'challenger' : 'primary';
     const pairId = resolvePairId(input.issueId);
     const artifactPath = join(featureDir, '.challenge-aborted.json');

@@ -1,0 +1,31 @@
+{
+  "schemaVersion": "native-dirty-handoff-replay/1",
+  "incident": "a3888d4aaca6b4375e016a1d14faa4c82eef10dab9f00c75b29206ded14cf0ab",
+  "issue": "HOK-FIXTURE-3451",
+  "slug": "fixture-3451",
+  "executedModel": "moonshotai/kimi-k2.7-code",
+  "source": "native-sessions/coding-HOK-3451.jsonl seq 623-638; .coding-uncommitted-output.resolved.jsonl",
+  "steps": [
+    {
+      "tool": "write_artifact",
+      "args": {
+        "path": "features/fixture-3451/staging/diag-guard-import.test.ts",
+        "content": "import { describe, it } from 'node:test';\n\ndescribe('diagnostic guard import', () => { it('loads', () => {}); });\n"
+      }
+    },
+    {
+      "tool": "run_tests",
+      "args": {
+        "command": "cp features/fixture-3451/staging/diag-guard-import.test.ts shared/lib/diag-guard-import.test.ts"
+      }
+    }
+  ],
+  "dirtyPath": "shared/lib/diag-guard-import.test.ts",
+  "resolution": "discard",
+  "expected": {
+    "markerRefusedWhileDirty": true,
+    "resolutionSucceeds": true,
+    "markerAcceptedAfterResolution": true,
+    "recoveryRelaunches": 0
+  }
+}
