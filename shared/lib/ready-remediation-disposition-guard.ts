@@ -2,14 +2,71 @@
 // allow-stage-agent-disposition: this guard definition carries the stage-agent patterns.
 import type { GuardSpec, StructuralMatch } from '../../tools/lib/source-guard.ts';
 
+// Settlement fields a private stage-agent in-flight decision reads. The
+// task-progress primitive's own answer, `.agentBackgroundLive` (HOK-3101), is
+// deliberately absent: reading it directly is the approved primitive read
+// (blocked-completion handling in wavemill-monitor.sh does exactly that).
+const SETTLEMENT_FIELD = /\.(?:agentIdle|stalled|agentProcessLive|terminalIdle|terminal|agentRecord\.state)\b/;
+// One-line form, reported by the `private-task-progress-jq-filter` pattern.
+const SINGLE_LINE_JQ_FILTER = /jq\s+-e[^\n]*\.(?:agentIdle|stalled|agentRecord\.state|terminal|agentProcessLive)\b/;
+
+/**
+ * The filter text a `jq -e` call actually evaluates: its quoted arguments (a
+ * quoted filter may span lines) and, when it reads a program from a heredoc,
+ * that heredoc body. Unquoted words, redirections and anything after the
+ * command ends are not filter text, so a settlement field that merely appears
+ * near a `jq -e` (a log line, another command) is not mistaken for one.
+ */
+function jqFilterText(source: string, start: number): string {
+  const parts: string[] = [];
+  let i = start;
+  let heredocTag: string | null = null;
+  while (i < source.length) {
+    const ch = source[i];
+    if (ch === "'" || ch === '"') {
+      const close = source.indexOf(ch, i + 1);
+      if (close < 0) break;
+      parts.push(source.slice(i + 1, close));
+      i = close + 1;
+      continue;
+    }
+    if (ch === '\n' || ch === ';' || ch === '|' || ch === ')' || ch === '&') break;
+    if (source.startsWith('<<<', i)) { i += 3; continue; } // here-string input, not a heredoc program
+    if (source.startsWith('<<', i)) {
+      const tag = /^<<-?\s*['"]?(\w+)['"]?/.exec(source.slice(i));
+      if (tag) { heredocTag = tag[1]; i += tag[0].length; continue; }
+    }
+    i += 1;
+  }
+  if (heredocTag) {
+    const bodyStart = source.indexOf('\n', i);
+    if (bodyStart >= 0) {
+      const terminator = new RegExp(`^\\s*${heredocTag}\\s*$`, 'm');
+      const rest = source.slice(bodyStart + 1);
+      const end = terminator.exec(rest);
+      parts.push(end ? rest.slice(0, end.index) : rest);
+    }
+  }
+  return parts.join('\n');
+}
+
 function findSplitProgressPredicate(source: string): StructuralMatch[] {
   const lines = source.split(/\r?\n/);
+  const lineStarts: number[] = [];
+  for (let i = 0, offset = 0; i < lines.length; i += 1) {
+    lineStarts.push(offset);
+    offset += lines[i].length + 1;
+  }
   const matches: StructuralMatch[] = [];
   for (let i = 0; i < lines.length; i += 1) {
-    if (!/\bjq\s+-e\b/.test(lines[i])) continue;
-    const context = lines.slice(Math.max(0, i - 15), Math.min(lines.length, i + 16)).join('\n');
-    if (/task_progress_json/.test(context)
-      && /\.(?:agentIdle|stalled|agentProcessLive|terminalIdle|agentRecord\.state)\b/.test(context)) {
+    const jq = /\bjq\s+-e\b/.exec(lines[i]);
+    if (!jq) continue;
+    const filter = jqFilterText(source, lineStarts[i] + jq.index + jq[0].length);
+    // A single-line filter is already reported by `private-task-progress-jq-filter`.
+    if (!filter.includes('\n') && SINGLE_LINE_JQ_FILTER.test(lines[i])) continue;
+    if (!SETTLEMENT_FIELD.test(filter)) continue;
+    const context = lines.slice(Math.max(0, i - 15), i + 1).join('\n');
+    if (/task_progress_json/.test(context) || /task_progress_json/.test(filter)) {
       matches.push({ line: i + 1, detail: 'split-line or heredoc task-progress settlement predicate' });
     }
   }
@@ -58,12 +115,11 @@ export const READY_REMEDIATION_DISPOSITION_GUARD: GuardSpec = {
     { name: 'private-launch-bucket', lang: 'ts', re: /createStateDirRetry\(\s*['"]ready-remediation['"]/,
       description: 'The ready-remediation bucket head is launch identity; read it through readReadyRemediationLaunch.' },
     // ── HOK-3386: stage-agent disposition ────────────────────────────────
+    // Patterns run one line at a time; multi-line filters and heredoc
+    // programs are the structural check below.
     { name: 'private-task-progress-jq-filter', lang: 'sh',
-      re: /jq\s+-e[\s\S]{0,500}\.(?:agentIdle|stalled|agentRecord\.state|terminal|agentProcessLive)\b/,
+      re: SINGLE_LINE_JQ_FILTER,
       description: 'Private jq filter over task_progress_json output; consume stage_agent_disposition instead (HOK-3386).' },
-    { name: 'private-progress-jq-heredoc', lang: 'sh',
-      re: /task_progress_json[\s\S]{0,600}<<['"]?[^\n]*\n[\s\S]{0,500}\.(?:agentIdle|stalled|agentProcessLive|terminalIdle)\b/,
-      description: 'Heredoc jq settlement predicate over task progress is private; consume stage_agent_disposition.' },
     { name: 'retired-coding-stage-stalled', lang: 'sh', re: /\bcoding_stage_stalled\b/,
       description: 'coding_stage_stalled was retired by HOK-3386; the shared stage-agent disposition owns the decision.' },
   ],

@@ -57,6 +57,10 @@ describe('ready-remediation-disposition guard — HOK-3386 stage-agent patterns'
       patternsOf('a.sh', 'progress="$(task_progress_json "$i" <<EOF\nEOF\njq -e \'(.terminalIdle == true)\'\n'),
       ['split-private-task-progress-jq-filter'],
     );
+    assert.deepEqual(
+      patternsOf('a.sh', 'progress="$(task_progress_json "$i")"\njq -e -n --argjson p "$progress" -f /dev/stdin <<\'JQ\'\n$p.agentIdle and ($p.stalled | not)\nJQ\n'),
+      ['split-private-task-progress-jq-filter'],
+    );
   });
 
   // protects: coding_stage_stalled, the retired warn-only detector, being
@@ -67,6 +71,24 @@ describe('ready-remediation-disposition guard — HOK-3386 stage-agent patterns'
 });
 
 describe('ready-remediation-disposition guard — clean shapes', () => {
+  // protects: the approved task-progress primitive read (HOK-3101) used by
+  // blocked-completion handling being rejected as a private settlement check.
+  it('allows a direct agentBackgroundLive read of task_progress_json output', () => {
+    const blockedCompletion = [
+      'progress="$(task_progress_json "$issue" --feature-dir "$d" --phase coding --pane-pid "$pid" --max-age 60 2>/dev/null || true)"',
+      "if ! jq -e '.agentBackgroundLive == true or .agentBackgroundLive == false' <<<\"$progress\" >/dev/null 2>&1; then",
+      '  log "status" "evidence unavailable (not .agentProcessLive or .stalled)"',
+      '  return 1',
+      'fi',
+      "if jq -e '.agentBackgroundLive == true' <<<\"$progress\" >/dev/null 2>&1; then",
+      '  return 1',
+      'fi',
+      "state=\"$(jq -r '.agentIdle' <<<\"$progress\")\"",
+      '',
+    ].join('\n');
+    assert.deepEqual(patternsOf('a.sh', blockedCompletion), []);
+  });
+
   // protects: the guard firing on readers of the shared decision, mirror writes or prose.
   it('ignores consumers of the decision, mirror writes, comments and suppressions', () => {
     assert.deepEqual(patternsOf('a.ts', "if (snapshot.remediationDisposition.kind === 'in-flight') hold();\n"), []);
