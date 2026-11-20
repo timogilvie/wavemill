@@ -189,6 +189,8 @@ harness_extract_real_functions() {
     write_pane_release_blocked_marker \
     clear_stale_pane_release_blocked_marker \
     fresh_hook_state_for_issue \
+    stage_agent_disposition \
+    stage_agent_disposition_kind \
     pane_release_preflight \
     release_task_pane_window_only \
     release_task_pane \
@@ -1610,6 +1612,7 @@ test_queue_owned_pane_release_happy_path() {
       fi
       return 1
     }
+    stage_agent_disposition() { printf "%s\n" "{\"kind\":\"inactive\",\"reason\":\"not-running\"}"; }
   ')"
 
   state="$(cat "$repo/.wavemill/state.json")"
@@ -1620,6 +1623,51 @@ test_queue_owned_pane_release_happy_path() {
   check_eq "pane release: no active slot" "0" "$(kv_value "$tick" active_count)"
   check_eq "pane release: queue-owned count" "1" "$(kv_value "$tick" queue_owned_count)"
   check_file_absent "pane release: no blocked marker" "$repo/features/$slug/ready/.pane-release-blocked.json"
+}
+
+# protects: a running review without a recorded launch must not release its
+# pane merely because the disposition cannot attribute the agent yet.
+test_queue_owned_pane_release_blocks_on_review_no_launch() {
+  local slug="pane-release-blocked-no-launch"
+  local issue="HOK-3461-NO-LAUNCH"
+  local repo tick
+  repo="$(harness_init_repo "$slug")"
+  harness_setup_pane_release_candidate "$repo" "$slug" "$issue"
+
+  tick="$(harness_run_tick "$repo" "$slug" "$issue" '
+    CURRENT_PHASE="ready"
+    PR_BY_ISSUE["$ISSUE"]="701"
+    get_main_head_sha() { printf "%s\\n" "base-current"; }
+    merge_queue_enabled() { return 0; }
+    ready_candidate_selected() { return 0; }
+    ready_queue_state() { jq -r ".artifacts.queueState // empty" "$1/.ready-result.json"; }
+    ready_base_sha() { jq -r ".artifacts.readyBaseSha // empty" "$1/.ready-result.json"; }
+    ready_queue_field() { jq -r ".artifacts.${2} // empty" "$1/.ready-result.json"; }
+    task_worktree_release_safety() { printf "%s\\n" "ok"; }
+    npx() {
+      if [[ "$*" == *"reconciliation-capsule.ts validate"* ]]; then
+        printf "%s\\n" "{\\"ok\\":true}"
+        return 0
+      fi
+      return 1
+    }
+    _tmux_task_window_target() { printf "%s\\n" "@7"; }
+    tmux() {
+      printf "%s\\n" "$*" >> "$REPO_UNDER_TEST/tmux.log"
+      if [[ "${1:-}" == "list-panes" ]]; then
+        printf "%s\\n" "999999"
+        return 0
+      fi
+      return 1
+    }
+    stage_agent_disposition() { printf "%s\n" "{\"kind\":\"inactive\",\"reason\":\"no-launch\"}"; }
+  ')"
+
+  check_eq "pane release no launch: remains task owned" "task" "$(jq -r --arg issue "$issue" '.tasks[$issue].executionOwner' "$repo/.wavemill/state.json")"
+  check_eq "pane release no launch: pane remains active" "active" "$(jq -r --arg issue "$issue" '.tasks[$issue].paneState' "$repo/.wavemill/state.json")"
+  check_file_exists "pane release no launch: blocked marker created" "$repo/features/$slug/ready/.pane-release-blocked.json"
+  check_not_contains "pane release no launch: does not kill pane" "$(cat "$repo/tmux.log")" "kill-window -t @7"
+  check_eq "pane release no launch: task remains active" "1" "$(kv_value "$tick" active_count)"
 }
 
 test_queue_owned_released_crash_repair_kills_window() {
@@ -3944,6 +3992,7 @@ test_reconciliation_returns_to_queue_ownership_after_success() {
       return 1
     }
     review_result_passes_ready_gate() { return 0; }
+    stage_agent_disposition() { printf "%s\n" "{\"kind\":\"inactive\",\"reason\":\"not-running\"}"; }
   ')"
 
   check_eq "recon success: returns to queue ownership" "queue" "$(jq -r --arg issue "$issue" '.tasks[$issue].executionOwner' "$repo/.wavemill/state.json")"
@@ -4059,6 +4108,7 @@ test_merge_queue_marks_non_candidate_stale_without_rerun
 test_merge_queue_disabled_keeps_legacy_rerun
 test_merge_queue_disabled_merge_needed_parks_needs_user
 test_queue_owned_pane_release_happy_path
+test_queue_owned_pane_release_blocks_on_review_no_launch
 test_queue_owned_pane_release_blocks_on_dirty_worktree
 test_queue_owned_pane_release_blocks_on_missing_capsule
 test_queue_owned_pane_release_blocks_on_stale_review

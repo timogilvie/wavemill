@@ -5261,7 +5261,8 @@ monitor_resume_agents_after_wake() {
 pane_release_preflight() {
   local issue="$1" slug="$2" state_dir="$3" wt_dir="$4" pr_number="$5"
   local branch="${6:-}" base_branch="${7:-${BASE_BRANCH:-main}}" pr_state_value current_head review_status
-  local validate_out validate_reason capsule_review_head safety_reason target pane_pid live_rc hook_state
+  local validate_out validate_reason capsule_review_head safety_reason target pane_pid hook_state
+  local review_disposition review_disposition_kind review_disposition_reason
 
   if [[ "$(pane_release_enabled "$wt_dir")" != "true" ]]; then
     printf '%s\n' "flag-off"
@@ -5309,7 +5310,15 @@ pane_release_preflight() {
   target="$(_tmux_task_window_target "$SESSION" "$issue" "$slug" "${STATE_FILE:-}" "$wt_dir" 2>/dev/null || true)"
   if [[ -n "$target" ]] && command -v tmux >/dev/null 2>&1; then
     pane_pid="$(tmux list-panes -t "$(_tmux_target_join "$SESSION" "$target")" -F '#{pane_pid}' 2>/dev/null | head -n 1 || true)"
-    if [[ "$(stage_agent_disposition_kind "$issue" "$state_dir" "$wt_dir" review)" == "in-flight" ]]; then
+    review_disposition="$(stage_agent_disposition "$issue" "$state_dir" "$wt_dir" "$current_head" review)"
+    review_disposition_kind="$(jq -r '.kind // "in-flight"' <<<"$review_disposition" 2>/dev/null || printf 'in-flight')"
+    review_disposition_reason="$(jq -r '.reason // "progress-unavailable"' <<<"$review_disposition" 2>/dev/null || printf 'progress-unavailable')"
+    # The disposition is the only liveness source. A completed review is
+    # affirmative no-agent evidence; every other non-settled answer can still
+    # name a running review, including an unrecorded launch (`no-launch`).
+    if [[ "$review_disposition_kind" != "settled" \
+      && !( "$review_disposition_kind" == "inactive" \
+        && ( "$review_disposition_reason" == "not-running" || "$review_disposition_reason" == "task-terminal" ) ) ]]; then
       printf '%s\n' "live-agent-child"
       return 1
     fi
