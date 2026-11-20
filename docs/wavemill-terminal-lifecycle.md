@@ -92,7 +92,7 @@ For a closed, unmerged PR, `closed_pr_resource_policy` (shared/lib/wavemill-moni
 
 `wavemill_release_terminal_pane` runs a fault-ordered sequence: ownership guard → archive diagnostics → durable terminal record → verified `kill-window` → truthful state write. Each step is idempotent, so an interruption at any boundary converges on the next monitor pass with no duplicate errors:
 
-1. **Ownership guard**: a live agent process in the pane (`mill_pane_has_live_blocking_process`), indeterminate liveness, or a fresh hook in `working`/`waiting`/`approval-needed`/`blocked` blocks release. A missing or already-dead window with ownership proven is treated as success and still completes the remaining steps.
+1. **Ownership guard**: an in-flight review-stage agent (`stage_agent_disposition`; owned background work counts through task-progress `agentBackgroundLive`), or a fresh hook in `working`/`waiting`/`approval-needed`/`blocked` blocks release. A missing or already-dead window with ownership proven is treated as success and still completes the remaining steps.
 2. **Archive**: full pane scrollback is captured to `.wavemill/evals/artifacts/<issue>/pane-transcript-<reason>.txt` and the current hook snapshot is appended to the feature dir's `.terminal-history.jsonl`. Archive failures never block release.
 3. **Terminal record**: `.wavemill/evals/artifacts/<issue>/terminal-record.json` (atomic tmp+mv, survives worktree deletion) records issue, reason, PR, branch, worktree, head SHA, window target, whether the transcript was archived, and a `recovery` block telling an operator how to recover retained work without a live pane.
 4. **Kill**: `tmux kill-window` is verified; the hook file is removed only after the window is gone.

@@ -64,6 +64,7 @@ extract_function "$MONITOR_SCRIPT_FILE" "pane_release_reason_actionable" >> "$MO
 extract_function "$MONITOR_SCRIPT_FILE" "clear_stale_pane_release_blocked_marker" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "release_task_pane_window_only" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "ready_remediation_disposition" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "stage_agent_disposition" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_marker_path" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_awaiting_ready" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_exhausted_hold" >> "$MONITOR_FUNC_FILE"
@@ -647,7 +648,7 @@ JSON
     # the extracted helper is callable here without pulling in the real tool.
     # HOK-3322: the Ready remediation disposition is the real decision, not a stub.
     npx() {
-      [[ "${2:-}" == */ready-remediation-disposition.ts || "${2:-}" == */task-recovery-controller.ts ]] || return 0
+      [[ "${2:-}" == */stage-agent-disposition.ts || "${2:-}" == */task-recovery-controller.ts ]] || return 0
       command npx "$@"
     }
     is_challenge_task() { [[ "${CHALLENGE_TASK:-false}" == "true" ]]; }
