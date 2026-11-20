@@ -6607,7 +6607,7 @@ coding_output_dirty_paths() {
   local worktree="$1" slug="$2"
   local status_lines line path normalized_path
 
-  status_lines="$(git -C "$worktree" status --porcelain --untracked-files=all --ignored=traditional 2>/dev/null || true)"
+  status_lines="$(git -C "$worktree" status --porcelain --untracked-files=all 2>/dev/null || true)"
   [[ -z "$status_lines" ]] && return 0
 
   while IFS= read -r line; do
@@ -6875,7 +6875,7 @@ coding_dirty_handoff_quarantine_scratch() {
   local issue="$1" worktree="$2" feature_dir="$3" slug="$4"
   local status_lines line code path archive_dir="" moved=0
 
-  status_lines="$(git -C "$worktree" status --porcelain --untracked-files=all --ignored=traditional 2>/dev/null || true)"
+  status_lines="$(git -C "$worktree" status --porcelain --untracked-files=all 2>/dev/null || true)"
   [[ -n "$status_lines" ]] || return 1
 
   while IFS= read -r line; do

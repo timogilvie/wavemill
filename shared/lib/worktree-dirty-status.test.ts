@@ -154,6 +154,24 @@ test('readWorktreeDirtyStatus reports dirty when the observer artifact sits next
   }
 });
 
+test('readWorktreeDirtyStatus treats gitignored non-mill files (node_modules, ignored feature dirs) as clean', () => {
+  const dir = makeGitRepo();
+  try {
+    writeFileSync(join(dir, '.gitignore'), 'node_modules/\nfeatures/\n');
+    execFileSync('git', ['-C', dir, 'add', '.gitignore'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', dir, 'commit', '-q', '-m', 'ignore'], { stdio: 'ignore' });
+    mkdirSync(join(dir, 'node_modules', 'pkg'), { recursive: true });
+    writeFileSync(join(dir, 'node_modules', 'pkg', 'index.js'), 'module.exports = 1;\n');
+    mkdirSync(join(dir, 'features', 'slug'), { recursive: true });
+    writeFileSync(join(dir, 'features', 'slug', 'plan.md'), '# plan\n');
+    const result = readWorktreeDirtyStatus({ worktree: dir });
+    assert.equal(result.state, 'clean');
+    assert.deepEqual(result.lines, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // HOK-3160 Class B: generated-artifact allowlist expansion. The dashboard
 // kept delivered tasks indefinitely when the only "dirt" was a tool-written
 // audit, review-result, or trace-metadata file. These must not retain.

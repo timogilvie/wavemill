@@ -12,6 +12,10 @@ test('declares telemetry, evidence and runtime paths and leaves task context vis
   assert.equal(millOwnedEntry('.wavemill/audits/report.json')?.disposition, 'runtime');
   assert.equal(millOwnedEntry('.wavemill/context/task-notes.md'), undefined);
   assert.equal(millOwnedEntry('.wavemill/unknown.json'), undefined);
+  // Nested mill state under a feature dot-directory (the challenge fork snapshot)
+  // stays owned, so an active arm's coding completion is not read as dirty.
+  assert.equal(millOwnedEntry('features/task/.fork-snapshot/JRN-5_c/plan.md')?.disposition, 'runtime');
+  assert.equal(millOwnedEntry('features/task/sub/.hidden/notes.md'), undefined);
   assert.ok(MILL_OWNED_PATHS.length > 10);
 });
 
@@ -42,6 +46,7 @@ test('generated Bash matcher agrees with the TypeScript corpus', () => {
       '.wavemill/evals/prompt-registry.jsonl', '.wavemill/evals/other.jsonl', '.wavemill/ledger.sqlite-wal', '.wavemill/cache/a/b', '.wavemill/context/task.md', '.wavemill/unknown',
       'features/a/.coding-complete', 'features/a/.review-result.json', 'features/a/plan.md', 'features/a/subdir/.env', 'features/a/subdir/plan.md', 'features/a/file.txt',
       'prompt-registry.jsonl', '.claude/settings.local.json', '.wavemill-config.local.json', 'src/app.ts', 'features/a/.stale-artifacts/x', 'features/a/.retry-coding-dirty-handoff-1',
+      'features/a/.fork-snapshot/JRN-5_c/plan.md', 'features/a/sub/.hidden/notes.md', 'features/a/sub/.stale-artifacts/x', '?? features/a/.fork-snapshot/JRN-5_c/.plan-approved',
       'M  .wavemill/task-size-estimates.jsonl', ' M .wavemill/task-size-estimates.jsonl', '?? .wavemill/task-size-estimates.jsonl', '!! .wavemill/evals/prompt-registry.jsonl',
       '?? ./ .wavemill/task-size-estimates.jsonl', 'R  old.ts -> .wavemill/task-size-estimates.jsonl', '?? src/quoted name.ts', '?? features/a/subdir/.env', '?? features/a/.coding-complete',
     ];

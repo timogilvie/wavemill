@@ -80,7 +80,7 @@ export function readWorktreeDirtyStatus(options: ReadWorktreeDirtyStatusOptions)
   if (!worktree || !existsSync(worktree)) {
     return { state: 'absent', lines: [], raw: '' };
   }
-  const stdout = git(['-C', worktree, 'status', '--porcelain', '--untracked-files=all', '--ignored=traditional'], worktree);
+  const stdout = git(['-C', worktree, 'status', '--porcelain', '--untracked-files=all'], worktree);
   if (stdout === undefined) {
     return { state: 'unreadable', lines: [], raw: '' };
   }
