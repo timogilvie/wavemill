@@ -115,6 +115,11 @@ export interface ReadWorktreeDirtyStatusOptions {
   git?: GitRunner;
 }
 
+/** The one porcelain read (all untracked files) both views share. */
+function readPorcelain(worktree: string, git: GitRunner, extra: string[]): string | undefined {
+  return git(['-C', worktree, 'status', '--porcelain', ...extra, '--untracked-files=all'], worktree);
+}
+
 /**
  * Read the filtered porcelain status of a worktree. A missing directory
  * reports `absent`; a git failure reports `unreadable`. Callers that must
@@ -128,7 +133,7 @@ export function readWorktreeDirtyStatus(options: ReadWorktreeDirtyStatusOptions)
   if (!worktree || !existsSync(worktree)) {
     return { state: 'absent', lines: [], raw: '' };
   }
-  const stdout = git(['-C', worktree, 'status', '--porcelain', '--untracked-files=all'], worktree);
+  const stdout = readPorcelain(worktree, git, []);
   if (stdout === undefined) {
     return { state: 'unreadable', lines: [], raw: '' };
   }
@@ -138,4 +143,67 @@ export function readWorktreeDirtyStatus(options: ReadWorktreeDirtyStatusOptions)
     lines,
     raw: lines.join('\n'),
   };
+}
+
+/** One porcelain entry: the two-letter XY code and the repo-relative path. */
+export interface WorktreeStatusEntry {
+  code: string;
+  path: string;
+}
+
+/**
+ * Read `git status --porcelain -z --untracked-files=all` as structured
+ * entries. NUL-delimited output needs no unquoting, and a rename or copy
+ * reports its destination path (the source is consumed and dropped).
+ * Returns null when git cannot be read, so callers can fail closed.
+ */
+export function readWorktreeStatusEntries(worktree: string, git: GitRunner = defaultGitRunner): WorktreeStatusEntry[] | null {
+  if (!worktree || !existsSync(worktree)) return null;
+  const stdout = readPorcelain(worktree, git, ['-z']);
+  if (stdout === undefined) return null;
+  const fields = stdout.split('\0');
+  const entries: WorktreeStatusEntry[] = [];
+  for (let index = 0; index < fields.length; index += 1) {
+    const field = fields[index]!;
+    if (field.length < 4) continue;
+    const code = field.slice(0, 2);
+    entries.push({ code, path: field.slice(3) });
+    if (code[0] === 'R' || code[0] === 'C') index += 1;
+  }
+  return entries;
+}
+
+/**
+ * TypeScript twin of `wavemill_owned_dirty_path` (wavemill-monitor.sh): the
+ * Wavemill-owned generated/runtime paths a coding handoff never has to commit.
+ * Keep the two in step until HOK-3503's single mill-output list replaces both.
+ */
+export function isWavemillOwnedDirtyPath(path: string, slug: string): boolean {
+  if (path === '.claude/settings.local.json') return true;
+  if (path.startsWith('.wavemill/')) return true;
+  if (path === '.wavemill-config.local.json') return true;
+  if (path === 'prompt-registry.jsonl') return true;
+  const prefix = `features/${slug}/`;
+  if (!slug || !path.startsWith(prefix)) return false;
+  const rest = path.slice(prefix.length);
+  if (rest.startsWith('.')) return true;
+  return rest === 'plan.md' || /^task-packet.*\.md$/.test(rest) || rest === 'challenge-intent.json'
+    || rest === 'selected-task.json' || rest === 'trace.jsonl' || rest === 'routing.jsonl';
+}
+
+export type TaskDirtyPaths =
+  | { state: 'readable'; paths: string[] }
+  | { state: 'unreadable'; paths: [] };
+
+/**
+ * The task's dirty paths: every porcelain entry except Wavemill-owned output.
+ * This is what a coding handoff must commit or discard before it may finish.
+ */
+export function readTaskDirtyPaths(options: { worktree: string; slug: string; git?: GitRunner }): TaskDirtyPaths {
+  const entries = readWorktreeStatusEntries(options.worktree, options.git);
+  if (entries === null) return { state: 'unreadable', paths: [] };
+  const paths = [...new Set(entries.map((entry) => entry.path))]
+    .filter((path) => !isWavemillOwnedDirtyPath(path.replace(/\/$/, ''), options.slug))
+    .sort((left, right) => left.localeCompare(right));
+  return { state: 'readable', paths };
 }

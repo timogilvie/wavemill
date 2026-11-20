@@ -69,6 +69,7 @@ for fn in \
   emit_challenge_stage_failure_quarantine \
   challenge_abort_scope_for_failure \
   stage_budget_exhausted_json \
+  arm_termination_record \
   challenge_abort_pair \
   _challenge_side_for_issue \
   challenge_result_stage_for_launch \

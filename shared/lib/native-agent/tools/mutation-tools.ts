@@ -18,6 +18,8 @@ import {
   noVerificationEvidenceError,
 } from '../completion-normalizer.ts';
 import type { MutationRecorder } from '../cleanup.ts';
+import { evaluateCodingCompletionGate } from '../completion-gate.ts';
+import { readTaskDirtyPaths, type TaskDirtyPaths } from '../../worktree-dirty-status.ts';
 import { createApplyPatchTool } from './apply-patch-tool.ts';
 import type { ToolDescriptor, ToolPhase, WavemillToolResult } from './types.ts';
 import type { ApplyPatchDetails } from './apply-patch-tool.ts';
@@ -72,7 +74,8 @@ export interface MutationToolErrorDetails {
     | MutationPolicyReason
     | 'io_error'
     | 'completion_artifact_validation_failed'
-    | 'no_verification_evidence';
+    | 'no_verification_evidence'
+    | 'completion_blocked';
   message: string;
   retryHint?: string;
   diagnostics?: unknown;
@@ -88,6 +91,12 @@ export interface CodingMutationToolOptions {
   wholeFileAllowlist?: WholeFileWriteAllowlistInput | NormalizedWholeFileWriteAllowlistInput;
   statusPath?: string;
   recorder?: MutationRecorder;
+  /**
+   * The task's dirty paths (Wavemill-owned output already excluded) for the
+   * `.coding-complete` completion gate. Defaults to the worktree's porcelain
+   * status through `readTaskDirtyPaths`.
+   */
+  readTaskDirtyPaths?: (slug: string) => TaskDirtyPaths;
 }
 
 interface AfterToolCallContext {
@@ -275,6 +284,14 @@ async function executeWholeFileWrite(
   }
   safeContent = completionArtifactValidation.content;
 
+  if (basename(decision.resolvedPath) === '.coding-complete') {
+    const refusal = codingCompleteGateRefusal(worktreePath, decision.resolvedPath, options);
+    if (refusal) {
+      options.recorder?.recordMutation({ tool, status: 'failed', path: decision.resolvedPath, reason: refusal.message });
+      return errorResult(tool, 'completion_blocked', refusal.message, refusal.retryHint, { dirtyPaths: refusal.dirtyPaths });
+    }
+  }
+
   try {
     atomicWriteText(absolutePath, safeContent);
     const details: WholeFileWriteSuccessDetails = {
@@ -308,6 +325,44 @@ async function executeWholeFileWrite(
     });
     return errorResult(tool, 'io_error', `Failed to write ${decision.resolvedPath}: ${message}`);
   }
+}
+
+/**
+ * HOK-3514: the one native completion decision. `.coding-complete` is refused
+ * while the task still has dirty paths, so the agent hears about them while it
+ * still holds its full tools instead of the monitor parking the handoff.
+ */
+function codingCompleteGateRefusal(
+  worktreePath: string,
+  markerPath: string,
+  options: CodingMutationToolOptions,
+): { message: string; retryHint: string; dirtyPaths: string[] } | null {
+  const slug = basename(dirname(markerPath));
+  const dirty = options.readTaskDirtyPaths
+    ? options.readTaskDirtyPaths(slug)
+    : readTaskDirtyPaths({ worktree: worktreePath, slug });
+  if (dirty.state === 'unreadable') {
+    return {
+      message: '.coding-complete refused: git status could not be read, so the worktree cannot be shown clean.',
+      retryHint: 'Run git_status, fix the repository state, then write .coding-complete again.',
+      dirtyPaths: [],
+    };
+  }
+  // Commit and checks policy are judged downstream (review / Ready); this gate
+  // owns the dirty-tree decision only.
+  const decision = evaluateCodingCompletionGate({
+    dirtyPaths: dirty.paths,
+    commitPolicySatisfied: true,
+    checksPolicySatisfied: true,
+  });
+  if (decision.status === 'accepted') return null;
+  const retryHint = 'For each dirty path, commit it (git_add + git_commit) when it belongs to the task, '
+    + 'or discard it with discard_owned_path. Then write .coding-complete again.';
+  return {
+    message: `.coding-complete refused: ${decision.message} Dirty: ${dirty.paths.join(', ')}. ${retryHint}`,
+    retryHint,
+    dirtyPaths: dirty.paths,
+  };
 }
 
 function validateCompletionArtifactWrite(
@@ -466,6 +521,7 @@ function errorResult(
   error: MutationToolErrorDetails['error'],
   message: string,
   retryHint?: string,
+  diagnostics?: unknown,
 ): WavemillToolResult<any> {
   const details: MutationToolErrorDetails = {
     ok: false,
@@ -473,6 +529,7 @@ function errorResult(
     error,
     message,
     ...(retryHint !== undefined ? { retryHint } : {}),
+    ...(diagnostics !== undefined ? { diagnostics } : {}),
   };
   return {
     content: [{ type: 'text', text: message }],
