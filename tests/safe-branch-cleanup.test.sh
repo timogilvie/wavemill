@@ -49,6 +49,10 @@ helper_file="$tmp/safe-cleanup-helper.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_cleanup_run"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_tool_path"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_run_tool"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "_wavemill_incident_record_name"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "_wavemill_write_preserved_branch_incident"
@@ -143,7 +147,7 @@ run_helper() {
   local issue="${6:-}" pr="${7:-}" gh_fixture="${8:-}" gate="${9:-}"
   REPO_DIR="$repo" WT_DIR="$wt_dir" BRANCH="$branch" BASE="$base_branch" CALLER="$caller" \
   ISSUE_ARG="$issue" PR_ARG="$pr" GH_FIXTURE="$gh_fixture" GATE="$gate" HELPER_FILE="$helper_file" \
-  WORKTREE_ROOT="$(dirname "$wt_dir")" bash -lc '
+  TOOLS_DIR="${TOOLS_DIR:-$REPO_ROOT/tools}" WORKTREE_ROOT="$(dirname "$wt_dir")" bash -lc '
     set -euo pipefail
     source "$HELPER_FILE"
     MILL_LOG_FILE="$REPO_DIR/mill.log"
@@ -1232,6 +1236,80 @@ case_wavemill_audit_plus_user_file_retained() {
   assert_exists "$wt/notes.md"
 }
 
+# HOK-3503/HOK-3475 archive-then-discard: untracked evidence is hidden from
+# the dirty decision, so a terminal reap must archive it through the shared
+# inventory, discard only verified bytes, and then remove the worktree.
+seed_task_evidence() {
+  local wt="$1"
+  mkdir -p "$wt/features/wt"
+  printf '# plan\n' > "$wt/features/wt/plan.md"
+  printf '{"stage":"review","status":"completed"}\n' > "$wt/features/wt/.review-result.json"
+  printf '{}\n' > "$wt/features/wt/.terminal-history.jsonl"
+}
+
+case_terminal_evidence_archived_then_discarded() {
+  local repo branch wt out archive
+  repo="$(setup_repo evidence-archived)"
+  branch="task/evidence-archived"
+  wt="$tmp/evidence-archived/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  seed_task_evidence "$wt"
+
+  out="$(run_helper "$repo" "$wt" "$branch" auto/integration test HOK-9503)"
+  archive="$repo/.wavemill/evals/artifacts/HOK-9503"
+  assert_contains "$out" "rc=0" "evidence-archived return"
+  branch_exists "$repo" "$branch" && fail "evidence-archived branch was retained"
+  assert_absent "$wt"
+  cmp -s <(printf '# plan\n') "$archive/plan.md" || fail "plan.md was not archived before discard"
+  [[ -f "$archive/.review-result.json" && -f "$archive/.terminal-history.jsonl" ]] \
+    || fail "stage evidence was not archived before discard"
+  [[ "$(jq -r '[.artifacts[].name] | index("plan.md") != null' "$archive/.evidence-inventory.json")" == "true" ]] \
+    || fail "evidence inventory does not record plan.md"
+}
+
+case_terminal_evidence_archive_failure_retains() {
+  local repo branch wt out
+  repo="$(setup_repo evidence-archive-fails)"
+  branch="task/evidence-archive-fails"
+  wt="$tmp/evidence-archive-fails/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  seed_task_evidence "$wt"
+  mkdir -p "$wt/.wavemill"
+  printf '{"title":"finding"}\n' > "$wt/.wavemill/observer-findings.jsonl"
+  # The archive root cannot be created, so the capture fails.
+  mkdir -p "$repo/.wavemill/evals"
+  printf 'not a directory\n' > "$repo/.wavemill/evals/artifacts"
+
+  out="$(run_helper "$repo" "$wt" "$branch" auto/integration test HOK-9504 2>/dev/null)"
+  assert_contains "$out" "rc=20" "evidence-archive-fails return"
+  assert_contains "$out" "outcome=operation_failed" "evidence-archive-fails outcome"
+  assert_contains "$out" "Could not archive task evidence" "evidence-archive-fails warning"
+  branch_exists "$repo" "$branch" || fail "evidence-archive-fails branch was deleted"
+  assert_exists "$wt/features/wt/plan.md"
+  assert_exists "$wt/features/wt/.review-result.json"
+  assert_exists "$wt/features/wt/.terminal-history.jsonl"
+  # Nothing is discarded when the archive fails, not even runtime output.
+  assert_exists "$wt/.wavemill/observer-findings.jsonl"
+}
+
+case_live_task_evidence_untouched() {
+  local repo branch wt out
+  repo="$(setup_repo evidence-live)"
+  branch="task/evidence-live"
+  wt="$tmp/evidence-live/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  commit_in_worktree "$wt" "feature.txt" "in-flight work"
+  seed_task_evidence "$wt"
+
+  out="$(run_helper "$repo" "$wt" "$branch" auto/integration test HOK-9505)"
+  assert_contains "$out" "rc=10" "evidence-live return"
+  assert_contains "$out" "outcome=retain_unpublished" "evidence-live outcome"
+  assert_exists "$wt/features/wt/plan.md"
+  assert_exists "$wt/features/wt/.review-result.json"
+  assert_exists "$wt/features/wt/.terminal-history.jsonl"
+  assert_absent "$repo/.wavemill/evals/artifacts/HOK-9505"
+}
+
 # HOK-3503 replay: exercise the recorded terminal-cleanup residue through the
 # real linked-worktree reaper, not merely the generic incident observation loop.
 case_hok3503_task_size_estimate_replay_reaped() {
@@ -1255,6 +1333,9 @@ case_hok3503_task_size_estimate_replay_reaped() {
 
 case_tend_rebased_delivered_pr_head_cherry
 case_tend_rebased_pr_head_cherry_only
+case_terminal_evidence_archived_then_discarded
+case_terminal_evidence_archive_failure_retains
+case_live_task_evidence_untouched
 case_wavemill_audit_only_cleaned
 case_wavemill_audit_plus_user_file_retained
 case_hok3503_task_size_estimate_replay_reaped

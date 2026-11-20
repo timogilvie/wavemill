@@ -2385,11 +2385,38 @@ safe_remove_task_worktree_and_branch() {
         return 20
       fi
     else
-      wavemill_discard_mill_owned_untracked "$wt_dir" || {
+      # HOK-3503/HOK-3475 archive-then-discard. Untracked evidence is hidden
+      # from the dirty decision but still blocks `git worktree remove`, so it
+      # is captured through the shared archive first and discarded only while
+      # its bytes match what that capture verified. Any archive failure
+      # discards nothing and retains the worktree for the next attempt.
+      local untracked_evidence="" evidence_release_list="" discard_rc=0
+      if ! untracked_evidence="$(wavemill_discard_mill_owned_untracked "$wt_dir" --list-evidence)"; then
+        log_warn "  Could not read task evidence in worktree: $wt_dir; retained"
+        WAVEMILL_CLEANUP_OUTCOME="operation_failed"
+        _wavemill_record_cleanup_decision "operation_failed" "operation_failed" "evidence_archive_failed" "false" "cleanup-decisions" 2>/dev/null || true
+        return 20
+      fi
+      if [[ -n "$untracked_evidence" ]]; then
+        evidence_release_list="$(mktemp "${TMPDIR:-/tmp}/wavemill-evidence-release.XXXXXX")" \
+          && [[ -n "$issue" ]] \
+          && wavemill_run_tool archive-task-evidence.ts --issue "$issue" --slug "$(basename "$wt_dir")" \
+            --repo-dir "$REPO_DIR" --worktree "$wt_dir" --release-list "$evidence_release_list" >/dev/null \
+          || {
+            [[ -n "$evidence_release_list" ]] && rm -f "$evidence_release_list"
+            log_warn "  Could not archive task evidence before discard: $wt_dir; retained"
+            WAVEMILL_CLEANUP_OUTCOME="operation_failed"
+            _wavemill_record_cleanup_decision "operation_failed" "operation_failed" "evidence_archive_failed" "false" "cleanup-decisions" 2>/dev/null || true
+            return 20
+          }
+      fi
+      wavemill_discard_mill_owned_untracked "$wt_dir" "$evidence_release_list" || discard_rc=$?
+      [[ -n "$evidence_release_list" ]] && rm -f "$evidence_release_list"
+      if [[ "$discard_rc" -ne 0 ]]; then
         log_warn "  Could not discard declared mill output from task worktree: $wt_dir"
         WAVEMILL_CLEANUP_OUTCOME="operation_failed"
         return 20
-      }
+      fi
       # Git's normal dirty-worktree refusal is the final race-safe guard for
       # real task work that appeared after the status snapshot.
       if wavemill_cleanup_run git -C "$REPO_DIR" worktree remove "$wt_dir" >>"${MILL_LOG_FILE:-/dev/null}" 2>/dev/null; then

@@ -85,6 +85,12 @@ cleanup_file="$tmp/operator-abort-cleanup.sh"
   printf '\n'
   extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_discard_mill_owned_untracked"
   printf '\n'
+  extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_mill_owned_disposition"
+  printf '\n'
+  extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_mill_owned_sha256"
+  printf '\n'
+  extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_mill_owned_evidence_released"
+  printf '\n'
   # HOK-3190: cleanup_aborted_challenge_arm reads state via pass_task_field;
   # provide the fallback form that falls through to the read_state_value stub.
   extract_function "$COMMON_SCRIPT" "pass_task_field"

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { filterMillOwnedDirtyStatus, MILL_OWNED_PATHS, millOwnedEntry, renderMillOwnedShell } from './mill-owned-paths.ts';
+import { archiveTaskEvidence, evidenceReleaseList } from './task-evidence-archive.ts';
 
 test('declares telemetry, evidence and runtime paths and leaves task context visible', () => {
   assert.equal(millOwnedEntry('.wavemill/task-size-estimates.jsonl')?.disposition, 'telemetry');
@@ -93,5 +94,44 @@ test('cleanup migrates declared telemetry, removes owned output, and leaves unkn
     assert.equal(readFileSync(join(main, '.wavemill/task-size-estimates.jsonl'), 'utf8'), 'estimate-row\n');
     assert.deepEqual(readFileSync(join(main, '.wavemill/evals/prompt-registry.jsonl'), 'utf8').trim().split('\n').sort(), ['eval-row', 'legacy-row']);
     assert.equal(readFileSync(join(main, '.wavemill/observer-findings.jsonl'), 'utf8'), 'observer-row\n');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('evidence is discarded only after the shared archive verified its current bytes', () => {
+  const root = mkdtempSync(join(tmpdir(), 'mill-owned-evidence-'));
+  const main = join(root, 'main');
+  const worktree = join(main, 'worktrees', 'demo');
+  const feature = join(worktree, 'features', 'demo');
+  const shellFile = join(import.meta.dirname, 'mill-owned-paths.sh');
+  const discard = (list: string) => execFileSync('bash', ['-c', 'source "$1"; wavemill_discard_mill_owned_untracked "$2" "$3"', 'bash', shellFile, worktree, list], {
+    env: { ...process.env, REPO_DIR: main },
+  });
+  try {
+    execFileSync('git', ['init', '-q', '-b', 'main', main]);
+    execFileSync('git', ['-C', main, 'config', 'user.email', 'test@example.com']);
+    execFileSync('git', ['-C', main, 'config', 'user.name', 'Test']);
+    writeFileSync(join(main, '.wavemill-config.json'), '{}');
+    writeFileSync(join(main, '.gitignore'), 'worktrees/\n.wavemill/\n');
+    execFileSync('git', ['-C', main, 'add', '.']);
+    execFileSync('git', ['-C', main, 'commit', '-q', '-m', 'seed']);
+    execFileSync('git', ['-C', main, 'worktree', 'add', '-q', '-b', 'task/demo', worktree]);
+    mkdirSync(feature, { recursive: true });
+    writeFileSync(join(feature, 'plan.md'), '# plan\n');
+    writeFileSync(join(feature, '.review-result.json'), '{"stage":"review"}\n');
+    writeFileSync(join(feature, '.coding-complete'), '');
+
+    // No release list: evidence stays even though runtime output is discarded.
+    discard('');
+    assert.equal(existsSync(join(feature, 'plan.md')), true);
+    assert.equal(existsSync(join(feature, '.coding-complete')), false);
+
+    const list = join(root, 'release-list');
+    writeFileSync(list, evidenceReleaseList(archiveTaskEvidence({ issueId: 'HOK-9503', slug: 'demo', repoDir: main, worktreeDir: worktree }, { warn() {} })));
+    // Bytes written after the capture are not the archived bytes: retained.
+    writeFileSync(join(feature, '.review-result.json'), '{"stage":"review","late":true}\n');
+    discard(list);
+    assert.equal(existsSync(join(feature, 'plan.md')), false);
+    assert.equal(existsSync(join(feature, '.review-result.json')), true);
+    assert.equal(readFileSync(join(main, '.wavemill/evals/artifacts/HOK-9503/plan.md'), 'utf8'), '# plan\n');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
