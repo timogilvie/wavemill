@@ -38,9 +38,12 @@ test('generated Bash matcher agrees with the TypeScript corpus', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'mill-owned-parity-'));
   try {
     const cases = [
-      '.wavemill/task-size-estimates.jsonl', '.wavemill/audits/report.json',
-      'features/a/.coding-complete', '.wavemill/context/task.md', '.wavemill/unknown',
-      'M  .wavemill/task-size-estimates.jsonl', '?? .wavemill/task-size-estimates.jsonl', '!! .wavemill/evals/prompt-registry.jsonl',
+      '.wavemill/task-size-estimates.jsonl', './.wavemill/task-size-estimates.jsonl', '.wavemill/audits/report.json', '.wavemill/audits/deep/report.json',
+      '.wavemill/evals/prompt-registry.jsonl', '.wavemill/evals/other.jsonl', '.wavemill/ledger.sqlite-wal', '.wavemill/cache/a/b', '.wavemill/context/task.md', '.wavemill/unknown',
+      'features/a/.coding-complete', 'features/a/.review-result.json', 'features/a/plan.md', 'features/a/subdir/.env', 'features/a/subdir/plan.md', 'features/a/file.txt',
+      'prompt-registry.jsonl', '.claude/settings.local.json', '.wavemill-config.local.json', 'src/app.ts', 'features/a/.stale-artifacts/x', 'features/a/.retry-coding-dirty-handoff-1',
+      'M  .wavemill/task-size-estimates.jsonl', ' M .wavemill/task-size-estimates.jsonl', '?? .wavemill/task-size-estimates.jsonl', '!! .wavemill/evals/prompt-registry.jsonl',
+      '?? ./ .wavemill/task-size-estimates.jsonl', 'R  old.ts -> .wavemill/task-size-estimates.jsonl', '?? src/quoted name.ts', '?? features/a/subdir/.env', '?? features/a/.coding-complete',
     ];
     const shell = `source ${JSON.stringify(shellFile)}; for value in "$@"; do if [[ "$value" == *'  '* || "$value" == '?? '* || "$value" == '!! '* ]]; then wavemill_mill_owned_dirty_line "$value" && echo 1 || echo 0; else wavemill_mill_owned_path "$value" && echo 1 || echo 0; fi; done`;
     const result = execFileSync('bash', ['-c', shell, 'bash', ...cases], { encoding: 'utf8' }).trim().split('\n');
