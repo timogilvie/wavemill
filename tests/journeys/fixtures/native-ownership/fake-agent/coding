@@ -10,6 +10,6 @@ if [[ ! -f "$FEATURE_DIR/native-ownership-injected" ]]; then
   rm -f "$FEATURE_DIR/.coding-complete"
   jq -n '{stage:"coding",implementationComplete:true,committed:false,passingChecks:["focused verification"],blockingChecks:["git_add refused preserved edits"],blockingReason:"environment_blocked",evidence:"Previous process mutation must survive a new tracker",recommendedAction:"relaunch_coding"}' > "$FEATURE_DIR/.coding-blocked-completion.json"
 else
-  run_tool ../tests/journeys/fixtures/native-ownership-step.ts commit "$WT"
+  run_tool ../tests/journeys/fixtures/native-ownership-step.ts commit "$WT" >> "$FAKE_AGENT_LOG"
 fi
 printf '{"hook_event_name":"Stop"}' | bash "$FAKE_AGENT_TOOLS_DIR/../shared/hooks/claude-status-hook.sh" || true

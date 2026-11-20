@@ -64,6 +64,7 @@ for fn in \
   review_refused_challenge_terminalize \
   _retired_challenge_arm_close_pr \
   ready_exhausted_challenge_sibling_green \
+  arm_termination_record \
   challenge_abort_pair \
   _challenge_side_for_issue \
   native_terminal_failure_next_action \
