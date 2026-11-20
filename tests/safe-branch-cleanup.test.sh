@@ -699,11 +699,8 @@ case_all_sites_refactored() {
   assert_contains "$helper_matches" "worktree remove" "helper worktree cleanup"
   assert_contains "$helper_matches" "branch \"\$branch_delete_flag\"" "helper branch cleanup"
   assert_contains "$helper_matches" "branch_delete_flag=\"-D\"" "helper force cleanup only after guard"
-  # Mill-owned output was already classified and discarded; --force is only
-  # permitted here so a failed best-effort telemetry migration cannot park a
-  # delivered worktree behind its non-dirty verdict.
   assert_contains "$helper_matches" "wavemill_discard_mill_owned_untracked \"\$wt_dir\"" "helper mill-owned discard"
-  assert_contains "$helper_matches" "worktree remove --force \"\$wt_dir\"" "helper forced removal after mill-owned discard"
+  assert_contains "$helper_matches" "worktree remove \"\$wt_dir\"" "helper preserves real dirt after mill-owned discard"
 }
 
 # Assertion 1 (HOK-3042/HOK-3033 shape): an orphan task directory (no task-local

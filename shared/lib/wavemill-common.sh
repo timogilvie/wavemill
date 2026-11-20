@@ -2390,7 +2390,9 @@ safe_remove_task_worktree_and_branch() {
         WAVEMILL_CLEANUP_OUTCOME="operation_failed"
         return 20
       }
-      if wavemill_cleanup_run git -C "$REPO_DIR" worktree remove --force "$wt_dir" >>"${MILL_LOG_FILE:-/dev/null}" 2>/dev/null; then
+      # Git's normal dirty-worktree refusal is the final race-safe guard for
+      # real task work that appeared after the status snapshot.
+      if wavemill_cleanup_run git -C "$REPO_DIR" worktree remove "$wt_dir" >>"${MILL_LOG_FILE:-/dev/null}" 2>/dev/null; then
         log "debug" "Removed worktree: $wt_dir"
       else
         log_warn "  Worktree cleanup failed: $wt_dir"

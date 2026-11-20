@@ -19,11 +19,14 @@ import { basename, dirname, join, relative, resolve } from 'node:path';
 import { loadWavemillConfig } from './config.ts';
 import { resolveRouteArtifactArchiveDir } from './evals-paths.ts';
 import { resolveFromMainRepo } from './git-utils.ts';
-import { TASK_EVIDENCE_NAMES } from './mill-owned-paths.ts';
 
 /** Canonical stage names; stage-result and the archive use the same inventory. */
 export const TASK_RESULT_STAGES = ['planning', 'coding', 'review', 'ready'] as const;
 export const TASK_EVIDENCE_MANIFEST = '.evidence-inventory.json';
+/** Stable evidence basenames archived before reap. Mill-owned paths derives its
+ * evidence subset from this existing archive inventory. */
+export const TASK_EVIDENCE_NAMES = ['plan.md', 'task-packet.md', 'task-packet-header.md', 'task-packet-details.md',
+  '.routing-complete', '.initial-route.json', '.post-expansion-route.json', 'routing.jsonl', '.coding-uncommitted-output.resolved.jsonl', '.operator-intervention.json', '.terminal-history.jsonl', '.operator-events.jsonl', '.session-ownership.jsonl', '.head-moves.jsonl', '.recovery-actions.jsonl', '.challenge-aborted.json', '.coding-failure-handoff.json', 'trace.jsonl', '.planning-result.json', '.coding-result.json', '.review-result.json', '.ready-result.json'] as const;
 const EVIDENCE_NAMES: readonly string[] = TASK_EVIDENCE_NAMES;
 
 /** Typed file inventory, not arbitrary JSON strings that happen to name a file. */

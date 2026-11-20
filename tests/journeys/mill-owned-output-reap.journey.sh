@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Golden journey: declared expansion, review, and eval telemetry does not
 # retain a merged worktree or require operator attention.
+# protects: HOK-3503 — declared output reaps; unknown .wavemill/context stays task dirt.
 set -euo pipefail
 source "$(dirname "$0")/harness.sh"
 

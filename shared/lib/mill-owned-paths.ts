@@ -1,13 +1,10 @@
 /** The sole inventory of paths written by Wavemill inside a task worktree. */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { TASK_EVIDENCE_NAMES } from './task-artifact-lookup.ts';
 
 export type MillOwnedDisposition = 'evidence' | 'telemetry' | 'runtime';
 export interface MillOwnedPath { pattern: string; disposition: MillOwnedDisposition; destination?: string; gitignore?: boolean }
-/** Stable evidence basenames consumed by taskEvidenceNames and archived before reap. */
-export const TASK_EVIDENCE_NAMES = ['plan.md', 'task-packet.md', 'task-packet-header.md', 'task-packet-details.md',
-  '.routing-complete', '.initial-route.json', '.post-expansion-route.json', 'routing.jsonl', '.coding-uncommitted-output.resolved.jsonl', '.operator-intervention.json', '.terminal-history.jsonl', '.operator-events.jsonl', '.session-ownership.jsonl', '.head-moves.jsonl', '.recovery-actions.jsonl', '.challenge-aborted.json', '.coding-failure-handoff.json', 'trace.jsonl', '.planning-result.json', '.coding-result.json', '.review-result.json', '.ready-result.json'] as const;
-
 export const MILL_OWNED_PATHS: readonly MillOwnedPath[] = [
   { pattern: '.wavemill/observer-findings.jsonl', disposition: 'telemetry', destination: '.wavemill/observer-findings.jsonl', gitignore: true }, { pattern: '.wavemill/task-size-estimates.jsonl', disposition: 'telemetry', destination: '.wavemill/task-size-estimates.jsonl', gitignore: true }, { pattern: '.wavemill/evals/prompt-registry.jsonl', disposition: 'telemetry', destination: '.wavemill/evals/prompt-registry.jsonl', gitignore: true },
   { pattern: 'prompt-registry.jsonl', disposition: 'telemetry', destination: '.wavemill/evals/prompt-registry.jsonl' },
