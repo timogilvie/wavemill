@@ -216,6 +216,8 @@ describe('launchNativeCoding', () => {
     assert.match(prompt, /src\/a\.ts/);
     assert.match(prompt, /scratch\.txt/);
     assert.match(prompt, /recovery_mode_denied/);
+    assert.match(prompt, /discard_owned_path/);
+    assert.doesNotMatch(prompt, /git checkout --|git restore/);
   });
 
   // protects: native coding must actually supply the loop budget instead of leaving it opt-in.

@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # protects: native mutation -> exited blocked completion -> fresh process -> commit -> merge, zero recovery touches.
+# HOK-3514: both processes also create files through run_tests. The fresh one
+# is refused .coding-complete while they are dirty, discards its scratch and
+# commits the owned output itself: no dirty-handoff relaunch, no operator.
 set -euo pipefail
 source "$(dirname "$0")/harness.sh"
 reason="$(journey_skip_reason)"
@@ -19,5 +22,9 @@ journey_wait_until "$ISSUE" 25 "PR merged" journey_pr_merged
 journey_wait_until "$ISSUE" 8 "task reaped" journey_task_reaped "$ISSUE"
 journey_assert "exactly one bounded recovery" test "$(journey_agent_launch_count "$ISSUE" coding)" = 2
 journey_assert "the native mutation landed" bash -c 'git --git-dir "$1" show "refs/heads/$2:journey-output.txt" | grep -q "preserved native mutation"' _ "$FAKE_GH_ORIGIN" "$JOURNEY_INTEGRATION_BRANCH"
+journey_assert "command-created task output landed" bash -c 'git --git-dir "$1" cat-file -e "refs/heads/$2:command-fixture.txt"' _ "$FAKE_GH_ORIGIN" "$JOURNEY_INTEGRATION_BRANCH"
+journey_assert "command-created scratch was discarded, never landed" bash -c '! git --git-dir "$1" cat-file -e "refs/heads/$2:nested/scratch.txt" 2>/dev/null' _ "$FAKE_GH_ORIGIN" "$JOURNEY_INTEGRATION_BRANCH"
+journey_assert "the fresh process saw the marker refused, then finished clean" grep -q "marker-refused-then-clean" "$FAKE_AGENT_LOG"
+journey_assert "no dirty-handoff relaunch" bash -c '! sed "s/\x1b\[[0-9;]*[A-Za-z]//g" "$1/logs/monitor.out" "$1/logs/status.log" 2>/dev/null | grep -q "coding-dirty-handoff relaunch"' _ "$JOURNEY_TMP"
 journey_assert_landed "$ISSUE"
 journey_finish

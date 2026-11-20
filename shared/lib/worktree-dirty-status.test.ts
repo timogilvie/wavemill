@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import test from 'node:test';
 import {
   filterWorktreeDirtyStatus,
+  isWavemillOwnedDirtyPath,
+  readTaskDirtyPaths,
   readWorktreeDirtyStatus,
 } from './worktree-dirty-status.ts';
 const OBSERVER = '.wavemill/observer-findings.jsonl';
@@ -229,4 +231,47 @@ test('filter does NOT drop audits paths with a tracked porcelain code', () => {
     ' M .wavemill/audits/openrouter-alias-drift.json',
     'MM .wavemill/audits/openrouter-alias-drift.json',
   ]);
+});
+
+// protects: HOK-3514 — the completion gate's dirty list matches the monitor's handoff check.
+test.describe('readTaskDirtyPaths', () => {
+  test('lists task dirt (including renames, nested untracked files) and drops Wavemill-owned output', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'task-dirty-'));
+    try {
+      const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+      git('init', '-q'); git('config', 'user.email', 't@example.invalid'); git('config', 'user.name', 'T');
+      writeFileSync(join(repo, 'old name.ts'), 'x\n');
+      git('add', '.'); git('commit', '-qm', 'base');
+      git('mv', 'old name.ts', 'new name.ts');
+      mkdirSync(join(repo, 'shared/lib'), { recursive: true });
+      writeFileSync(join(repo, 'shared/lib/scratch.txt'), 's\n');
+      mkdirSync(join(repo, 'features/demo'), { recursive: true });
+      writeFileSync(join(repo, 'features/demo/.coding-complete'), '{}\n');
+      writeFileSync(join(repo, 'features/demo/plan.md'), '#\n');
+      writeFileSync(join(repo, 'features/demo/notes.md'), 'task output\n');
+      mkdirSync(join(repo, '.wavemill'), { recursive: true });
+      writeFileSync(join(repo, '.wavemill/native-status.json'), '{}\n');
+      const result = readTaskDirtyPaths({ worktree: repo, slug: 'demo' });
+      assert.deepEqual(result, {
+        state: 'readable',
+        // A rename reports its destination, as the monitor's coding_output_dirty_paths does.
+        paths: ['features/demo/notes.md', 'new name.ts', 'shared/lib/scratch.txt'],
+      });
+    } finally { rmSync(repo, { recursive: true, force: true }); }
+  });
+
+  test('reports unreadable outside a git repository', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'task-dirty-nogit-'));
+    try {
+      assert.equal(readTaskDirtyPaths({ worktree: dir, slug: 'demo' }).state, 'unreadable');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('isWavemillOwnedDirtyPath scopes feature artifacts to the task slug', () => {
+    assert.equal(isWavemillOwnedDirtyPath('features/demo/.native-intended-files.json', 'demo'), true);
+    assert.equal(isWavemillOwnedDirtyPath('features/other/.coding-complete', 'demo'), false);
+    assert.equal(isWavemillOwnedDirtyPath('features/demo/task-packet-details.md', 'demo'), true);
+    assert.equal(isWavemillOwnedDirtyPath('.claude/settings.local.json', 'demo'), true);
+    assert.equal(isWavemillOwnedDirtyPath('scratch.txt', 'demo'), false);
+  });
 });

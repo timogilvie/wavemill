@@ -31,6 +31,7 @@ const options = {
   'state-file': { type: 'string', description: 'Workflow state file (default .wavemill/workflow-state.json)' },
   'budget-exhausted-json': { type: 'string', description: 'Budget fact JSON (HOK-3362)' },
   'skip-state-mutation': { type: 'boolean', description: 'Backfill mode: do not touch workflow-state.json' },
+  'retain-arm': { type: 'boolean', description: 'Record the fault but keep the arm held (no abort stamp, no .challenge-aborted.json)' },
 } as const;
 
 type CliArgs = ParsedArgs<typeof options>;
@@ -79,6 +80,7 @@ async function runRecordArmTerminationCli(argv: string[] = process.argv.slice(2)
         stateFile: args['state-file'],
         budgetExhausted: args['budget-exhausted-json'] || null,
         skipStateMutation: Boolean(args['skip-state-mutation']),
+        retainArm: Boolean(args['retain-arm']),
       });
       console.log(JSON.stringify({
         issue,

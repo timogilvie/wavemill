@@ -1171,6 +1171,35 @@ challenge_abort_scope_for_failure() {
   fi
 }
 
+# arm_termination_record <issue> <feature_dir> <stage> <model> <kind> <detail> <next_action> [recorder flags...]
+# The monitor's one call into the arm-termination recorder (HOK-3358): the
+# reliability record, failure eval record and selection outcome that carry the
+# executed model and fault class to Hokusai. Extra flags pass through
+# (`--scope`, `--budget-exhausted-json`, `--retain-arm`). Best effort: a
+# recorder failure is logged and never fails the caller.
+arm_termination_record() {
+  local issue="$1" feature_dir="$2" stage="$3" model="$4" kind="$5" detail="$6" next_action="$7"
+  shift 7
+  local recorder_tool
+  [[ -n "${REPO_DIR:-}" && -n "$kind" ]] || return 0
+  recorder_tool="$(wavemill_tool_path record-arm-termination.ts)"
+  [[ -f "$recorder_tool" ]] || return 0
+  (
+    cd "$REPO_DIR" && wavemill_run_tool "$recorder_tool" \
+      --repo-dir "${WAVEMILL_RELIABILITY_REPO_DIR:-$REPO_DIR}" \
+      --issue "$issue" \
+      --kind "$kind" \
+      --actor monitor \
+      --stage "$(challenge_stage_for_launch_env "$stage")" \
+      --model "${model:-unknown}" \
+      --detail "$detail" \
+      --next-action "$next_action" \
+      --feature-dir "$feature_dir" \
+      ${STATE_FILE:+--state-file "$STATE_FILE"} \
+      "$@"
+  ) >/dev/null 2> >(while IFS= read -r line; do log_warn "$line"; done) || true
+}
+
 # Quarantine a challenge pair (or one arm of it) and record why.
 #
 # A challenge is only meaningful when both arms actually ran, so a terminal
@@ -1215,27 +1244,8 @@ challenge_abort_pair() {
   kind="${kind#terminal_launch_failure:}"
   kind="${kind#retry_exhausted:}"
   kind="${kind#invalid_challenge:}"
-  if [[ -n "${REPO_DIR:-}" && -n "$kind" ]]; then
-    local recorder_tool
-    recorder_tool="$(wavemill_tool_path record-arm-termination.ts)"
-    if [[ -f "$recorder_tool" ]]; then
-      (
-        cd "$REPO_DIR" && wavemill_run_tool "$recorder_tool" \
-          --repo-dir "${WAVEMILL_RELIABILITY_REPO_DIR:-$REPO_DIR}" \
-          --issue "$issue" \
-          --kind "$kind" \
-          --actor monitor \
-          --stage "$(challenge_stage_for_launch_env "$stage")" \
-          --model "${model:-unknown}" \
-          --detail "$detail" \
-          --next-action "$next_action" \
-          --scope "$scope" \
-          --feature-dir "$feature_dir" \
-          ${STATE_FILE:+--state-file "$STATE_FILE"} \
-          ${budget_json:+--budget-exhausted-json "$budget_json"}
-      ) >/dev/null 2> >(while IFS= read -r line; do log_warn "$line"; done) || true
-    fi
-  fi
+  arm_termination_record "$issue" "$feature_dir" "$stage" "$model" "$kind" "$detail" "$next_action" \
+    --scope "$scope" ${budget_json:+--budget-exhausted-json "$budget_json"}
 
   # Fallback: `challengePairAbortions` is read by the resolver. Keep stamping
   # it from shell so the pair-wise map remains populated even if the recorder
@@ -6917,7 +6927,7 @@ coding_dirty_handoff_write_recovery_instruction() {
     while IFS= read -r dirty_path; do
       [[ -n "$dirty_path" ]] && printf -- '- `%s`\n' "$dirty_path"
     done <<< "$dirty_paths"
-    printf '\nFor each path, either commit it (when it belongs to the task) or discard it (`git checkout -- <path>` for a tracked file, or remove untracked scratch files). Do not make any other changes. Then re-write `.coding-complete`.\n'
+    printf '\nFor each path, either commit it when it belongs to the task, or discard it. The native harness: commit with git_add + git_commit and discard with discard_owned_path (it restores a tracked file and deletes an untracked one), never shell git or rm. Other coders: restore a tracked file from HEAD or delete an untracked scratch file. Do not make any other changes. Then re-write `.coding-complete`.\n'
   } > "$tmp" && mv "$tmp" "$file" 2>/dev/null && return 0
   rm -f "$tmp"
   return 1
@@ -6993,11 +7003,14 @@ coding_dirty_handoff_relaunch() {
 # Record the greppable exhaustion sentinel for both roles. A challenger is
 # additionally aborted (scope single) so the pair classifies as
 # sibling-challenge-aborted and resolves as a forfeit to the primary; returns 0
-# in that case. Returns 1 for a primary (or an already-aborted challenger), which
-# stays on the needs-user hold.
+# in that case. A primary (HOK-3514) records the same typed failure-policy
+# outcome through the arm-termination recorder — executed model and fault
+# class reach Hokusai once, when the sentinel is first written — but keeps its
+# needs-user hold (`--retain-arm`) so the delivered work can still be reviewed;
+# returns 1. An already-aborted challenger also returns 1.
 coding_dirty_handoff_terminalize() {
   local issue="$1" feature_dir="$2" win="$3" head="$4" dirty_paths="$5" detail="${6:-}"
-  local attempts path_count first_paths reason role is_challenge existing model next_action
+  local attempts path_count first_paths reason role is_challenge existing model next_action newly_exhausted=0
 
   attempts="$(bounded_retry_count "$feature_dir" coding-dirty-handoff)"
   path_count="$(printf '%s\n' "$dirty_paths" | grep -c . || true)"
@@ -7005,18 +7018,24 @@ coding_dirty_handoff_terminalize() {
   reason="Coding handoff left ${path_count} uncommitted path(s) after the agent exited; dirty-handoff relaunch exhausted after ${attempts} attempt(s) at head ${head:-unknown}${detail:+ (${detail})}: ${first_paths}"
 
   if bounded_retry_mark_exhausted "$feature_dir" coding-dirty-handoff "$reason"; then
+    newly_exhausted=1
     log "status" "⛔ $issue → $reason"
   fi
 
   role="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
   is_challenge="$(get_task_meta "$issue" "challenge" 2>/dev/null || true)"
   existing="$(get_task_meta "$issue" "challengeAborted" 2>/dev/null || true)"
-  if [[ "$is_challenge" != "true" || "$role" != "challenger" || -n "$existing" ]]; then
-    return 1
-  fi
-
   model="$(stage_result_field "$feature_dir" "coding" "model")"
   next_action="$(native_terminal_failure_next_action "coding-dirty-handoff")"
+  if [[ "$is_challenge" != "true" || "$role" != "challenger" ]]; then
+    if (( newly_exhausted == 1 )); then
+      arm_termination_record "$issue" "$feature_dir" "coding" "$model" "coding-dirty-handoff" \
+        "$reason" "$next_action" --scope single --retain-arm
+    fi
+    return 1
+  fi
+  [[ -z "$existing" ]] || return 1
+
   challenge_abort_pair "$issue" "$feature_dir" "$win" "coding" "$model" \
     "terminal_stage_failure:coding-dirty-handoff" "$reason" "$next_action" "single" || return 1
   log_warn "$issue → coding-dirty-handoff exhausted: challenger quarantined, primary released"

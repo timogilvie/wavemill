@@ -70,3 +70,4 @@ tools/check-task-recovery-ownership.ts
 tools/check-native-harness-deadlines.ts
 tools/check-native-patch-fields.ts
 tools/check-scope-stop-record.ts
+tools/check-completion-gate.ts
