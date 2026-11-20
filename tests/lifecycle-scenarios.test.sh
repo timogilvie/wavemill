@@ -172,7 +172,6 @@ for fn in \
   guard_coding_complete_handoff \
   coding_recovery_instruction_path \
   coding_dirty_handoff_grace_seconds \
-  coding_dirty_handoff_agent_exited \
   coding_dirty_handoff_path_is_planned \
   coding_dirty_handoff_quarantine_scratch \
   coding_dirty_handoff_write_recovery_instruction \
@@ -236,8 +235,6 @@ for fn in \
   resolve_pair_on_primary_merge \
   cleanup_merged_primary_challenge_task \
   closed_pr_resource_policy \
-  coding_stage_owner_lost \
-  coding_stage_mark_interrupted \
   coding_interrupted_late_completion_reconcile \
   blocked_completion_commit_matches_head \
   monitor_issue_state

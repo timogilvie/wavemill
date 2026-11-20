@@ -4446,11 +4446,8 @@ _stage_stamp_settled_without_result() {
 #           operator-decision escalation and kept the stage otherwise alive
 #   rc 3  — inactive, no-launch: no session-ownership row for this stage
 #           (HOK-3328), so the disposition has no evidence to decide from at
-#           all. A stage-specific legacy check (e.g. coding's
-#           coding_stage_owner_lost, for tasks predating session-ownership
-#           tracking) remains a necessary backstop here — it must NOT be
-#           consulted on return 0, where the disposition already has evidence
-#           and a second, narrower check could contradict it.
+#           all. The caller keeps the stage as it is; no private fallback
+#           liveness check is consulted (HOK-3461).
 # Recovery execution is hosted by the existing tracked-job supervisor. The
 # monitor only gathers its existing disposition and schedules work; no claim
 # lock or extra TypeScript process runs inline on the hot pass.
@@ -4923,9 +4920,115 @@ fresh_hook_state_for_issue() {
   jq -r '.state // empty' "$hook_file" 2>/dev/null || true
 }
 
-# HOK-3101: agent-only fresh hook state. A monitor `working` or `blocked`
-# does NOT count. Used by `coding_stage_owner_lost` so a monitor recovery
-# replay write cannot mask a lost coding owner.
+# HOK-3137: a coding stage stamped failed/interrupted (the HOK-3386 stage
+# disposition's settled-without-result stamp, `_stage_stamp_settled_without_result`)
+# can still receive a genuine .coding-complete afterwards, e.g. a marker the
+# agent wrote as it exited or a misplaced marker recovered into the feature
+# dir. Without this, the `failed` branch (transient retry / quarantine) never
+# looks at `.coding-complete` again and relaunches over finished work.
+#
+# This is not a liveness decision: it reads only the result record, the
+# marker and the worktree. Reconciling flips the stage back to "running" so
+# the existing running+marker machinery (seam validation, dirty-handoff
+# guard, completed transition) advances it on the next tick — no duplicated
+# handoff logic. Returns 0 when reconciled (caller should count the task
+# active and return), 1 to fall through to the existing failed handling.
+coding_interrupted_late_completion_reconcile() {
+  local issue="$1" feature_dir="$2" worktree="$3" win="$4"
+  # allow-stage-artifact-lookup: in-stage result of the caller's resolved feature dir (same record write_stage_result rewrites)
+  local result_file="$feature_dir/.coding-result.json"
+  local slug status termination_class finished_at finished_epoch marker_epoch
+  local marker_commit head dirty_paths verdict_cache cached_mtime seam_rc
+  local result_agent result_model
+
+  [[ -f "$result_file" ]] || return 1
+  status="$(jq -r '.status // empty' "$result_file" 2>/dev/null || true)"
+  [[ "$status" == "failed" ]] || return 1
+  termination_class="$(jq -r '.artifacts.terminationClass // empty' "$result_file" 2>/dev/null || true)"
+  [[ "$termination_class" == "interrupted" ]] || return 1
+
+  slug="$(basename "$feature_dir")"
+  recover_misplaced_coding_complete_marker "$issue" "$worktree" "$feature_dir" "$slug" || true
+  [[ -f "$feature_dir/.coding-complete" ]] || return 1
+
+  # [REQ-F2 edge] marker must be strictly newer than the interrupted stamp.
+  finished_at="$(jq -r '.finishedAt // empty' "$result_file" 2>/dev/null || true)"
+  [[ -n "$finished_at" ]] || return 1
+  finished_epoch="$(wavemill_iso8601_to_epoch "$finished_at" 2>/dev/null || true)"
+  [[ "$finished_epoch" =~ ^[0-9]+$ ]] || return 1
+  marker_epoch="$(portable_file_mtime_epoch "$feature_dir/.coding-complete" 2>/dev/null || true)"
+  [[ "$marker_epoch" =~ ^[0-9]+$ ]] || return 1
+  (( marker_epoch > finished_epoch )) || return 1
+
+  # [REQ-F2 edge] a dirty tree stays interrupted — HOK-3128's dirty-handoff
+  # machinery applies only to live/relaunched arms, not a reconciled one.
+  dirty_paths="$(coding_output_dirty_paths "$worktree" "$slug")"
+  [[ -z "$dirty_paths" ]] || return 1
+
+  # [REQ-F2 edge] an optional `commit` field must match HEAD (prefix match).
+  # allow-settled-attempt: reads HEAD of the caller's resolved task worktree (monitor_issue_state's running coding row)
+  head="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
+  marker_commit="$(jq -r '.commit // empty' "$feature_dir/.coding-complete" 2>/dev/null || true)"
+  if [[ -n "$marker_commit" ]]; then
+    blocked_completion_commit_matches_head "$marker_commit" "$head" || return 1
+  fi
+
+  # Seam validation spawns tsx; cache the verdict keyed by marker mtime so a
+  # permanently-invalid marker does not re-spawn the validator every tick.
+  verdict_cache="$feature_dir/.late-completion-reconcile.json"
+  cached_mtime=""
+  if [[ -f "$verdict_cache" ]]; then
+    cached_mtime="$(jq -r '.markerMtime // empty' "$verdict_cache" 2>/dev/null || true)"
+    if [[ "$cached_mtime" == "$marker_epoch" ]]; then
+      [[ "$(jq -r '.valid // false' "$verdict_cache" 2>/dev/null || echo false)" == "true" ]] || return 1
+    else
+      cached_mtime=""
+    fi
+  fi
+  if [[ -z "$cached_mtime" ]]; then
+    seam_rc=0
+    seam_validate_artifact coding-complete "$feature_dir/.coding-complete" --canonicalize || seam_rc=$?
+    local verdict_tmp
+    verdict_tmp="$(mktemp "$verdict_cache.tmp.XXXXXX" 2>/dev/null)" && {
+      jq -cn --arg mtime "$marker_epoch" --argjson valid "$([[ "$seam_rc" -eq 0 ]] && echo true || echo false)" \
+        '{markerMtime: $mtime, valid: $valid}' > "$verdict_tmp" 2>/dev/null \
+        && mv "$verdict_tmp" "$verdict_cache" 2>/dev/null || rm -f "$verdict_tmp"
+    }
+    [[ "$seam_rc" -eq 0 ]] || return 1
+  fi
+
+  result_agent="$(jq -r '.agent // empty' "$result_file" 2>/dev/null || true)"
+  result_model="$(jq -r '.model // empty' "$result_file" 2>/dev/null || true)"
+  log "status" "$issue → late_completion_reconciled: valid .coding-complete found after interrupted stamp (marker newer than finishedAt, tree clean)"
+  if declare -F wavemill_hook_write >/dev/null 2>&1; then
+    WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$issue" \
+      wavemill_hook_write "working" "late_completion_reconciled" "late .coding-complete accepted after interrupted stamp" "wavemill" "" "monitor" || true
+  fi
+  write_stage_result "$feature_dir" "coding" "running" "$result_agent" "$result_model" \
+    "Reconciled: late .coding-complete accepted after interrupted stamp"
+  set_window_attention_state "$win" "clear"
+  return 0
+}
+
+# HOK-3211: a task can sit in `planning / awaiting_user` while its coding
+# agent has already finished the work in the planning pane — committed the
+# diff, written a valid `.coding-complete` whose `commit` equals HEAD on a
+# clean tree. The monitor's planning branch only reacts to `.plan-approved`,
+# so it never notices the finished work and the task looks stuck. When the
+# operator eventually touches `.plan-approved`, the plan→coding handoff calls
+# `archive_stale_coding_artifacts` and moves the valid marker aside, then
+# launches a fresh coder on top of already-committed work.
+#
+# Reconcile wherever the monitor sits in a planning state: on a condition-
+# valid late marker, approve the plan and record coding as completed in-
+# place, so the next pass transitions to review from the state machine's
+# existing completed-coding handler. The validity checks mirror HOK-3137's
+# `coding_interrupted_late_completion_reconcile`, plus a HEAD-ahead-of-base
+# check so a marker whose commit equals the base commit (no durable work)
+# still falls through to the normal launch path.
+#
+# Returns 0 when reconciled (caller: `active_count++; return 0`), 1 to fall
+# through.
 planning_late_coding_complete_reconcile() {
   local issue="$1" feature_dir="$2" worktree="$3" win="$4" current_agent="${5:-}"
   local slug planning_status marker_commit head base
@@ -9360,8 +9463,8 @@ clear_coding_pane_replacement_intent() {
 # failure) so callers that need to hold a settling agent can.
 #
 # Optional 4th arg --no-settle: the operator-advance / auto-advance callers
-# (complete_coding_advance) already proved the pane has no live blocking
-# process (mill_pane_has_live_blocking_process) or are an explicit operator
+# (complete_coding_advance) already proved the agent owns no live background
+# work (task-progress `agentBackgroundLive`) or are an explicit operator
 # override before reaching here, so there is nothing left to settle on.
 quarantine_completed_coding_pane() {
   local issue="$1" feature_dir="$2" worktree="${3:-}" settle_flag="${4:-}"
@@ -21621,6 +21724,14 @@ monitor_issue_state() {
           fi
 
           if [[ "$coding_status" == "failed" ]]; then
+            # HOK-3137: a stage stamped interrupted can still have a genuine
+            # .coding-complete written after the stamp. Reconcile before
+            # falling into challenger retry/quarantine, which never looks at
+            # the marker.
+            if coding_interrupted_late_completion_reconcile "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" "$WIN"; then
+              active_count=$((active_count + 1))
+              return 0
+            fi
             _monitor_recover_failed_stage "$ISSUE" "$FEATURE_DIR" "$WIN" "coding"
             active_count=$((active_count + 1))
             return 0
