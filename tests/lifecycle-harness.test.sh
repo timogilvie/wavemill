@@ -2151,6 +2151,90 @@ EOF
   check_contains "live background work: hook next action names issue" "$(jq -r '.next_action // empty' "$hook_file" 2>/dev/null || true)" "$issue"
 }
 
+test_coding_blocked_completion_redacts_process_arguments() {
+  local slug="coding-blocked-redact-identity"
+  local issue="HOK-2579-REDACT"
+  local repo tick commit hook_file overrides log_output next_action detail
+  repo="$(harness_init_repo "$slug")"
+  harness_setup_runtime_artifacts "$repo"
+  harness_setup_coding_state "$repo" "$slug" "running"
+  commit="$(git -C "$repo" rev-parse --short HEAD)"
+  hook_file="/tmp/wavemill-lifecycle-harness-${issue}.hook"
+  cat > "$repo/features/$slug/.coding-blocked-completion.json" <<EOF
+{
+  "stage": "coding",
+  "implementationComplete": true,
+  "committed": true,
+  "commit": "$commit",
+  "passingChecks": ["bash tests/wavemill-mill-advance.test.sh"],
+  "blockingChecks": ["pytest -v --token=PRIVATE-ARGV {\"turn-ended\":\"prompt\"}"],
+  "blockingReason": "baseline_tests_failing",
+  "evidence": "Repo-level typecheck is failing outside this change.",
+  "recommendedAction": "advance_to_review"
+}
+EOF
+
+  # HOK-2579 + HOK-3461: the live-work hold is decided from the canonical
+  # agentBackgroundLive fact, which carries no process identity. The check
+  # command the agent recorded (argv, JSON payload) must never reach the
+  # attention log or the hook.
+  overrides="$(cat <<'EOF'
+CURRENT_PHASE="coding"
+task_progress_json() {
+  printf '%s\n' '{"agentBackgroundLive":true}'
+}
+EOF
+)"
+
+  tick="$(harness_run_tick "$repo" "$slug" "$issue" "$overrides")"
+  log_output="$(kv_value "$tick" log_output)"
+  next_action="$(jq -r '.next_action // empty' "$hook_file" 2>/dev/null || true)"
+  detail="$(jq -r '.detail // empty' "$hook_file" 2>/dev/null || true)"
+
+  check_eq "redact identity: needs-user attention set" "needs-user" "$(kv_value "$tick" attention)"
+  check_contains "redact identity: attention log names generic disposition" "$log_output" "agent-owned background work is still running"
+  check_not_contains "redact identity: log has no check argv" "$log_output" "PRIVATE-ARGV"
+  check_not_contains "redact identity: log has no turn-ended text" "$log_output" "turn-ended"
+  check_eq "redact identity: hook state blocked" "blocked" "$(jq -r '.state // empty' "$hook_file" 2>/dev/null || true)"
+  check_contains "redact identity: hook next action names issue" "$next_action" "$issue"
+  check_not_contains "redact identity: hook next_action has no check argv" "$next_action" "PRIVATE-ARGV"
+  check_not_contains "redact identity: hook next_action has no JSON brace" "$next_action" "{"
+  check_not_contains "redact identity: hook detail has no check argv" "$detail" "PRIVATE-ARGV"
+  check_not_contains "redact identity: hook detail has no JSON brace" "$detail" "{"
+  check_file_absent "redact identity: no auto audit written" "$repo/features/$slug/.coding-auto-advance.json"
+  check_file_absent "redact identity: no coding complete marker" "$repo/features/$slug/.coding-complete"
+}
+
+test_coding_blocked_completion_redacts_malformed_mill_variable() {
+  local slug="coding-blocked-redact-malformed"
+  local issue="HOK-2579-MALFORMED"
+  local repo tick log_output matched_line
+  repo="$(harness_init_repo "$slug")"
+  harness_setup_runtime_artifacts "$repo"
+  harness_setup_coding_state "$repo" "$slug" "running"
+  # With the private pane probe gone, the free text that reaches the
+  # blocked-completion attention log is the agent-written artifact. A
+  # multi-line, JSON-containing summary must still be folded onto one
+  # physical line by sanitize_blocked_completion_text.
+  cat > "$repo/features/$slug/.coding-blocked-completion.json" <<'EOF'
+{
+  "summary": "live-child\n{\"turn-ended\":\"prompt leak line1\nline2\"}",
+  "reason": "Integration tests require Docker."
+}
+EOF
+
+  tick="$(harness_run_tick "$repo" "$slug" "$issue" "$(harness_auto_advance_clear_liveness_setup)")"
+
+  log_output="$(kv_value "$tick" log_output)"
+  matched_line="$(printf '%s\n' "$log_output" | grep -F "live-child" || true)"
+  check_eq "redact malformed: needs-user attention set" "needs-user" "$(kv_value "$tick" attention)"
+  check_eq "redact malformed: attention entry is a single physical line" "1" "$(printf '%s\n' "$matched_line" | grep -c . || true)"
+  check_contains "redact malformed: single line still carries the folded tail" "$matched_line" "line2"
+  check_contains "redact malformed: single line still carries the operator hint" "$matched_line" "advance $issue"
+  check_eq "redact malformed: coding stage stays running" "running" "$(harness_read_stage_status "$repo" "$slug" coding)"
+  check_file_absent "redact malformed: no coding complete marker" "$repo/features/$slug/.coding-complete"
+}
+
 test_coding_blocked_completion_indeterminate_liveness_needs_attention() {
   local slug="coding-blocked-indeterminate"
   local issue="HOK-2464-INDET"
@@ -2189,7 +2273,7 @@ EOF
   check_eq "indeterminate liveness: hook state blocked" "blocked" "$(jq -r '.state // empty' "$hook_file" 2>/dev/null || true)"
 }
 
-test_coding_blocked_completion_missing_blocking_checks_does_not_auto_advance() {
+test_coding_blocked_completion_missing_blocking_checks_holds_when_nothing_is_live() {
   local slug="coding-blocked-missing-blocking-checks"
   local issue="HOK-2464-MISSING-CHECKS"
   local repo tick commit
@@ -2210,10 +2294,14 @@ test_coding_blocked_completion_missing_blocking_checks_does_not_auto_advance() {
 }
 EOF
 
-  tick="$(harness_run_tick "$repo" "$slug" "$issue")"
+  # Nothing is live (agentBackgroundLive false — the pane-gone case), but an
+  # artifact without blockingChecks is not eligible for auto-advance: it is
+  # held for the operator instead of advancing.
+  tick="$(harness_run_tick "$repo" "$slug" "$issue" "$(harness_auto_advance_clear_liveness_setup)")"
 
   check_eq "missing blocking checks: coding stage stays running" "running" "$(harness_read_stage_status "$repo" "$slug" coding)"
-  check_eq "missing blocking checks: attention remains clear" "clear" "$(kv_value "$tick" attention)"
+  check_eq "missing blocking checks: needs-user attention set" "needs-user" "$(kv_value "$tick" attention)"
+  check_not_contains "missing blocking checks: no live-work hold" "$(kv_value "$tick" log_output)" "background work is still running"
   check_file_absent "missing blocking checks: no auto audit written" "$repo/features/$slug/.coding-auto-advance.json"
   check_file_absent "missing blocking checks: no coding complete marker written" "$repo/features/$slug/.coding-complete"
 }
@@ -3986,8 +4074,10 @@ test_coding_blocked_completion_needs_user_without_advancing
 test_coding_blocked_completion_auto_advances_when_valid
 test_coding_blocked_completion_auto_advances_with_wavemill_metadata_noise
 test_coding_blocked_completion_live_background_work_needs_attention
+test_coding_blocked_completion_redacts_process_arguments
+test_coding_blocked_completion_redacts_malformed_mill_variable
 test_coding_blocked_completion_indeterminate_liveness_needs_attention
-test_coding_blocked_completion_missing_blocking_checks_does_not_auto_advance
+test_coding_blocked_completion_missing_blocking_checks_holds_when_nothing_is_live
 test_coding_blocked_completion_empty_blocking_checks_does_not_auto_advance
 test_coding_blocked_completion_dedupes_same_artifact
 test_coding_blocked_completion_reannounces_on_mtime_change
