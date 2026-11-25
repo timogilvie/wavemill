@@ -4352,39 +4352,17 @@ ready_remediation_attempts() {
 # ready_remediation_disposition <issue> <state_dir> <wt_dir> <current_head>
 # Prints "<kind> <reason>": kind is inactive|advanced|in-flight|settled. The
 # one Ready remediation in-flight/completion decision (CI fix or conflict
-# resolver) lives in shared/lib/ready-remediation-disposition.ts (HOK-3322);
-# this wrapper only spawns it. A running result and a launch head equal to
+# resolver) lives in shared/lib/stage-agent-disposition.ts (HOK-3322/HOK-3461);
+# this wrapper only formats its answer. A running result and a launch head equal to
 # HEAD are facts about the launch, never liveness: only the agent's own
-# progress (HOK-3101) holds the arm. Two cheap existence reads keep the
-# monitor hot pass from spawning for a task with nothing launched. A failed
-# spawn prints "in-flight progress-unavailable" (fail safe: hold this tick).
+# progress (HOK-3101) holds the arm. A failed spawn prints "in-flight
+# progress-unavailable" (fail safe: hold this tick).
 ready_remediation_disposition() {
   local issue="$1" state_dir="$2" wt_dir="$3" current_head="$4"
-  local ci_launch_recorded slug pane_target out kind reason
-
-  if [[ "$(read_stage_status "$state_dir" "ready")" != "running" ]]; then
-    printf 'inactive not-running\n'
-    return 0
-  fi
-  # allow-ready-remediation-disposition: existence pre-filter, no head comparison.
-  ci_launch_recorded="$(bounded_retry_head "$state_dir" "ready-remediation")"
-  if [[ ! -f "$(conflict_remediation_marker_path "$state_dir")" && -z "$ci_launch_recorded" ]]; then
-    printf 'inactive no-launch\n'
-    return 0
-  fi
-
-  slug="$(basename "$state_dir")"
-  pane_target="$(_tmux_task_window_target "${SESSION:-}" "$issue" "$slug" "${STATE_FILE:-}" "$wt_dir" 2>/dev/null || true)"
-  local -a disposition_args=(
-    --issue "$issue" --state-dir "$state_dir" --worktree "$wt_dir" --current-head "$current_head"
-    --session "${SESSION:-${WAVEMILL_SESSION:-wavemill}}"
-  )
-  [[ -n "${STATE_FILE:-}" ]] && disposition_args+=(--state-file "$STATE_FILE")
-  [[ -n "$pane_target" ]] && disposition_args+=(--pane-target "$pane_target")
-  out=$(_with_timeout 15 wavemill_run_tool "ready-remediation-disposition.ts" \
-    "${disposition_args[@]}" 2>/dev/null || true)
-  kind=$(printf '%s' "$out" | jq -r '.kind // empty' 2>/dev/null | tail -n 1 || true)
-  reason=$(printf '%s' "$out" | jq -r '.reason // empty' 2>/dev/null | tail -n 1 || true)
+  local out kind reason
+  out="$(stage_agent_disposition "$issue" "$state_dir" "$wt_dir" "$current_head" ready-remediation)"
+  kind="$(jq -r '.kind // empty' <<<"$out" 2>/dev/null)"
+  reason="$(jq -r '.reason // empty' <<<"$out" 2>/dev/null)"
   case "$kind" in
     inactive|advanced|in-flight|settled) printf '%s %s\n' "$kind" "${reason:-unspecified}" ;;
     *) printf 'in-flight progress-unavailable\n' ;;
@@ -4421,6 +4399,13 @@ stage_agent_disposition() {
     return 0
   fi
   printf '%s\n' "$out"
+}
+
+stage_agent_disposition_kind() {
+  local issue="$1" state_dir="$2" worktree="$3" phase="$4" head
+  head="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
+  stage_agent_disposition "$issue" "$state_dir" "$worktree" "$head" "$phase" \
+    | jq -r '.kind // "in-flight"' 2>/dev/null || printf 'in-flight\n'
 }
 
 # _stage_stamp_settled_without_result <issue> <feature_dir> <result_stage> <reason> <current_head> [fallback_agent] [harness_hold_json]
@@ -4471,11 +4456,8 @@ _stage_stamp_settled_without_result() {
 #           operator-decision escalation and kept the stage otherwise alive
 #   rc 3  — inactive, no-launch: no session-ownership row for this stage
 #           (HOK-3328), so the disposition has no evidence to decide from at
-#           all. A stage-specific legacy check (e.g. coding's
-#           coding_stage_owner_lost, for tasks predating session-ownership
-#           tracking) remains a necessary backstop here — it must NOT be
-#           consulted on return 0, where the disposition already has evidence
-#           and a second, narrower check could contradict it.
+#           all. The caller keeps the stage as it is; no private fallback
+#           liveness check is consulted (HOK-3461).
 # Recovery execution is hosted by the existing tracked-job supervisor. The
 # monitor only gathers its existing disposition and schedules work; no claim
 # lock or extra TypeScript process runs inline on the hot pass.
@@ -4948,173 +4930,22 @@ fresh_hook_state_for_issue() {
   jq -r '.state // empty' "$hook_file" 2>/dev/null || true
 }
 
-# HOK-3101: agent-only fresh hook state. A monitor `working` or `blocked`
-# does NOT count. Used by `coding_stage_owner_lost` so a monitor recovery
-# replay write cannot mask a lost coding owner.
-fresh_agent_hook_state_for_issue() {
-  local issue="$1"
-  if declare -F wavemill_hook_read >/dev/null 2>&1; then
-    wavemill_hook_read "$SESSION" "$issue" state --fresh --agent-only 2>/dev/null || true
-    return 0
-  fi
-  return 1
-}
-
-# HOK-2972 / HOK-2963: detect a coding stage result stuck at "running" whose
-# recorded agent process has exited. A pane surviving at a bare shell prompt,
-# its title text, and periodically refreshed reconciliation timestamps are NOT
-# evidence of progress. Protective evidence that keeps the stage alive: a
-# fresh hook heartbeat, any live descendant under the pane shell (agent or a
-# controller-owned validation job), or an indeterminate probe. A minimum
-# stage age guards launch wrappers that briefly show only a shell.
-# Returns 0 only when the owner is affirmatively lost.
+# HOK-3137: a coding stage stamped failed/interrupted (the HOK-3386 stage
+# disposition's settled-without-result stamp, `_stage_stamp_settled_without_result`)
+# can still receive a genuine .coding-complete afterwards, e.g. a marker the
+# agent wrote as it exited or a misplaced marker recovered into the feature
+# dir. Without this, the `failed` branch (transient retry / quarantine) never
+# looks at `.coding-complete` again and relaunches over finished work.
 #
-# HOK-3137: on every `return 0`, populates CODING_OWNER_LOST_EVIDENCE_JSON
-# (reset to "" at entry) with the factual evidence behind the decision —
-# consumed by coding_stage_mark_interrupted so the stamped `exitEvidence` is
-# dynamic, never the old hard-coded string.
-CODING_OWNER_LOST_EVIDENCE_JSON=""
-
-coding_stage_owner_lost() {
-  local issue="$1" feature_dir="$2" win_target="$3"
-  local started_at started_epoch now_epoch hook_state pane_pid live_rc
-  local grace="${WAVEMILL_CODING_OWNER_GRACE_SECONDS:-300}"
-  CODING_OWNER_LOST_EVIDENCE_JSON=""
-
-  [[ -f "$feature_dir/.coding-result.json" ]] || return 1
-  started_at="$(jq -r '.startedAt // empty' "$feature_dir/.coding-result.json" 2>/dev/null || true)"
-  [[ -n "$started_at" ]] || return 1
-  started_epoch="$(wavemill_iso8601_to_epoch "$started_at" 2>/dev/null || true)"
-  [[ "$started_epoch" =~ ^[0-9]+$ ]] || return 1
-  now_epoch="$(date +%s)"
-  (( now_epoch - started_epoch >= grace )) || return 1
-
-  # A completion marker written since this launch means the agent finished,
-  # not that it was lost: the pass may have checked for it just before the
-  # agent wrote it and exited.
-  local marker_epoch
-  marker_epoch="$(portable_file_mtime_epoch "$feature_dir/.coding-complete" 2>/dev/null || true)"
-  [[ "$marker_epoch" =~ ^[0-9]+$ ]] && (( marker_epoch >= started_epoch )) && return 1
-
-  # HOK-3101: read agent-only, so a monitor-written recovery replay
-  # (`working` at :7632, `writer=monitor`) no longer protects a lost coding
-  # owner. The agent's own fresh state still protects.
-  hook_state="$(fresh_agent_hook_state_for_issue "$issue" 2>/dev/null || true)"
-  case "$hook_state" in
-    working) return 1 ;;
-    waiting) return 1 ;;
-    approval-needed) return 1 ;;
-    blocked) return 1 ;;
-  esac
-
-  command -v tmux >/dev/null 2>&1 || return 1
-  pane_pid="$(tmux list-panes -t "$win_target" -F '#{pane_pid}' 2>/dev/null | head -n 1 || true)"
-  [[ -n "$pane_pid" ]] || return 1
-  live_rc=0
-  mill_pane_has_live_blocking_process "$pane_pid" || live_rc=$?
-
-  # HOK-3137: feed the pane pid to the primitive on every probe (not just the
-  # idle-REPL branch below) so the evidence payload always carries the
-  # background-work fact, even on a genuine (live_rc==1) loss.
-  local progress="{}"
-  if declare -F task_progress_json >/dev/null 2>&1; then
-    progress="$(task_progress_json "$issue" --phase coding --pane-pid "$pane_pid" --max-age 60 2>/dev/null || printf '{}')"
-  fi
-
-  # 0 = live descendant (agent or owned validation), 2 = indeterminate: both
-  # protect by default. HOK-3101 (a): but an idle REPL sitting in the pane is
-  # not "the agent is doing work" — if the primitive says the agent is idle
-  # and stalled, let the owner-lost signal fire UNLESS HOK-3137's background-
-  # work probe found a live descendant (the agent is waiting on its own
-  # backgrounded task, not abandoned).
-  local probe_label=""
-  if [[ "$live_rc" -eq 0 ]]; then
-    if command -v jq >/dev/null 2>&1 \
-      && printf '%s' "$progress" \
-      | jq -e '.agentIdle == true and .stalled == true and ((.agentBackgroundLive // false) != true)' >/dev/null 2>&1; then # allow-ready-remediation-disposition: HOK-3137 idle-REPL detection, not a stage disposition
-      probe_label="live-idle-repl"
-    fi
-  elif [[ "$live_rc" -eq 1 ]]; then
-    probe_label="none-live"
-  fi
-
-  [[ -n "$probe_label" ]] || return 1
-
-  if command -v jq >/dev/null 2>&1; then
-    CODING_OWNER_LOST_EVIDENCE_JSON="$(jq -cn \
-      --argjson progress "$progress" \
-      --arg probe "$probe_label" \
-      --arg paneTarget "$win_target" \
-      --arg observedAt "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
-      '{
-        lastAgentState: ($progress.agentRecord.state // null),
-        lastAgentEvent: ($progress.agentRecord.event // null),
-        lastAgentTimestamp: ($progress.agentRecord.timestamp // null),
-        lastProgressAt: ($progress.lastProgressAt // null),
-        progressAgeMinutes: ($progress.progressAgeMinutes // null),
-        sources: ([($progress.sources // [])[] | .kind]),
-        agentBackgroundLive: (if ($progress | has("agentBackgroundLive")) then $progress.agentBackgroundLive else null end),
-        backgroundProcessCount: (($progress.backgroundProcesses // []) | length),
-        paneDescendantProbe: $probe,
-        paneTarget: $paneTarget,
-        observedAt: $observedAt
-      }' 2>/dev/null || true)"
-  fi
-  return 0
-}
-
-# HOK-3137: extracted from the monitor loop so the stamp is independently
-# testable. Writes the `failed`/`interrupted` stage result with dynamic,
-# factual `exitEvidence` built from CODING_OWNER_LOST_EVIDENCE_JSON (set by
-# the immediately preceding coding_stage_owner_lost call). Falls back to a
-# minimal dynamic string — never the old hard-coded
-# "agent process exited ... (pane at shell prompt)" — when no evidence is
-# available (e.g. jq missing).
-#
-# The `notes` detail string below is pattern-matched by the native-failure
-# classifier (monitor:6760, `*"interrupted: coding agent exited without
-# recording a result"*` → `coding-exited-without-result`) and MUST stay
-# stable; only the `exitEvidence` artifact field becomes dynamic.
-coding_stage_mark_interrupted() {
-  local issue="$1" feature_dir="$2" worktree="$3" win="$4" agent="${5:-}"
-  local interrupted_head evidence_json interrupted_artifacts
-
-  interrupted_head="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
-  evidence_json="${CODING_OWNER_LOST_EVIDENCE_JSON:-}"
-  if [[ -z "$evidence_json" ]] || ! jq -e . >/dev/null 2>&1 <<<"$evidence_json"; then
-    evidence_json="$(jq -cn --arg msg "owner lost - no probe evidence available (pane ${win:-unknown})" '{detail: $msg}' 2>/dev/null)"
-    [[ -n "$evidence_json" ]] || evidence_json='{"detail":"owner lost - no probe evidence available"}'
-  fi
-
-  interrupted_artifacts="$(jq -cn --arg head "$interrupted_head" --argjson evidence "$evidence_json" \
-    '{type: "coding",
-      terminationClass: "interrupted",
-      exitEvidence: $evidence,
-      lastDurableCommit: (if $head == "" then null else $head end),
-      validationState: "unknown",
-      recoveryAction: "Relaunch the coding phase to resume from the last durable commit, or push the branch and open a PR manually if the work is already complete."}')"
-  write_stage_result "$feature_dir" "coding" "failed" "$agent" \
-    "$(resolve_stage_result_model "$feature_dir" "coding" "claude-opus-4-7")" \
-    "Interrupted: coding agent exited without recording a result - durable commits preserved${interrupted_head:+ at ${interrupted_head:0:7}}" \
-    "$interrupted_artifacts"
-  log_warn "$issue → Coding agent exited without a terminal result - marked interrupted (work preserved${interrupted_head:+ at ${interrupted_head:0:7}})"
-  set_window_attention_state "$win" "needs-user"
-}
-
-# HOK-3137: a coding stage stamped failed/interrupted by
-# coding_stage_owner_lost can still receive a genuine .coding-complete minutes
-# later, once the agent's background task finishes and it wakes up. Without
-# this, the `failed` branch (transient retry / quarantine) never looks at
-# `.coding-complete` again and the task parks at needs-user forever even
-# though the agent actually finished.
-#
-# Reconciling here flips the stage back to "running" so the existing
-# running+marker machinery (seam validation, dirty-handoff guard, completed
-# transition) advances it on the next tick — no duplicated handoff logic.
-# Returns 0 when reconciled (caller should count the task active and
-# return), 1 to fall through to the existing failed handling.
+# This is not a liveness decision: it reads only the result record, the
+# marker and the worktree. Reconciling flips the stage back to "running" so
+# the existing running+marker machinery (seam validation, dirty-handoff
+# guard, completed transition) advances it on the next tick — no duplicated
+# handoff logic. Returns 0 when reconciled (caller should count the task
+# active and return), 1 to fall through to the existing failed handling.
 coding_interrupted_late_completion_reconcile() {
   local issue="$1" feature_dir="$2" worktree="$3" win="$4"
+  # allow-stage-artifact-lookup: in-stage result of the caller's resolved feature dir (same record write_stage_result rewrites)
   local result_file="$feature_dir/.coding-result.json"
   local slug status termination_class finished_at finished_epoch marker_epoch
   local marker_commit head dirty_paths verdict_cache cached_mtime seam_rc
@@ -5145,6 +4976,7 @@ coding_interrupted_late_completion_reconcile() {
   [[ -z "$dirty_paths" ]] || return 1
 
   # [REQ-F2 edge] an optional `commit` field must match HEAD (prefix match).
+  # allow-settled-attempt: reads HEAD of the caller's resolved task worktree (monitor_issue_state's running coding row)
   head="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
   marker_commit="$(jq -r '.commit // empty' "$feature_dir/.coding-complete" 2>/dev/null || true)"
   if [[ -n "$marker_commit" ]]; then
@@ -5429,7 +5261,8 @@ monitor_resume_agents_after_wake() {
 pane_release_preflight() {
   local issue="$1" slug="$2" state_dir="$3" wt_dir="$4" pr_number="$5"
   local branch="${6:-}" base_branch="${7:-${BASE_BRANCH:-main}}" pr_state_value current_head review_status
-  local validate_out validate_reason capsule_review_head safety_reason target pane_pid live_rc hook_state
+  local validate_out validate_reason capsule_review_head safety_reason target pane_pid hook_state
+  local review_disposition review_disposition_kind review_disposition_reason
 
   if [[ "$(pane_release_enabled "$wt_dir")" != "true" ]]; then
     printf '%s\n' "flag-off"
@@ -5477,20 +5310,18 @@ pane_release_preflight() {
   target="$(_tmux_task_window_target "$SESSION" "$issue" "$slug" "${STATE_FILE:-}" "$wt_dir" 2>/dev/null || true)"
   if [[ -n "$target" ]] && command -v tmux >/dev/null 2>&1; then
     pane_pid="$(tmux list-panes -t "$(_tmux_target_join "$SESSION" "$target")" -F '#{pane_pid}' 2>/dev/null | head -n 1 || true)"
-    mill_pane_has_live_blocking_process "$pane_pid" || live_rc=$?
-    live_rc="${live_rc:-0}"
-    case "$live_rc" in
-      0)
-        # HOK-3312: the private hook reader `wavemill_terminal_agent_idle_evidence`
-        # is deleted. Any residual liveness question for a pre-merge stage goes
-        # through the HOK-3101 progress primitive. Until that is wired here,
-        # a live child in the pane holds the queue's release — the next tick
-        # retries when the agent exits.
-        printf '%s\n' "live-agent-child"
-        return 1
-        ;;
-      2) printf '%s\n' "liveness-indeterminate"; return 1 ;;
-    esac
+    review_disposition="$(stage_agent_disposition "$issue" "$state_dir" "$wt_dir" "$current_head" review)"
+    review_disposition_kind="$(jq -r '.kind // "in-flight"' <<<"$review_disposition" 2>/dev/null || printf 'in-flight')"
+    review_disposition_reason="$(jq -r '.reason // "progress-unavailable"' <<<"$review_disposition" 2>/dev/null || printf 'progress-unavailable')"
+    # The disposition is the only liveness source. A completed review is
+    # affirmative no-agent evidence; every other non-settled answer can still
+    # name a running review, including an unrecorded launch (`no-launch`).
+    if [[ "$review_disposition_kind" != "settled" \
+      && !( "$review_disposition_kind" == "inactive" \
+        && ( "$review_disposition_reason" == "not-running" || "$review_disposition_reason" == "task-terminal" ) ) ]]; then
+      printf '%s\n' "live-agent-child"
+      return 1
+    fi
   fi
 
   hook_state="$(fresh_hook_state_for_issue "$issue" 2>/dev/null || true)"
@@ -6469,7 +6300,7 @@ emit_blocked_completion_attention() {
   recovery_validation="$(blocked_completion_validate_for_advance "$issue" "$feature_dir" auto 2>/dev/null)" || true
   if jq -e '.recommendedAction == "relaunch_coding"' "$feature_dir/.coding-blocked-completion.json" >/dev/null 2>&1 \
     && jq -e '.guardrails.schemaValid == true and .guardrails.artifactFresh == true' <<<"$recovery_validation" >/dev/null 2>&1 \
-    && coding_dirty_handoff_agent_exited "$issue" "$feature_dir" "${feature_dir%/features/*}"; then
+    && [[ "$(stage_agent_disposition_kind "$issue" "$feature_dir" "${feature_dir%/features/*}" coding)" == "settled" ]]; then
     write_stage_result "$feature_dir" "coding" "failed" "${current_agent:-unknown}" \
       "$(resolve_stage_result_model "$feature_dir" coding "")" \
       "${summary}: ${reason}. Structured completion requests coding recovery with confirmed owner exit."
@@ -6813,50 +6644,6 @@ coding_recovery_instruction_path() {
   printf '%s\n' "$1/.coding-recovery-instruction.md"
 }
 
-coding_dirty_handoff_grace_seconds() {
-  local grace="${WAVEMILL_CODING_DIRTY_HANDOFF_GRACE_SECONDS:-120}"
-  [[ "$grace" =~ ^[0-9]+$ ]] || grace=120
-  printf '%s\n' "$grace"
-}
-
-# coding_dirty_handoff_agent_exited <issue> <feature_dir> [worktree]
-# Exit 0 only when the progress primitive shows the coding agent's own idle /
-# Stop / process_exit record (or terminal-history idle event), no fresh live or
-# human-owned agent state, no blocking prompt, and the idle record is older
-# than the grace (so an agent that writes .coding-complete, then commits, then
-# stops is never raced). Any missing evidence or probe failure returns 1
-# ("live / unknown"), which keeps the legacy needs-user hold; the tend gate's
-# sibling-stalled rule is the backstop for arms with no evidence at all.
-coding_dirty_handoff_agent_exited() {
-  local issue="$1" feature_dir="$2" worktree="${3:-}"
-  local progress grace now pane_target="${4:-${WIN_TARGET:-}}"
-  local -a progress_args=(--phase coding --max-age 0 --feature-dir "$feature_dir")
-  [[ -n "$pane_target" ]] && progress_args+=(--pane-target "$pane_target")
-
-  declare -F task_progress_json >/dev/null 2>&1 || return 1
-  command -v jq >/dev/null 2>&1 || return 1
-  [[ -n "$worktree" ]] && progress_args+=(--worktree "$worktree")
-
-  progress="$(task_progress_json "$issue" "${progress_args[@]}" 2>/dev/null || printf '{}')"
-  grace="$(coding_dirty_handoff_grace_seconds)"
-  now="$(date +%s)"
-
-  # Hook timestamps are epoch seconds; tolerate a millisecond writer.
-  printf '%s' "$progress" | jq -e --argjson now "$now" --argjson grace "$grace" '
-    (.agentIdle == true or .terminalIdle == true) and
-    (.agentBackgroundLive != true and .agentProcessLive != true) and
-    ((.agentState // "") as $s | ["working", "waiting", "approval-needed", "blocked", "policy-denied"] | any(.[]; . == $s) == false) and
-    (.blockingPrompt == null) and
-    (if ((.agentRecord.state // "") == "idle") and ((.agentRecord.timestamp | type) == "number") and (.agentRecord.timestamp > 0)
-     then ($now - (if .agentRecord.timestamp > 1000000000000 then (.agentRecord.timestamp / 1000) else .agentRecord.timestamp end)) >= $grace
-     else ((.progressAgeMinutes // 0) * 60) >= $grace
-     end)
-  ' >/dev/null 2>&1
-}
-
-# coding_dirty_handoff_path_is_planned <feature_dir> <path>
-# A path is "planned" when the task contract allows it or the plan / task
-# packet mentions it anywhere. Planned paths are never auto-cleaned.
 coding_dirty_handoff_path_is_planned() {
   local feature_dir="$1" path="$2" doc
 
@@ -7076,10 +6863,8 @@ guard_coding_complete_handoff() {
 
   write_coding_uncommitted_output_artifact "$issue" "$feature_dir" "$base_branch" "$ahead_count" "$behind_count" "$dirty_paths" "$handoff_summary" "$handoff_action" "$handoff_reason" || true
 
-  # HOK-3128: once the agent has exited nobody will clean the tree — resolve
-  # the handoff instead of holding at needs-user forever. While the agent is
-  # still live (or evidence is missing) the legacy hold below applies.
-  if coding_dirty_handoff_agent_exited "$issue" "$feature_dir" "$worktree"; then
+  # HOK-3386: settle and dirty-handoff decisions share the canonical result.
+  if [[ "$(stage_agent_disposition_kind "$issue" "$feature_dir" "$worktree" coding)" == "settled" ]]; then
     if coding_dirty_handoff_quarantine_scratch "$issue" "$worktree" "$feature_dir" "$slug"; then
       dirty_paths="$(coding_output_dirty_paths "$worktree" "$slug")"
       if [[ -z "$dirty_paths" ]]; then
@@ -7655,46 +7440,17 @@ auto_advance_blocked_completion() {
   passing_count="$(jq -r '(.passingChecks // []) | length' "$artifact_path" 2>/dev/null || echo 0)"
   blocking_count="$(jq -r '(.blockingChecks // []) | length' "$artifact_path" 2>/dev/null || echo 0)"
   blocked_json="$(jq -c '[.]' "$artifact_path")"
-  if ! mapfile -t blocking_commands < <(jq -r '(.blockingChecks // [])[]? | strings' "$artifact_path" 2>/dev/null); then
-    AUTO_ADVANCE_BLOCKED_COMPLETION_REASON="blocked-completion liveness checks could not parse blocking checks"
-    emit_blocked_completion_liveness_attention \
-      "$issue" \
-      "$feature_dir" \
-      "$win" \
-      "blocked-completion auto-advance refused because liveness is indeterminate (could not parse blocking checks)" \
-      "Inspect the coding pane for $issue and resolve the blocked completion manually."
-    return 1
-  fi
-
   pane_pid="$(tmux display-message -p -t "$win_target" '#{pane_pid}' 2>/dev/null || true)"
-  mill_pane_has_live_blocking_process "$pane_pid" "${blocking_commands[@]}"
-  liveness_rc=$?
-  if [[ "$liveness_rc" -eq 2 ]]; then
-    AUTO_ADVANCE_BLOCKED_COMPLETION_REASON="blocked-completion liveness indeterminate: ${MILL_BLOCKING_PROCESS_REASON:-unknown reason}"
-    emit_blocked_completion_liveness_attention \
-      "$issue" \
-      "$feature_dir" \
-      "$win" \
-      "blocked-completion auto-advance refused because liveness is indeterminate (${MILL_BLOCKING_PROCESS_REASON:-unknown reason})" \
-      "Inspect the coding pane for $issue and resolve the blocked completion manually."
+  local progress
+  progress="$(task_progress_json "$issue" --feature-dir "$feature_dir" --phase coding --pane-pid "$pane_pid" --max-age 60 2>/dev/null || true)"
+  if ! jq -e '.agentBackgroundLive == true or .agentBackgroundLive == false' <<<"$progress" >/dev/null 2>&1; then
+    AUTO_ADVANCE_BLOCKED_COMPLETION_REASON="blocked-completion background-work evidence unavailable"
+    emit_blocked_completion_liveness_attention "$issue" "$feature_dir" "$win"       "blocked-completion auto-advance refused because background-work evidence is unavailable"       "Inspect the coding pane for $issue and resolve the blocked completion manually."
     return 1
   fi
-
-  if [[ "$liveness_rc" -eq 0 ]]; then
-    # HOK-2579: belt-and-braces. MILL_BLOCKING_PROCESS_COMMAND is already a
-    # redacted, bounded identity (see mill_blocking_process_identity), but
-    # sanitise again here so a regressed upstream caller can never leak a
-    # multi-line or JSON-serialized process argv into logs/hooks.
-    blocking_command="$(sanitize_blocked_completion_text "${MILL_BLOCKING_PROCESS_COMMAND:-live blocking process}")"
-    [[ -n "$blocking_command" ]] || blocking_command="live blocking process"
-    next_action="Stop the live blocking command for $issue (${blocking_command}), then retry review."
-    AUTO_ADVANCE_BLOCKED_COMPLETION_REASON="live blocking process still running"
-    emit_blocked_completion_liveness_attention \
-      "$issue" \
-      "$feature_dir" \
-      "$win" \
-      "blocked-completion auto-advance refused because a live blocking command is still running ($blocking_command)" \
-      "$next_action"
+  if jq -e '.agentBackgroundLive == true' <<<"$progress" >/dev/null 2>&1; then
+    AUTO_ADVANCE_BLOCKED_COMPLETION_REASON="agent-owned background work still running"
+    emit_blocked_completion_liveness_attention "$issue" "$feature_dir" "$win"       "blocked-completion auto-advance refused because agent-owned background work is still running"       "Wait for the coding agent's owned background work for $issue to finish, then retry review."
     return 1
   fi
 
@@ -9694,8 +9450,8 @@ clear_coding_pane_replacement_intent() {
 # failure) so callers that need to hold a settling agent can.
 #
 # Optional 4th arg --no-settle: the operator-advance / auto-advance callers
-# (complete_coding_advance) already proved the pane has no live blocking
-# process (mill_pane_has_live_blocking_process) or are an explicit operator
+# (complete_coding_advance) already proved the agent owns no live background
+# work (task-progress `agentBackgroundLive`) or are an explicit operator
 # override before reaching here, so there is nothing left to settle on.
 quarantine_completed_coding_pane() {
   local issue="$1" feature_dir="$2" worktree="${3:-}" settle_flag="${4:-}"
@@ -21946,23 +21702,6 @@ monitor_issue_state() {
             log "debug" "$ISSUE → Coding still running: waiting for .coding-complete"
           fi
 
-          # HOK-3386: `coding_stage_owner_lost` only runs when the shared
-          # disposition had no evidence at all to decide from (rc 3,
-          # no session-ownership row for this launch — tasks launched
-          # before HOK-3328, or a launch whose ownership write failed).
-          # Whenever the disposition DID have evidence (rc 0/1/2 above), it
-          # is the one coding liveness decision and this legacy, narrower
-          # re-derivation (HOK-2963/HOK-3137: shorter grace period, no
-          # owned-session transcript evidence) is never consulted — so the
-          # two can no longer contradict each other for the same launch.
-          if [[ "$coding_status" == "running" ]] \
-            && (( coding_disposition_rc == 3 )) \
-            && coding_stage_owner_lost "$ISSUE" "$FEATURE_DIR" "$WIN_TARGET"; then
-            coding_stage_mark_interrupted "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" "$WIN" "$current_agent"
-            active_count=$((active_count + 1))
-            return 0
-          fi
-
           # Stage still running
           if [[ "$coding_status" == "running" ]]; then
             set_window_attention_state "$WIN" "clear"
@@ -21972,10 +21711,10 @@ monitor_issue_state() {
           fi
 
           if [[ "$coding_status" == "failed" ]]; then
-            # HOK-3137: a task stamped interrupted by coding_stage_owner_lost
-            # can still have written a genuine .coding-complete minutes later
-            # (its background task finished). Reconcile before falling into
-            # challenger retry/quarantine, which never looks at the marker.
+            # HOK-3137: a stage stamped interrupted can still have a genuine
+            # .coding-complete written after the stamp. Reconcile before
+            # falling into challenger retry/quarantine, which never looks at
+            # the marker.
             if coding_interrupted_late_completion_reconcile "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" "$WIN"; then
               active_count=$((active_count + 1))
               return 0

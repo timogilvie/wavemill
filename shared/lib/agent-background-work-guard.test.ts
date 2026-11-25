@@ -45,6 +45,14 @@ describe('agent-background-work guard — deleted classifier symbols (HOK-3374)'
   });
 });
 
+describe('agent-background-work guard — shell command-name checks', () => {
+  it('flags controller-regex and command-line blocking checks', () => {
+    const findings = checkGuardSource(AGENT_BACKGROUND_WORK_GUARD, 'a.sh',
+      'cmd="$(wavemill_process_command_line "$pid")"\nif [[ "$cmd" =~ $WAVEMILL_CONTROLLER_PROCESS_REGEX ]]; then # blocking process\n');
+    assert.deepEqual(findings.map((finding) => finding.pattern), ['shell-command-name-blocking-check']);
+  });
+});
+
 describe('agent-background-work guard — deriveAgentBackgroundWork body (structural)', () => {
   it('flags controller-regex use inside the derivation', () => {
     const matches = findNameMatchInsideDerive(
