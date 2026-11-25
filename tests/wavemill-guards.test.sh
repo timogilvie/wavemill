@@ -35,6 +35,7 @@ extract_function() {
 }
 
 eval "$(extract_function "$MONITOR_SCRIPT_FILE" coding_output_dirty_paths)"
+source "$REPO_DIR/shared/lib/mill-owned-paths.sh"
 eval "$(extract_function "$MONITOR_SCRIPT_FILE" wavemill_owned_feature_artifact_path)"
 eval "$(extract_function "$MONITOR_SCRIPT_FILE" wavemill_owned_dirty_path)"
 eval "$(extract_function "$MONITOR_SCRIPT_FILE" blocked_completion_auto_allowed_dirty_path)"
@@ -64,7 +65,7 @@ paths=(
   "my-prompt-registry.jsonl"
   "challenge-intent.json"
 )
-expected=(1 1 1 1 1 1 1 0 0 0 0)
+expected=(0 1 1 1 1 1 1 0 0 0 0)
 
 for i in "${!paths[@]}"; do
   check_eq "shared allowlist ${paths[$i]}" "${expected[$i]}" "$(allowed_by wavemill_owned_dirty_path "${paths[$i]}" "$slug")"

@@ -344,7 +344,8 @@ harness_extract_real_functions() {
     _plan_packet_needs_user \
     task_inputs_prepare \
     task_inputs_demote_planning \
-    ensure_task_inputs_ready
+    ensure_task_inputs_ready \
+    planning_late_coding_complete_reconcile
   do
     local extracted source_file
     # trim_outer_whitespace is defined only in the parent mill script;
