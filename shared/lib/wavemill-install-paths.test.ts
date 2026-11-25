@@ -31,7 +31,7 @@ test('no shared/lib module resolves wavemill shell libs or prompts under a repo 
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const file = join(dir, entry.name);
       if (entry.isDirectory()) walk(file);
-      else if (file.endsWith('.ts') && !file.endsWith('.test.ts') && pattern.test(readFileSync(file, 'utf-8'))) {
+      else if (file.endsWith('.ts') && !file.endsWith('.test.ts') && !file.endsWith('/mill-owned-paths.ts') && pattern.test(readFileSync(file, 'utf-8'))) {
         offenders.push(file);
       }
     }

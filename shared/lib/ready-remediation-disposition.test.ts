@@ -23,7 +23,7 @@ import {
   readyDispositionFromStage,
   type ReadyRemediationKind,
   type ReadyRemediationProgress,
-} from './ready-remediation-disposition.ts';
+} from './stage-agent-disposition.ts';
 import { appendOwnershipRow } from './session-ownership.ts';
 import { decideStageAgentDisposition } from './stage-agent-disposition.ts';
 import type { StageResult } from './stage-result.ts';
@@ -373,6 +373,49 @@ test('HOK-3422: per-tick ready-result rewrite without agent evidence settles as 
       }),
     });
     assert.equal(disposition.launchedAt, '2026-11-05T13:00:00.000Z');
+    assert.deepEqual([disposition.kind, disposition.reason], ['settled', 'agent-stalled']);
+  } finally {
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
+// protects: HOK-3461 — conflict remediation uses the ownership stage name,
+// not the Ready result's `ci`/`conflict` classification. The latter is not a
+// stage bucket, so it would hide the launch and leave a settled resolver
+// in-flight forever.
+test('HOK-3461: conflict remediation gathers progress from conflict-resolution', () => {
+  const worktree = mkdtempSync(join(os.tmpdir(), 'hok3461-conflict-remediation-'));
+  try {
+    const dir = join(worktree, 'features', 'hok3461-conflict');
+    mkdirSync(dir, { recursive: true });
+    const launchHead = 'c0ffee0000000000000000000000000000003461';
+    const running = readyResult('running', '2026-11-05T13:00:00.000Z', 'CONFLICTED');
+    writeMarker({ path: join(dir, '.conflict-remediation.json'), kind: 'conflict-remediation' }, {
+      headSha: launchHead,
+      detail: { launchHead },
+    });
+    appendOwnershipRow(dir, {
+      sessionRef: 'conflict-resolver',
+      harness: 'claude-code',
+      kind: 'conflict-resolution',
+      model: 'claude-opus-4-7',
+      launchedAt: '2026-11-05T13:00:00.000Z',
+      cwd: worktree,
+    });
+
+    const disposition = evaluateReadyRemediationDisposition({
+      stateDir: dir,
+      readyResult: running,
+      currentHead: launchHead,
+      getProgress: () => gatherReadyTaskProgress({
+        issue: 'HOK-3461',
+        session: `hok3461-${process.pid}`,
+        worktree,
+        stateDir: dir,
+        readyResult: running,
+        now: new Date('2026-11-05T13:45:00.000Z'),
+      }),
+    });
     assert.deepEqual([disposition.kind, disposition.reason], ['settled', 'agent-stalled']);
   } finally {
     rmSync(worktree, { recursive: true, force: true });

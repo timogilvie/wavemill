@@ -5,7 +5,8 @@
 #
 # Protects against: the false owner-lost stamp. An agent that starts its test
 # suite in the background ends its turn (Stop hook → idle) while the suite
-# keeps running. With no fresh progress the liveness primitive read the agent
+# keeps running. With no fresh progress the canonical stage disposition's
+# liveness primitive read the agent
 # as idle and stalled, so coding_stage_owner_lost stamped the coding stage
 # interrupted and parked the task at needs-user, and the agent's genuine
 # .coding-complete minutes later was ignored. The fix: a live substantive
@@ -98,7 +99,7 @@ journey_command "select 1"
 # Budgets are monitor ticks (passes), not seconds.
 journey_wait_until "$ISSUE" 5  "task launched into planning"                 phase_is planning
 journey_wait_until "$ISSUE" 8  "coding launched"                             phase_is coding
-journey_wait_until "$ISSUE" 12 "agent woke from its idle wait; review began" coding_finished
+journey_wait_until "$ISSUE" 12 "agent woke from its idle wait and review began" coding_finished
 journey_wait_until "$ISSUE" 15 "PR merged by tend"                           journey_pr_merged
 journey_wait_until "$ISSUE" 8  "task reaped after merge"                     journey_task_reaped "$ISSUE"
 

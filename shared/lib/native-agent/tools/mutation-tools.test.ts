@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -122,6 +123,60 @@ describe('native-agent mutation tools', () => {
       assert.equal(details.resolvedPath, 'features/demo/.coding-complete');
       assert.equal(readFileSync(path.join(repo, details.resolvedPath), 'utf-8'), '{\n  "stage": "coding",\n  "confidence": "high"\n}\n');
     }
+  });
+
+  // protects: HOK-3514 — the one completion gate refuses .coding-complete on a dirty task tree.
+  it('refuses .coding-complete while a task path is dirty and lists every path', async () => {
+    const repo = createRepo('mutation-marker-dirty-');
+    mkdirSync(path.join(repo, 'shared/lib'), { recursive: true });
+    writeFileSync(path.join(repo, 'shared/lib/scratch.txt'), 'scratch\n');
+    writeFileSync(path.join(repo, 'fixture.json'), '{}\n');
+    const tool = createCreateMarkerTool(repo);
+
+    const result = await tool.execute('call-dirty', {
+      path: 'features/demo/.coding-complete',
+      content: '{"stage":"coding","confidence":"high"}\n',
+    });
+
+    const details = result.details as CreateMarkerDetails;
+    assert.equal(details.ok, false);
+    if (!details.ok) {
+      assert.equal(details.error, 'completion_blocked');
+      assert.match(details.message, /fixture\.json, shared\/lib\/scratch\.txt/);
+      assert.match(details.message, /discard_owned_path/);
+      assert.deepEqual(details.diagnostics, { dirtyPaths: ['fixture.json', 'shared/lib/scratch.txt'] });
+    }
+    assert.equal(existsSync(path.join(repo, 'features/demo/.coding-complete')), false);
+  });
+
+  it('accepts .coding-complete when only Wavemill-owned output is dirty', async () => {
+    const repo = createRepo('mutation-marker-owned-');
+    mkdirSync(path.join(repo, 'features/demo'), { recursive: true });
+    mkdirSync(path.join(repo, '.wavemill'), { recursive: true });
+    writeFileSync(path.join(repo, 'features/demo/.native-intended-files.json'), '{}\n');
+    writeFileSync(path.join(repo, 'features/demo/plan.md'), '# plan\n');
+    writeFileSync(path.join(repo, '.wavemill/native-status.json'), '{}\n');
+    writeFileSync(path.join(repo, 'prompt-registry.jsonl'), '\n');
+
+    const result = await createCreateMarkerTool(repo).execute('call-owned', {
+      path: 'features/demo/.coding-complete',
+      content: '{"stage":"coding","confidence":"high"}\n',
+    });
+    assert.equal((result.details as CreateMarkerDetails).ok, true);
+  });
+
+  it('fails closed when git status cannot be read', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'mutation-marker-nogit-'));
+    dirsToClean.add(dir);
+    const result = await createCreateMarkerTool(dir, {
+      readTaskDirtyPaths: () => ({ state: 'unreadable', paths: [] }),
+    }).execute('call-nogit', {
+      path: 'features/demo/.coding-complete',
+      content: '{"stage":"coding","confidence":"high"}\n',
+    });
+    const details = result.details as CreateMarkerDetails;
+    assert.equal(details.ok, false);
+    if (!details.ok) assert.equal(details.error, 'completion_blocked');
   });
 
   it('normalizes YAML blocked-completion writes to canonical JSON', async () => {
@@ -358,5 +413,6 @@ describe('native-agent mutation tools', () => {
 function createRepo(prefix: string): string {
   const dir = mkdtempSync(path.join(tmpdir(), prefix));
   dirsToClean.add(dir);
+  execFileSync('git', ['init', '-q'], { cwd: dir });
   return dir;
 }

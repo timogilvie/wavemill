@@ -80,6 +80,8 @@ export interface IncidentFixtureFailure {
   detail: string;
   survivesRelaunches: number | 'never';
   progressing?: boolean;
+  /** HOK-3512: the recorded saved-route launch validation (`recovery-contract.ts` output). */
+  contract?: { ok: boolean; reason?: string | null; detail?: string | null; contract?: { model?: string | null; agent?: string | null; provider?: string | null } | null };
 }
 
 export interface IncidentFixtureExpected {

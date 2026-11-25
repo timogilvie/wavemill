@@ -69,11 +69,13 @@ for fn in \
   emit_challenge_stage_failure_quarantine \
   challenge_abort_scope_for_failure \
   stage_budget_exhausted_json \
+  arm_termination_record \
   challenge_abort_pair \
   _challenge_side_for_issue \
   challenge_result_stage_for_launch \
   write_openrouter_warning_cache \
   record_openrouter_credits_challenge_abort \
+  _request_launch_recovery \
 ; do
   eval "$(extract_function "$fn")"
 done
@@ -306,6 +308,56 @@ else
 fi
 unset WAVEMILL_STAGE_FAILURE_MAX_ATTEMPTS
 
+
+# ── HOK-3512: a refused saved route escalates once; window-lost matches ──
+# (HOK-3500 incident) The retry verdict is `proceed`, but the saved coding
+# route no longer passes launch validation. The controller used to wait on an
+# `execution-contract-available` wake nothing produced; it must now raise one
+# failure-policy terminal escalation naming the stage, model and reason.
+refuse_route() { jq '.coding.model = "retired-coder-model"' "$1/.phase-config.json" > "$1/.pc.tmp" && mv "$1/.pc.tmp" "$1/.phase-config.json"; }
+refusal_basis() { jq -r '.detail.escalationBasis // empty' "$1/.needs-attention" 2>/dev/null; }
+seed false
+fd="$(new_worktree wt-refused)"
+refuse_route "$fd"
+write_stage_result "$fd" coding failed native kimi-k2 "$unknown_detail"
+rc=0; _maybe_retry_failed_stage_now T-1 "$fd" coding win-r || rc=$?
+failed_basis="$(refusal_basis "$fd")"
+if [[ "$rc" -eq 1 && "$(bounded_retry_count "$fd" "$bucket")" == "0" && ! -s "$PHASE_LOG" ]] \
+  && [[ "$failed_basis" == policy-terminal* ]] \
+  && grep -q 'saved coding route (model retired-coder-model) refused by launch validation: model_not_launchable' "$fd/.needs-attention" \
+  && grep -q '^win-r=needs-user$' "$ATTENTION_FILE"; then
+  pass "a refused saved coding route raises one terminal escalation naming the stage, model and validator reason"
+else
+  fail "refused saved route did not escalate (rc=$rc basis=$failed_basis)"
+fi
+escalations="$(grep -c 'refused by launch validation' "$STATUS_LOG")"
+rc=0; _maybe_retry_failed_stage_now T-1 "$fd" coding win-r || rc=$?
+[[ "$rc" -eq 1 && "$(grep -c 'refused by launch validation' "$STATUS_LOG")" == "$escalations" && ! -s "$PHASE_LOG" ]] \
+  && pass "the next pass holds the claimed escalation without a second page or a relaunch" \
+  || fail "refused route re-escalated or relaunched (rc=$rc)"
+
+seed false
+fd="$(new_worktree wt-window-lost)"
+refuse_route "$fd"
+write_stage_result "$fd" coding running native kimi-k2
+before_state="$(jq -S . "$STATE_FILE")"
+_RESTORE_STATE=none
+# The supervised async job runs the same controller step; run it inline here.
+maybe_retry_failed_stage() { _maybe_retry_failed_stage_now "$@" >/dev/null 2>&1 || true; }
+stage_agent_disposition() { printf '%s\n' '{"kind":"settled","reason":"window-missing"}'; }
+refused_contract="$(recovery_contract_json T-1 "$fd" coding)"
+_request_launch_recovery T-1 coding "$fd" "$(jq -r .reason <<<"$refused_contract")" \
+  "$(jq -r .detail <<<"$refused_contract")" "$refused_contract"
+unset -f maybe_retry_failed_stage stage_agent_disposition
+if [[ "$_RESTORE_STATE" == "pending" && "$(refusal_basis "$fd")" == "$failed_basis" ]] \
+  && grep -q 'saved coding route (model retired-coder-model) refused by launch validation: model_not_launchable' "$fd/.needs-attention" \
+  && [[ "$(jq -S . "$STATE_FILE")" == "$before_state" ]] \
+  && [[ "$(stage_result_field "$fd" coding status)" == "running" ]] \
+  && [[ ! -f "/tmp/wavemill-${SESSION}-T-1.hook" ]]; then
+  pass "window-lost refusal takes the same escalation, with no private stopped state, result or hook"
+else
+  fail "window-lost refusal diverged (state=$_RESTORE_STATE basis=$(refusal_basis "$fd"))"
+fi
 
 # CI 43647719528: an old coding worker resumed after the same run reached Ready.
 # Advance state at the teardown barrier, then exercise the real launch guard.

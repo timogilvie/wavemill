@@ -1,0 +1,31 @@
+{
+  "schemaVersion": "native-dirty-handoff-replay/1",
+  "incident": "8f6bbb7768891a17ffa27df34f7c7bd0da9a207974c1d0397e3d0fb7077ec9a3",
+  "issue": "HOK-FIXTURE-3454",
+  "slug": "fixture-3454",
+  "executedModel": "moonshotai/kimi-k2.7-code",
+  "source": "native-sessions/coding-HOK-3454.jsonl seq 629-634; .coding-uncommitted-output.resolved.jsonl",
+  "steps": [
+    {
+      "tool": "write_artifact",
+      "args": {
+        "path": "features/fixture-3454/hok-3424-retention-missing.json",
+        "content": "{\n  \"source\": \"HOK-3454 replay of HOK-3424_c shadow-log signature\"\n}\n"
+      }
+    },
+    {
+      "tool": "run_tests",
+      "args": {
+        "command": "cp features/fixture-3454/hok-3424-retention-missing.json tests/fixtures/incidents/hok-3424-retention-missing.json"
+      }
+    }
+  ],
+  "dirtyPath": "tests/fixtures/incidents/hok-3424-retention-missing.json",
+  "resolution": "commit",
+  "expected": {
+    "markerRefusedWhileDirty": true,
+    "resolutionSucceeds": true,
+    "markerAcceptedAfterResolution": true,
+    "recoveryRelaunches": 0
+  }
+}

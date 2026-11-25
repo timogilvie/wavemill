@@ -4,23 +4,20 @@
 # `run_in_background` test suite, `sleep 30 &`, ...), then ignored the valid
 # `.coding-complete` the agent wrote minutes later once that task finished.
 #
-# Background: `coding_stage_owner_lost` fired on `.agentIdle && .stalled`
-# alone, with no visibility into live descendant processes under the pane —
-# an agent waiting on its own backgrounded work looks identical to an
-# abandoned one. Once stamped `failed`/`interrupted`, the monitor's `failed`
-# branch (challenger retry / quarantine) never looked at `.coding-complete`
-# again, so a late-arriving valid marker was silently dropped and the task
-# parked at needs-user forever.
-#
-# The fix: (1) `task-progress.ts` gains a background-work probe
-# (`agentBackgroundLive`) that suppresses `.stalled` while the agent is idle
-# AND has a live substantive descendant, without ever treating that
-# descendant as progress (HOK-3101 invariant 1 is preserved); (2) the monitor
-# gains `coding_interrupted_late_completion_reconcile`, which flips an
-# interrupted stage back to `running` when a valid, newer `.coding-complete`
-# is found on a clean tree, letting the existing running+marker machinery
-# finish the job; (3) the hard-coded `exitEvidence` string becomes dynamic,
-# factual evidence captured at decision time.
+# HOK-3461: the private owner-loss predicate (`coding_stage_owner_lost`, with
+# its pane command-name probe `mill_pane_has_live_blocking_process`) is gone.
+# Whether an idle coding agent is still working is now the one stage-agent
+# disposition (`decideStageAgentDisposition` / `stage_agent_disposition`),
+# which holds a stage in flight on the task-progress primitive's ownership-
+# only `agentBackgroundLive` fact. A settled stage is stamped interrupted by
+# `_stage_stamp_settled_without_result`. This file covers what survives:
+#   B1/B2  owned background work (real process chain → real task-progress
+#          probe → real disposition) holds the coding stage in flight;
+#   B3-B5  `coding_interrupted_late_completion_reconcile` accepts a valid,
+#          newer `.coding-complete` on a clean tree after an interrupted
+#          stamp, and every edge stays interrupted;
+#   B6     the disposition's settled stamp carries factual exitEvidence and
+#          the late reconcile recovers from that real stamp.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -59,8 +56,7 @@ extract_function() {
   ' "$MONITOR_SCRIPT_FILE"
 }
 
-# Real shared helpers: mill_pane_has_live_blocking_process,
-# wavemill_collect_descendant_pids, wavemill_iso8601_to_epoch,
+# Real shared helpers: wavemill_collect_descendant_pids, wavemill_iso8601_to_epoch,
 # portable_file_mtime_epoch.
 # shellcheck source=../shared/lib/wavemill-common.sh
 source "$REPO_DIR/shared/lib/wavemill-common.sh"
@@ -70,10 +66,7 @@ source "$REPO_DIR/shared/lib/wavemill-common.sh"
 source "$REPO_DIR/shared/lib/task-progress.sh"
 
 for fn in \
-  fresh_hook_state_for_issue \
-  fresh_agent_hook_state_for_issue \
-  coding_stage_owner_lost \
-  coding_stage_mark_interrupted \
+  _stage_stamp_settled_without_result \
   coding_interrupted_late_completion_reconcile \
   recover_misplaced_coding_complete_marker \
   coding_output_dirty_paths \
@@ -220,70 +213,68 @@ write_marker() {
   fi
 }
 
-echo "=== Monitor late .coding-complete reconciliation + background-work owner-lost suppression (HOK-3137) ==="
+echo "=== Monitor late .coding-complete reconciliation + owned background work holds the coding disposition (HOK-3137, HOK-3461) ==="
 
 # ─────────────────────────────────────────────────────────────────────────
-# B1 — REQ-F1 (unit): coding_stage_owner_lost with a stubbed tmux/liveness
-# probe and a stubbed task_progress_json.
+# B1 — owned background work holds the stage: the canonical disposition
+# decides the HOK-3137 shape (agent idle and stalled after launch) from the
+# task-progress primitive's agentBackgroundLive fact alone.
 # ─────────────────────────────────────────────────────────────────────────
 
-tmux() {
-  if [[ "${1:-}" == "list-panes" ]]; then printf '4242\n'; return 0; fi
-  return 1
+# decide_coding_disposition <agentBackgroundLive json> [agentExited json]
+# Runs the real decideStageAgentDisposition for a running coding stage
+# launched an hour ago whose agent recorded an idle stop a minute ago and is
+# stalled. Prints "<kind> <reason>".
+decide_coding_disposition() {
+  local background="$1" exited="${2:-null}"
+  node --input-type=module -e '
+    const [modulePath, background, exited] = process.argv.slice(1);
+    const { decideStageAgentDisposition } = await import(modulePath);
+    const now = Date.now();
+    const d = decideStageAgentDisposition({
+      stage: "coding", stageStatus: "running",
+      hasCompletionArtifact: false, hasResultVerdict: false,
+      launch: { sessionRef: "sess-1", harness: "claude-code", launchedAt: new Date(now - 3600e3).toISOString(),
+                attemptId: "coding#1", kind: "coding", stage: "coding" },
+      currentHead: null, launchHead: null,
+      progress: {
+        agentRecord: { state: "idle", event: "Stop", agent: "claude", timestamp: Math.floor(now / 1000) - 60 },
+        agentState: "idle", agentIdle: true, agentExited: JSON.parse(exited),
+        agentBackgroundLive: JSON.parse(background), blockingPrompt: null,
+        stalled: true, ownedSessionIdleAt: null,
+      },
+    });
+    console.log(`${d.kind} ${d.reason}`);
+  ' "$REPO_DIR/shared/lib/stage-agent-disposition.ts" "$background" "$exited"
 }
 
-fd="$(seed_worktree "unit-owner-lost")"
-cat > "$fd/.coding-result.json" <<'JSON'
-{"stage":"coding","status":"running","startedAt":"2020-01-01T00:00:00Z","agent":"claude"}
-JSON
-
-# 1a: live descendant (rc0) + agent idle/stalled but a live background task
-# -> NOT owner lost (the HOK-3137 fix).
-mill_pane_has_live_blocking_process() { return 0; }
-task_progress_json() { printf '{"agentIdle":true,"stalled":true,"agentBackgroundLive":true,"backgroundProcesses":[{"pid":1,"command":"sleep 30"}]}\n'; }
-rc=0
-coding_stage_owner_lost "UNIT-1" "$fd" "win-target" || rc=$?
-if [[ "$rc" == "1" ]] && [[ -z "$CODING_OWNER_LOST_EVIDENCE_JSON" ]]; then
-  pass "idle+stalled+live background work is NOT owner-lost"
+out="$(decide_coding_disposition true)"
+if [[ "$out" == "in-flight background-work" ]]; then
+  pass "idle+stalled+owned background work holds the coding stage in flight"
 else
-  fail "idle+stalled+live background work wrongly treated as owner-lost (rc=$rc)"
+  fail "idle+stalled+owned background work did not hold the stage (got '$out')"
 fi
 
-# 1b: live descendant (rc0) + agent idle/stalled, no background work -> owner
-# lost (the pre-existing HOK-3101(a) idle-REPL override still fires).
-task_progress_json() { printf '{"agentIdle":true,"stalled":true,"agentBackgroundLive":false,"agentRecord":{"state":"idle","event":"Stop","timestamp":1234},"lastProgressAt":null,"progressAgeMinutes":45,"sources":[]}\n'; }
-rc=0
-coding_stage_owner_lost "UNIT-1" "$fd" "win-target" || rc=$?
-if [[ "$rc" == "0" ]] \
-  && [[ "$(jq -r '.paneDescendantProbe' <<<"$CODING_OWNER_LOST_EVIDENCE_JSON")" == "live-idle-repl" ]] \
-  && [[ "$(jq -r '.agentBackgroundLive' <<<"$CODING_OWNER_LOST_EVIDENCE_JSON")" == "false" ]]; then
-  pass "idle+stalled with no background work is still owner-lost (HOK-3101(a) preserved)"
+out="$(decide_coding_disposition true '{"at":"2099-01-01T00:00:00Z","source":"launcher"}')"
+if [[ "$out" == "in-flight background-work" ]]; then
+  pass "owned background work still holds the stage when an exit fact is also recorded"
 else
-  fail "idle-REPL owner-lost regressed (rc=$rc evidence=$CODING_OWNER_LOST_EVIDENCE_JSON)"
+  fail "owned background work lost to an exit fact (got '$out')"
 fi
 
-# 1c: no live descendant at all (rc1) -> genuine loss, owner-lost regardless
-# of what the progress primitive reports.
-mill_pane_has_live_blocking_process() { return 1; }
-task_progress_json() { printf '{"agentIdle":false,"stalled":false,"agentBackgroundLive":null}\n'; }
-rc=0
-coding_stage_owner_lost "UNIT-1" "$fd" "win-target" || rc=$?
-if [[ "$rc" == "0" ]] && [[ "$(jq -r '.paneDescendantProbe' <<<"$CODING_OWNER_LOST_EVIDENCE_JSON")" == "none-live" ]]; then
-  pass "no live descendant at all is owner-lost regardless of the progress primitive"
+out="$(decide_coding_disposition false)"
+if [[ "$out" == settled\ * ]]; then
+  pass "idle+stalled with no background work settles (got '$out')"
 else
-  fail "genuine no-live-descendant loss not detected (rc=$rc)"
+  fail "idle+stalled with no background work did not settle (got '$out')"
 fi
 
-# 1d: indeterminate probe (rc2) -> protects (never owner-lost).
-mill_pane_has_live_blocking_process() { return 2; }
-rc=0
-coding_stage_owner_lost "UNIT-1" "$fd" "win-target" || rc=$?
-if [[ "$rc" == "1" ]]; then
-  pass "an indeterminate liveness probe protects the task"
+out="$(decide_coding_disposition null)"
+if [[ "$out" == settled\ * ]]; then
+  pass "an unknown background-work probe does not by itself hold an idle agent (got '$out')"
 else
-  fail "indeterminate probe wrongly resolved to owner-lost (rc=$rc)"
+  fail "unknown background-work probe wrongly held an idle agent (got '$out')"
 fi
-unset -f tmux mill_pane_has_live_blocking_process task_progress_json
 
 # ─────────────────────────────────────────────────────────────────────────
 # B2 — REQ-F1 (integration, real primitive): a real process chain
@@ -319,6 +310,12 @@ if [[ "$bg_live" == "true" ]]; then
 else
   fail "real process chain: background work not detected ($progress_json)"
 fi
+out="$(decide_coding_disposition "$bg_live")"
+if [[ "$out" == "in-flight background-work" ]]; then
+  pass "real process chain: the probed background task holds the coding stage in flight"
+else
+  fail "real process chain: probed background task did not hold the stage (got '$out')"
+fi
 
 # Kill the chain; a fresh probe must no longer see a live descendant.
 for d in $(wavemill_collect_descendant_pids "$pane_pid" 2>/dev/null || true); do kill -9 "$d" 2>/dev/null || true; done
@@ -334,6 +331,12 @@ if [[ "$bg_live2" == "false" ]]; then
   pass "real process chain: killing the background task clears agentBackgroundLive"
 else
   fail "real process chain: agentBackgroundLive did not clear after kill ($progress_json2)"
+fi
+out="$(decide_coding_disposition "$bg_live2")"
+if [[ "$out" == settled\ * ]]; then
+  pass "real process chain: once the background task is gone the idle stage settles"
+else
+  fail "real process chain: stage did not settle after the background task ended (got '$out')"
 fi
 
 # Edge: a 1s child that has already exited by probe time is simply absent —
@@ -483,54 +486,43 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────
-# B6 — REQ-F4: dynamic, factual exitEvidence on a genuine owner-lost stamp.
+# B6 — the disposition's settled stamp carries factual exitEvidence, and a
+# late marker written after that real stamp reconciles.
 # ─────────────────────────────────────────────────────────────────────────
 
-tmux() {
-  if [[ "${1:-}" == "list-panes" ]]; then printf '4343\n'; return 0; fi
-  return 1
-}
-mill_pane_has_live_blocking_process() { return 1; }
-task_progress_json() {
-  printf '{"agentIdle":false,"stalled":false,"agentBackgroundLive":null,"agentRecord":{"state":"working","event":"PreToolUse","timestamp":1700000000},"lastProgressAt":"2026-01-01T00:00:00Z","progressAgeMinutes":500,"sources":[{"kind":"hook"}],"backgroundProcesses":[]}\n'
-}
-
-fd="$(seed_worktree "mark-interrupted")"
-wt="$WORKTREE_ROOT/mark-interrupted"
+fd="$(seed_worktree "settled-stamp")"
+wt="$WORKTREE_ROOT/settled-stamp"
+head="$(git -C "$wt" rev-parse HEAD)"
 cat > "$fd/.coding-result.json" <<'JSON'
-{"stage":"coding","status":"running","startedAt":"2020-01-01T00:00:00Z","agent":"claude"}
+{"stage":"coding","status":"running","startedAt":"2020-01-01T00:00:00Z","agent":"claude","model":"claude-opus-4-7"}
 JSON
-rc=0
-coding_stage_owner_lost "HOK-1" "$fd" "win-target" || rc=$?
-evidence="$CODING_OWNER_LOST_EVIDENCE_JSON"
-if [[ "$rc" == "0" ]]; then
-  coding_stage_mark_interrupted "HOK-1" "$fd" "$wt" "HOK-1-mark-interrupted" "claude"
-fi
-exit_evidence="$(jq -c '.artifacts.exitEvidence' "$fd/.coding-result.json" 2>/dev/null || true)"
-old_hardcoded='agent process exited without a terminal stage result (pane at shell prompt)'
-if [[ "$rc" == "0" ]] \
-  && [[ -n "$evidence" ]] \
-  && [[ "$(jq -r '.lastAgentState' <<<"$evidence")" == "working" ]] \
-  && [[ "$(jq -r '.paneDescendantProbe' <<<"$evidence")" == "none-live" ]] \
-  && [[ "$exit_evidence" != "\"$old_hardcoded\"" ]] \
-  && [[ "$(jq -r 'if type=="object" then .lastAgentState else . end' <<<"$exit_evidence")" == "working" ]] \
-  && [[ "$(stage_result_field "$fd" coding status)" == "failed" ]] \
-  && [[ "$(stage_result_field "$fd" coding notes)" == "Interrupted: coding agent exited without recording a result - durable commits preserved${head:+ at}" || "$(stage_result_field "$fd" coding notes)" == *"Interrupted: coding agent exited without recording a result"* ]] \
-  && grep -q "HOK-1-mark-interrupted=needs-user" "$ATTENTION_FILE"; then
-  pass "a genuine owner-lost stamp carries dynamic, factual exitEvidence (never the old hard-coded string)"
+_stage_stamp_settled_without_result "HOK-1" "$fd" coding "agent-exited" "$head"
+notes="$(stage_result_field "$fd" coding notes)"
+if [[ "$(stage_result_field "$fd" coding status)" == "failed" ]] \
+  && [[ "$(stage_result_field "$fd" coding agent)" == "claude" ]] \
+  && [[ "$(jq -r '.artifacts.terminationClass' "$fd/.coding-result.json")" == "interrupted" ]] \
+  && [[ "$(jq -r '.artifacts.exitEvidence.reason' "$fd/.coding-result.json")" == "agent-exited" ]] \
+  && [[ "$(jq -r '.artifacts.exitEvidence.observedHead' "$fd/.coding-result.json")" == "$head" ]] \
+  && [[ "$notes" == *"agent settled without a result (agent-exited)"* ]]; then
+  pass "a settled stamp records interrupted with the observed reason and head as exitEvidence"
 else
-  fail "exitEvidence not dynamic (rc=$rc evidence=$exit_evidence)"
+  fail "settled stamp evidence wrong ($(cat "$fd/.coding-result.json"))"
 fi
 
-# The classifier contract at monitor:6760 keys off this exact substring —
-# pin it so a future edit cannot silently break native-failure classification.
-notes="$(stage_result_field "$fd" coding notes)"
-if [[ "$notes" == *"interrupted: coding agent exited without recording a result"* || "$notes" == *"Interrupted: coding agent exited without recording a result"* ]]; then
-  pass "the native-failure classifier's notes substring is preserved"
+# The stamp's finishedAt has one-second resolution; make the marker strictly newer.
+stamp_epoch="$(wavemill_iso8601_to_epoch "$(stage_result_field "$fd" coding finishedAt)")"
+write_marker "$fd" "$head"
+set_mtime_epoch "$fd/.coding-complete" $((stamp_epoch + 5))
+rc=0
+coding_interrupted_late_completion_reconcile "HOK-1" "$fd" "$wt" "HOK-1-settled-stamp" || rc=$?
+if [[ "$rc" == "0" ]] \
+  && [[ "$(stage_result_field "$fd" coding status)" == "running" ]] \
+  && [[ "$(stage_result_field "$fd" coding agent)" == "claude" ]] \
+  && [[ "$(jq 'has("artifacts")' "$fd/.coding-result.json")" == "false" ]]; then
+  pass "a valid .coding-complete written after the disposition's settled stamp reconciles to running"
 else
-  fail "classifier substring regressed: '$notes'"
+  fail "late marker after settled stamp not reconciled (rc=$rc status=$(stage_result_field "$fd" coding status))"
 fi
-unset -f tmux mill_pane_has_live_blocking_process task_progress_json
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

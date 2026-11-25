@@ -68,6 +68,7 @@ extract_function() {
 log_warn() { :; }
 eval "$(extract_function "$MONITOR_SCRIPT_FILE" capture_planning_baseline)"
 eval "$(extract_function "$MONITOR_SCRIPT_FILE" validate_planning_phase_output)"
+source "$REPO_DIR/shared/lib/mill-owned-paths.sh"
 eval "$(extract_function "$MONITOR_SCRIPT_FILE" wavemill_owned_feature_artifact_path)"
 eval "$(extract_function "$MONITOR_SCRIPT_FILE" wavemill_owned_dirty_path)"
 

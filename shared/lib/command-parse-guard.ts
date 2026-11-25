@@ -21,8 +21,8 @@
  *   parser is `parseCommandArgv`.
  *
  * The allowlist file (tools/command-parse-allowlist.txt) only contains sites
- * that read `argv[0]` on a non-run-tests argv (e.g. coding-recovery-guard's
- * `git` subcommand check), where the one-parse rule does not apply.
+ * that read `argv[0]` on a non-run-tests argv, where the one-parse rule does
+ * not apply.
  */
 import type { GuardSpec } from '../tools/lib/source-guard.ts';
 

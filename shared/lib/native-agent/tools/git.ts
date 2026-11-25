@@ -3,7 +3,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { buildTrustMetadata } from '../provenance.ts';
-import type { IntendedFileTracker } from './intended-files.ts';
+import { createDiscardOwnedPathTool, type IntendedFileTracker } from './intended-files.ts';
 import type { ToolPolicyConfig } from './policies.ts';
 import type { ToolDescriptor, WavemillToolResult } from './types.ts';
 
@@ -243,7 +243,7 @@ export const gitToolPolicyConfig: ToolPolicyConfig = {
 };
 
 export const gitMutationToolPolicyConfig: ToolPolicyConfig = {
-  pathFieldsByTool: { git_add: ['paths'] },
+  pathFieldsByTool: { git_add: ['paths'], discard_owned_path: ['paths'] },
 };
 
 interface GitCommitToolOptions {
@@ -266,6 +266,7 @@ export function createGitCommitTools(
   return [
     createGitAddTool(worktreePath, options),
     createGitCommitTool(worktreePath, options),
+    createDiscardOwnedPathTool(options.tracker),
   ];
 }
 
@@ -403,7 +404,7 @@ export async function gitAfterToolCall(
 export async function gitMutationAfterToolCall(
   context: GitAfterToolCallContext,
 ): Promise<GitAfterToolCallResult | undefined> {
-  if (context.toolCall.name !== 'git_add' && context.toolCall.name !== 'git_commit') {
+  if (!['git_add', 'git_commit', 'discard_owned_path'].includes(context.toolCall.name)) {
     return undefined;
   }
   const details = context.result.details as GitToolDetails | undefined;

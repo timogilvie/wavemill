@@ -61,6 +61,7 @@ import {
   createCodingMutationTools,
 } from './tools/mutation-tools.ts';
 import {
+  COMMAND_PROVENANCE_TOOLS,
   createIntendedFileTracker,
   intendedFilesAfterToolCall,
 } from './tools/intended-files.ts';
@@ -406,7 +407,7 @@ export function renderCodingSystemPrompt(input: {
     '- The preferred focused command is `bash tests/run-related.sh` (selects transitive dependents of the diff; typically <60 s; prints only failing tests).',
     '- run_tests runs focused tests on the changed code (`bash tests/run-related.sh`, `node --test <files>`, `npx tsx --test <files>`, `bash tests/<one>.test.sh`). Full-suite commands (`npm test`, `pnpm test`, `yarn test`, and unsharded `tests/run-*.sh` other than `tests/run-related.sh`) are refused — CI runs the full suite. A command identical to one that just timed out is refused on the next attempt until the worktree changes.',
     '- To wait for a slow operation, run it once with a bounded timeoutMs instead of polling; foreground `sleep`, `watch` and `timeout … tail -f` are refused.',
-    '- Use git_add/git_commit to commit intended changed files before completion.',
+    '- Use git_add/git_commit to commit intended changed files before completion. Files a run_tests/run_format command created or changed are yours too: commit them, or remove them with discard_owned_path (never rm). .coding-complete is refused while any task path is still dirty.',
     `- Prefer .coding-complete when focused verification of the changed code passes; otherwise write ${input.blockedCompletionPath} only when implementation is complete, scoped checks passed, changes are committed, and remaining blockers are unrelated or environmental.`,
     '- Mill-core definition of done: a change to the plan → code → review → ready → tend merge → reap chain (the `journeys` path filter in `.github/workflows/ci.yml`, e.g. `shared/lib/wavemill-*.sh`, `shared/lib/tend-*.ts`, `shared/lib/ready-*.ts`, `tests/journeys/`, `tests/fakes/`) must pass the journey job (the required Golden Journeys CI check); run affected journeys with `bash tests/journeys/run-journeys.sh <name>`. A fix for an incident on that chain, or for a class a journey already covers, must add or extend a journey in `tests/journeys/` using the shared fakes (`tests/fakes/lib.sh`).',
     '- Incident fixes (HOK-3231): a PR that fixes an incident recorded in `.wavemill/incidents/` must add that incident\'s evidence as a replay fixture under `tests/fixtures/incident-replay/real/` (`npx tsx tools/incident-to-fixture.ts --input <fingerprint> --expect merged|escalated`); the fixture must fail on the base and pass with the fix.',
@@ -421,8 +422,8 @@ export function renderCodingSystemPrompt(input: {
       input.recoveryMode.dirtyPaths.length > 0
         ? `- Dirty paths: ${input.recoveryMode.dirtyPaths.join(', ')}.`
         : '- Dirty paths: (see the recovery instruction above).',
-      '- For each listed path, either commit it (git_add + git_commit) or discard it (run_tests "git checkout -- <path>" or "git restore [--staged] [--] <path>").',
-      '- apply_patch, run_format, and any other mutation tool will be refused with recovery_mode_denied. Do not make any other changes.',
+      '- For each dirty path, either commit it (git_add + git_commit) or discard it (discard_owned_path restores a tracked file to HEAD and deletes an untracked one). Both accept only paths this task created or changed.',
+      '- Never use shell git or rm recipes: run_tests, run_format, apply_patch, and any other mutation tool are refused with recovery_mode_denied. Do not make any other changes.',
       '- When the tree is clean, write .coding-complete and stop.',
     );
   }
@@ -562,6 +563,7 @@ function isMutationToolName(toolName: string): boolean {
     'run_command',
     'git_add',
     'git_commit',
+    'discard_owned_path',
   ].includes(toolName);
 }
 
@@ -1450,17 +1452,19 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
           },
         }
         : {}),
-      ...(recoveryGuard
-        ? {
-          beforeToolCall: async (ctx) => {
-            const decision = recoveryGuard.evaluate({
-              name: ctx.toolCall.name,
-              args: (ctx.args as Record<string, unknown>) ?? {},
-            });
-            return decision.allow ? undefined : { block: true, reason: decision.reason };
-          },
+      beforeToolCall: async (ctx) => {
+        if (recoveryGuard) {
+          const decision = recoveryGuard.evaluate({
+            name: ctx.toolCall.name,
+            args: (ctx.args as Record<string, unknown>) ?? {},
+          });
+          if ('reason' in decision) return { block: true, reason: decision.reason };
         }
-        : {}),
+        // HOK-3514: command provenance — the after-call delta against this
+        // snapshot is what makes command-created files owned by the task.
+        if (COMMAND_PROVENANCE_TOOLS.has(ctx.toolCall.name)) tracker.snapshotCommand(ctx.toolCall.id);
+        return undefined;
+      },
       afterToolCall: async (toolContext, signal) => {
         await intendedFilesAfterToolCall(toolContext, tracker);
 

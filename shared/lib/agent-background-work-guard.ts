@@ -120,6 +120,12 @@ export const AGENT_BACKGROUND_WORK_GUARD: GuardSpec = {
       lang: 'ts',
       re: DELETED_CLASSIFICATION_SYMBOL,
     },
+    {
+      name: 'shell-command-name-blocking-check',
+      description: 'Shell must use task-progress agentBackgroundLive; pane process names and WAVEMILL_CONTROLLER_PROCESS_REGEX are not agent-work evidence',
+      lang: 'sh',
+      re: /(?:WAVEMILL_CONTROLLER_PROCESS_REGEX|ps\s+-|wavemill_process_command_line)[\s\S]{0,500}(?:blocking|descendant|command_line)|(?:blocking|descendant|command_line)[\s\S]{0,500}(?:WAVEMILL_CONTROLLER_PROCESS_REGEX|wavemill_process_command_line)/,
+    },
   ],
   structuralChecks: [
     {

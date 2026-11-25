@@ -18,52 +18,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-
-/** Untracked observer-findings artifact the controller writes at the worktree root. */
-export const WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT = '.wavemill/observer-findings.jsonl';
-
-/** Prompt-registry log older native-agent runs wrote at the worktree root. */
-export const WAVEMILL_PROMPT_REGISTRY_ARTIFACT = 'prompt-registry.jsonl';
-
-/**
- * HOK-3160 generated-artifact allowlist (Class B). Tool-written outputs that
- * never represent real task work and so must not retain a terminal worktree:
- *   - any file under `.wavemill/audits/` (tool coverage/drift reports)
- *   - any `features/<slug>/.review-result.json` (stage result the review phase
- *     writes next to the task packet)
- *   - trace metadata siblings the harness writes next to the task packet
- *     (`.needs-attention`, `.terminal-history.jsonl`, `.ready-bypass-warned`,
- *     `.coding-complete`, `.workflow-aborted`, `.coding-blocked-completion.json`)
- *
- * The filter is deliberately narrow: only exact path shapes with the
- * untracked (`??`) or unstaged-modify (` M`) porcelain codes are dropped.
- * Everything else - including arbitrary files under `.wavemill/` not listed
- * here - remains dirty for cleanup.
- */
-const GENERATED_ARTIFACT_PATTERNS: RegExp[] = [
-  // Observer and prompt-registry artifacts (HOK-2972 / #1507). Already handled
-  // by exact-match filtering below, but kept here so the test matrix matches.
-  /^\?\? \.wavemill\/observer-findings\.jsonl$/,
-  /^\?\? prompt-registry\.jsonl$/,
-  /^ M prompt-registry\.jsonl$/,
-  // HOK-3160: audits, review results, and trace metadata.
-  /^\?\? \.wavemill\/audits\/.+$/,
-  /^\?\? features\/[^/]+\/\.review-result\.json$/,
-  /^ M features\/[^/]+\/\.review-result\.json$/,
-  /^\?\? features\/[^/]+\/\.needs-attention$/,
-  /^\?\? features\/[^/]+\/\.terminal-history\.jsonl$/,
-  /^ M features\/[^/]+\/\.terminal-history\.jsonl$/,
-  /^\?\? features\/[^/]+\/\.ready-bypass-warned$/,
-  /^\?\? features\/[^/]+\/\.coding-complete$/,
-  /^\?\? features\/[^/]+\/\.workflow-aborted$/,
-  /^\?\? features\/[^/]+\/\.coding-blocked-completion\.json$/,
-  // HOK-3172: condition reconciler artifacts
-  /^\?\? features\/[^/]+\/\.operator-events\.jsonl$/,
-  /^\?\? features\/[^/]+\/\.condition-reconcile\.jsonl$/,
-  /^\?\? features\/[^/]+\/\.ready-waiting-on\.json$/,
-  /^ M features\/[^/]+\/\.operator-events\.jsonl$/,
-  /^ M features\/[^/]+\/\.condition-reconcile\.jsonl$/,
-];
+import { filterMillOwnedDirtyStatus, millOwnedEntry } from './mill-owned-paths.ts';
 
 export type WorktreeDirtyState = 'clean' | 'dirty' | 'unreadable' | 'absent';
 
@@ -83,10 +38,7 @@ export interface WorktreeDirtyStatus {
  * prompt-registry log. Any leading/trailing empty lines are stripped.
  */
 export function filterWorktreeDirtyStatus(rawPorcelain: string): string[] {
-  return rawPorcelain
-    .split('\n')
-    .filter((line) => line.length > 0)
-    .filter((line) => !GENERATED_ARTIFACT_PATTERNS.some((pattern) => pattern.test(line)));
+  return filterMillOwnedDirtyStatus(rawPorcelain);
 }
 
 type GitRunner = (args: string[], cwd: string) => string | undefined;
@@ -115,6 +67,11 @@ export interface ReadWorktreeDirtyStatusOptions {
   git?: GitRunner;
 }
 
+/** The one porcelain read (all untracked files) both views share. */
+function readPorcelain(worktree: string, git: GitRunner, extra: string[]): string | undefined {
+  return git(['-C', worktree, 'status', '--porcelain', ...extra, '--untracked-files=all'], worktree);
+}
+
 /**
  * Read the filtered porcelain status of a worktree. A missing directory
  * reports `absent`; a git failure reports `unreadable`. Callers that must
@@ -128,7 +85,7 @@ export function readWorktreeDirtyStatus(options: ReadWorktreeDirtyStatusOptions)
   if (!worktree || !existsSync(worktree)) {
     return { state: 'absent', lines: [], raw: '' };
   }
-  const stdout = git(['-C', worktree, 'status', '--porcelain', '--untracked-files=all'], worktree);
+  const stdout = readPorcelain(worktree, git, []);
   if (stdout === undefined) {
     return { state: 'unreadable', lines: [], raw: '' };
   }
@@ -138,4 +95,59 @@ export function readWorktreeDirtyStatus(options: ReadWorktreeDirtyStatusOptions)
     lines,
     raw: lines.join('\n'),
   };
+}
+
+/** One porcelain entry: the two-letter XY code and the repo-relative path. */
+export interface WorktreeStatusEntry {
+  code: string;
+  path: string;
+}
+
+/**
+ * Read `git status --porcelain -z --untracked-files=all` as structured
+ * entries. NUL-delimited output needs no unquoting, and a rename or copy
+ * reports its destination path (the source is consumed and dropped).
+ * Returns null when git cannot be read, so callers can fail closed.
+ */
+export function readWorktreeStatusEntries(worktree: string, git: GitRunner = defaultGitRunner): WorktreeStatusEntry[] | null {
+  if (!worktree || !existsSync(worktree)) return null;
+  const stdout = readPorcelain(worktree, git, ['-z']);
+  if (stdout === undefined) return null;
+  const fields = stdout.split('\0');
+  const entries: WorktreeStatusEntry[] = [];
+  for (let index = 0; index < fields.length; index += 1) {
+    const field = fields[index]!;
+    if (field.length < 4) continue;
+    const code = field.slice(0, 2);
+    entries.push({ code, path: field.slice(3) });
+    if (code[0] === 'R' || code[0] === 'C') index += 1;
+  }
+  return entries;
+}
+
+/**
+ * The generated/runtime paths declared in the one mill-owned inventory that a
+ * coding handoff never has to commit. Scope feature artifacts to this task so
+ * one arm cannot hide another arm's changes.
+ */
+export function isWavemillOwnedDirtyPath(path: string, slug: string): boolean {
+  const prefix = `features/${slug}/`;
+  return !!millOwnedEntry(path) && (!path.startsWith('features/') || (!!slug && path.startsWith(prefix)));
+}
+
+export type TaskDirtyPaths =
+  | { state: 'readable'; paths: string[] }
+  | { state: 'unreadable'; paths: [] };
+
+/**
+ * The task's dirty paths: every porcelain entry except Wavemill-owned output.
+ * This is what a coding handoff must commit or discard before it may finish.
+ */
+export function readTaskDirtyPaths(options: { worktree: string; slug: string; git?: GitRunner }): TaskDirtyPaths {
+  const entries = readWorktreeStatusEntries(options.worktree, options.git);
+  if (entries === null) return { state: 'unreadable', paths: [] };
+  const paths = [...new Set(entries.map((entry) => entry.path))]
+    .filter((path) => !isWavemillOwnedDirtyPath(path.replace(/\/$/, ''), options.slug))
+    .sort((left, right) => left.localeCompare(right));
+  return { state: 'readable', paths };
 }
