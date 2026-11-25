@@ -39,6 +39,29 @@ function attemptClaim(lockPath: string, purpose: string): StateLockHandle | null
   }
 }
 
+/**
+ * HOK-3516: the only way a lock path stops existing. A direct recursive remove
+ * is two filesystem steps, and a concurrent waiter's `mkdir .reclaim` between
+ * them strands an ownerless directory that is never reclaimable at runtime.
+ * Renaming the lock to a detached private sibling makes the lock path go from
+ * owned to absent in one atomic step; anything a waiter put inside leaves with
+ * it. A failed setup or rename must never fall back to removing the lock path.
+ */
+function removeLockDirectory(lockPath: string): void {
+  // A fresh private parent guarantees the rename target never exists, so the
+  // rename can never replace an existing path (POSIX permits replacing an
+  // empty directory, which would silently discard another claimant's lock).
+  const detachedParent = mkdtempSync(`${lockPath}.rm-`);
+  try { renameSync(lockPath, join(detachedParent, 'lock')); }
+  catch (error) {
+    rmSync(detachedParent, { recursive: true, force: true });
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  // Mutual exclusion was released by the rename; cleanup is best effort.
+  try { rmSync(detachedParent, { recursive: true, force: true }); } catch { /* detached */ }
+}
+
 function inspectAndReclaim(lockPath: string): boolean {
   if (!existsSync(lockPath)) return false;
   const owner = readOwner(lockPath);
@@ -52,7 +75,7 @@ function inspectAndReclaim(lockPath: string): boolean {
   try {
     const current = readOwner(lockPath);
     if (!current || JSON.stringify(current) !== JSON.stringify(owner) || !isOwnerReclaimable(current)) return false;
-    rmSync(lockPath, { recursive: true, force: true });
+    removeLockDirectory(lockPath);
     removed = true;
     return true;
   } finally { if (!removed) rmSync(reclaimPath, { recursive: true, force: true }); }
@@ -85,7 +108,7 @@ export function acquireStateLockSync(statePath: string, opts: { timeoutMs?: numb
 
 export function releaseStateLock(handle: StateLockHandle): void {
   const current = readOwner(handle.lockPath);
-  if (current && current.pid === handle.owner.pid && current.processStartTime === handle.owner.processStartTime) rmSync(handle.lockPath, { recursive: true, force: true });
+  if (current && current.pid === handle.owner.pid && current.processStartTime === handle.owner.processStartTime) removeLockDirectory(handle.lockPath);
 }
 
 /** Startup-only migration of pre-owner lock forms. Runtime acquisition never calls this. */
@@ -94,6 +117,6 @@ export function reclaimLegacyStateLock(lockPath: string): boolean {
   const stat = lstatSync(lockPath);
   const legacy = stat.isFile() ? stat.size === 0 : stat.isDirectory() && !existsSync(join(lockPath, 'owner.json'));
   if (!legacy) return false;
-  rmSync(lockPath, { recursive: true, force: true });
+  removeLockDirectory(lockPath);
   return true;
 }
