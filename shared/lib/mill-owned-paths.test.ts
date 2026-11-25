@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -94,6 +94,33 @@ test('cleanup migrates declared telemetry, removes owned output, and leaves unkn
     assert.equal(readFileSync(join(main, '.wavemill/task-size-estimates.jsonl'), 'utf8'), 'estimate-row\n');
     assert.deepEqual(readFileSync(join(main, '.wavemill/evals/prompt-registry.jsonl'), 'utf8').trim().split('\n').sort(), ['eval-row', 'legacy-row']);
     assert.equal(readFileSync(join(main, '.wavemill/observer-findings.jsonl'), 'utf8'), 'observer-row\n');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('cleanup retains telemetry symlinks without migrating their targets', () => {
+  const root = mkdtempSync(join(tmpdir(), 'mill-owned-symlink-'));
+  const main = join(root, 'main');
+  const worktree = join(root, 'worktree');
+  const shellFile = join(import.meta.dirname, 'mill-owned-paths.sh');
+  try {
+    execFileSync('git', ['init', '-q', '-b', 'main', main]);
+    execFileSync('git', ['-C', main, 'config', 'user.email', 'test@example.com']);
+    execFileSync('git', ['-C', main, 'config', 'user.name', 'Test']);
+    writeFileSync(join(main, 'README.md'), 'seed\n');
+    execFileSync('git', ['-C', main, 'add', 'README.md']);
+    execFileSync('git', ['-C', main, 'commit', '-q', '-m', 'seed']);
+    execFileSync('git', ['-C', main, 'worktree', 'add', '-q', '-b', 'task/test', worktree]);
+    const secret = join(root, 'secret');
+    writeFileSync(secret, 'private\n');
+    mkdirSync(join(worktree, '.wavemill'));
+    const link = join(worktree, '.wavemill/task-size-estimates.jsonl');
+    symlinkSync(secret, link);
+    execFileSync('bash', ['-c', 'source "$1"; wavemill_discard_mill_owned_untracked "$2"', 'bash', shellFile, worktree], {
+      env: { ...process.env, REPO_DIR: main }, stdio: 'pipe',
+    });
+    assert.equal(existsSync(link), true);
+    assert.equal(existsSync(join(main, '.wavemill/task-size-estimates.jsonl')), false);
+    assert.equal(readFileSync(secret, 'utf8'), 'private\n');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
