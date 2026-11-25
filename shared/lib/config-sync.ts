@@ -106,6 +106,12 @@ export const CANONICAL_CONFIG_TEMPLATE: WavemillConfig = {
         cacheWriteCostPerMTok: 3.125,
         cacheReadCostPerMTok: 0.25,
       },
+      'gpt-6.1-terra': {
+        inputCostPerMTok: 1,
+        outputCostPerMTok: 5,
+        cacheWriteCostPerMTok: 1.25,
+        cacheReadCostPerMTok: 0.05,
+      },
       'gpt-6-sol': {
         inputCostPerMTok: 2,
         outputCostPerMTok: 10,

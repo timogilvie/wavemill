@@ -7,8 +7,8 @@
 # tick with no liveness check, no retry and no terminal state. After the agent
 # exited nobody would ever clean the tree, and a parked challenger held its
 # primary's green PR at `challenge:pair-unresolved:no-comparison` indefinitely
-# (HOK-3121_c, 2026-09-30). The guard now consults the task-progress primitive;
-# once the agent has exited it quarantines safe scratch residue, relaunches the
+# (HOK-3121_c, 2026-09-30). The guard now reads the canonical stage-agent
+# disposition; once it is settled it quarantines safe scratch residue, relaunches the
 # coder once per head (bounded-retry bucket `coding-dirty-handoff`), and on
 # exhaustion aborts a challenger (single scope) or records a sentinel for a
 # primary. While the agent is live, the legacy needs-user hold is unchanged.
@@ -18,6 +18,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MONITOR_SCRIPT_FILE="$REPO_DIR/shared/lib/wavemill-monitor.sh"
 REAL_REPO_DIR="$REPO_DIR"
+# Resolve monitor tools (record-arm-termination.ts) from this checkout, never
+# an operator's install.
+export WAVEMILL_INSTALL_DIR="$REPO_DIR"
+unset TOOLS_DIR
 
 PASS=0
 FAIL=0
@@ -69,15 +73,15 @@ for fn in \
   coding_complete_marker_condition_valid \
   blocked_completion_commit_matches_head \
   coding_recovery_instruction_path \
-  coding_dirty_handoff_grace_seconds \
-  coding_dirty_handoff_agent_exited \
   coding_dirty_handoff_path_is_planned \
   coding_dirty_handoff_quarantine_scratch \
   coding_dirty_handoff_write_recovery_instruction \
   coding_dirty_handoff_relaunch \
   coding_dirty_handoff_terminalize \
+  stage_agent_disposition_kind \
   guard_coding_complete_handoff \
   stage_budget_exhausted_json \
+  arm_termination_record \
   challenge_abort_pair \
   _challenge_side_for_issue \
   native_terminal_failure_next_action \
@@ -108,8 +112,8 @@ mkdir -p "$WORKTREE_ROOT" "$REPO_DIR"
 git -C "$REPO_DIR" init -q
 active_count=0
 current_agent=""
-PROGRESS_JSON='{}'
-PROGRESS_CALLS=0
+DISPOSITION_KIND='in-flight'
+DISPOSITION_CALLS=''
 CLEANUP_CALLS=""
 PREPARE_CALLS=""
 LAUNCH_CALLS=""
@@ -134,10 +138,10 @@ read_state_value() {
   shift
   jq -r "$@" "$STATE_FILE" 2>/dev/null || printf '%s\n' "$default"
 }
-# HOK-3101 primitive stub: the scenario sets PROGRESS_JSON.
-task_progress_json() {
-  PROGRESS_CALLS=$((PROGRESS_CALLS + 1))
-  printf '%s\n' "$PROGRESS_JSON"
+# HOK-3386: the guard must use the monitor's canonical disposition wrapper.
+stage_agent_disposition() {
+  DISPOSITION_CALLS+="$1|$5"$'\n'
+  printf '{"kind":"%s","reason":"fixture"}\n' "$DISPOSITION_KIND"
 }
 stage_result_field() {
   jq -r --arg f "$3" '.[$f] // empty' "$1/.${2}-result.json" 2>/dev/null || true
@@ -240,27 +244,13 @@ seed() {
   : > "$WARN_FILE"
   : > "$STATUS_LOG"
   active_count=0
-  PROGRESS_CALLS=0
+  DISPOSITION_KIND='in-flight'
+  DISPOSITION_CALLS=''
   CLEANUP_CALLS=""
   PREPARE_CALLS=""
   LAUNCH_CALLS=""
   VALIDATE_CALLS=""
   LAUNCH_RC=0
-}
-
-exited_progress() {
-  local age="${1:-600}" now
-  now="$(date +%s)"
-  jq -cn --argjson ts "$((now - age))" --argjson mins "$((age / 60))" \
-    '{agentIdle:true, terminal:false, terminalIdle:false, agentState:null, blockingPrompt:null,
-      agentRecord:{state:"idle", event:"process_exit", agent:"native", timestamp:$ts},
-      lastProgressAt:null, progressAgeMinutes:$mins, stalled:false}'
-}
-live_progress() {
-  jq -cn --argjson ts "$(date +%s)" \
-    '{agentIdle:false, terminal:false, terminalIdle:false, agentState:"working", blockingPrompt:null,
-      agentRecord:{state:"working", event:"PreToolUse", agent:"native", timestamp:$ts},
-      lastProgressAt:null, progressAgeMinutes:0, stalled:false}'
 }
 
 # Runs in the current shell (not a command substitution) so the stubs' call
@@ -275,11 +265,11 @@ retry_files() { find "$1" -maxdepth 1 -name '.retry-coding-dirty-handoff-*' 2>/d
 
 echo "=== Coding dirty-tree handoff after agent exit (HOK-3128) ==="
 
-# ── 1. Live agent + dirty tree → today's needs-user hold, no retry state ──
+# ── 1. In-flight disposition → today's needs-user hold, no retry state ───
 seed "PAIR-7_c" "live-agent"
 fd="$WORKTREE_ROOT/live-agent/features/live-agent"
 printf 'wip\n' >> "$WORKTREE_ROOT/live-agent/src/feature.ts"
-PROGRESS_JSON="$(live_progress)"
+DISPOSITION_KIND='in-flight'
 run_guard "PAIR-7_c" "live-agent"
 if [[ "$rc" == "0" ]] \
   && grep -q 'PAIR-7_c-live-agent=needs-user' "$ATTENTION_FILE" \
@@ -289,35 +279,35 @@ if [[ "$rc" == "0" ]] \
   && [[ -f "$fd/.coding-uncommitted-output.json" ]] \
   && [[ "$(jq -r '.tasks["PAIR-7_c"].challengeAborted // "none"' "$STATE_FILE")" == "none" ]] \
   && [[ "$(stage_result_field "$fd" coding status)" == "running" ]]; then
-  pass "live agent keeps the legacy needs-user hold (no relaunch, no retry files, no abort)"
+  pass "in-flight disposition keeps the legacy needs-user hold (no relaunch, no retry files, no abort)"
 else
   fail "live agent handling wrong (rc=$rc launches=$LAUNCH_CALLS retry=$(retry_files "$fd"))"
 fi
 
-# ── 2. Agent exited but inside the grace → still the legacy hold ──────────
+# ── 2. A second in-flight outcome stays on the legacy hold ────────────────
 seed "PAIR-7_c" "inside-grace"
 fd="$WORKTREE_ROOT/inside-grace/features/inside-grace"
 printf 'wip\n' >> "$WORKTREE_ROOT/inside-grace/src/feature.ts"
-PROGRESS_JSON="$(exited_progress 30)"
+DISPOSITION_KIND='in-flight'
 run_guard "PAIR-7_c" "inside-grace"
 if [[ "$rc" == "0" ]] \
   && grep -q '=needs-user' "$ATTENTION_FILE" \
   && [[ -z "$LAUNCH_CALLS" ]] \
   && [[ -z "$(retry_files "$fd")" ]]; then
-  pass "an idle record younger than the grace does not relaunch"
+  pass "an in-flight disposition does not relaunch"
 else
   fail "inside-grace handling wrong (rc=$rc launches=$LAUNCH_CALLS)"
 fi
 
-# ── 3. Probe failure ({}) is treated as live ─────────────────────────────
+# ── 3. Fail-safe in-flight outcome keeps the hold ─────────────────────────
 seed "PAIR-7_c" "probe-failure"
 fd="$WORKTREE_ROOT/probe-failure/features/probe-failure"
 printf 'wip\n' >> "$WORKTREE_ROOT/probe-failure/src/feature.ts"
-PROGRESS_JSON='{}'
+DISPOSITION_KIND='in-flight'
 run_guard "PAIR-7_c" "probe-failure"
 if [[ "$rc" == "0" ]] && [[ -z "$LAUNCH_CALLS" ]] && [[ -z "$(retry_files "$fd")" ]] \
   && grep -q '=needs-user' "$ATTENTION_FILE"; then
-  pass "missing progress evidence keeps the legacy hold"
+  pass "an in-flight disposition keeps the legacy hold"
 else
   fail "probe-failure handling wrong (rc=$rc launches=$LAUNCH_CALLS)"
 fi
@@ -327,7 +317,7 @@ seed "PAIR-7_c" "scratch-only"
 wt="$WORKTREE_ROOT/scratch-only"
 fd="$wt/features/scratch-only"
 printf 'console.log(1)\n' > "$wt/test-simple.ts"
-PROGRESS_JSON="$(exited_progress)"
+DISPOSITION_KIND='settled'
 run_guard "PAIR-7_c" "scratch-only"
 if [[ "$rc" == "1" ]] \
   && [[ ! -e "$wt/test-simple.ts" ]] \
@@ -348,7 +338,7 @@ wt="$WORKTREE_ROOT/planned-scratch"
 fd="$wt/features/planned-scratch"
 printf '\nAlso add scratch.ts at the repo root.\n' >> "$fd/plan.md"
 printf 'x\n' > "$wt/scratch.ts"
-PROGRESS_JSON="$(exited_progress)"
+DISPOSITION_KIND='settled'
 run_guard "PAIR-7_c" "planned-scratch"
 if [[ "$rc" == "0" ]] && [[ -f "$wt/scratch.ts" ]] \
   && [[ "$LAUNCH_CALLS" == *"coding|PAIR-7_c|"* ]]; then
@@ -365,7 +355,7 @@ printf 'wip\n' >> "$wt/src/feature.ts"
 printf 'x\n' > "$wt/test-simple.ts"
 mkdir -p "$wt/tests"
 printf 'test\n' > "$wt/tests/feature-purge.test.ts"
-PROGRESS_JSON="$(exited_progress)"
+DISPOSITION_KIND='settled'
 run_guard "PAIR-7_c" "challenger-dirty"
 head="$(git -C "$wt" rev-parse HEAD)"
 instruction="$fd/.coding-recovery-instruction.md"
@@ -433,7 +423,7 @@ wt="$WORKTREE_ROOT/primary-dirty"
 fd="$wt/features/primary-dirty"
 write_stage_result "$fd" "coding" "running" "claude" "claude-opus-4-7" ""
 printf 'wip\n' >> "$wt/src/feature.ts"
-PROGRESS_JSON="$(exited_progress)"
+DISPOSITION_KIND='settled'
 run_guard "PAIR-7" "primary-dirty"
 if [[ "$rc" == "0" ]] && [[ "$LAUNCH_CALLS" == "coding|PAIR-7|claude-opus-4-7|claude|medium"$'\n' ]]; then
   pass "primary tick 1: relaunched with its own coder identity"
@@ -457,6 +447,31 @@ if [[ "$rc" == "0" ]] \
   pass "primary tick 2: stays needs-user, never aborted, sentinel + artifact action record the reason"
 else
   fail "primary exhaustion wrong (rc=$rc attention=$(cat "$ATTENTION_FILE"))"
+fi
+
+# HOK-3514: the primary's exhaustion reaches Hokusai through the one recorder
+# (executed model + fault class), exactly once, without an abort artifact.
+primary_rows() {
+  jq -c 'select(.issueId == "PAIR-7" and .abortReason == "terminal_stage_failure:coding-dirty-handoff")' \
+    "$REPO_DIR/.wavemill/evals/reliability-records.jsonl" 2>/dev/null || true
+}
+row="$(primary_rows)"
+if [[ "$(printf '%s\n' "$row" | grep -c .)" == "1" ]] \
+  && [[ "$(jq -r '.model' <<<"$row")" == "claude-opus-4-7" ]] \
+  && [[ "$(jq -r '.faultClass' <<<"$row")" == "model-fault" ]] \
+  && [[ "$(jq -r '.challengeRole' <<<"$row")" == "primary" ]] \
+  && [[ ! -f "$fd/.challenge-aborted.json" ]]; then
+  pass "primary exhaustion records executed model and fault class once, with no abort artifact"
+else
+  fail "primary exhaustion feedback wrong (rows=$row)"
+fi
+printf '{"stage":"coding","confidence":"high"}\n' > "$fd/.coding-complete"
+run_guard "PAIR-7" "primary-dirty"
+if [[ "$(primary_rows | grep -c .)" == "1" ]] \
+  && [[ "$(jq -r '.tasks["PAIR-7"].challengeAborted // "none"' "$STATE_FILE")" == "none" ]]; then
+  pass "a repeat exhausted tick does not re-record the primary's fault"
+else
+  fail "primary fault re-recorded (rows=$(primary_rows | grep -c .))"
 fi
 
 # ── 8. New head after exhaustion resets the budget → one more relaunch ───
@@ -496,7 +511,7 @@ seed "PAIR-7_c" "launch-fails"
 wt="$WORKTREE_ROOT/launch-fails"
 fd="$wt/features/launch-fails"
 printf 'wip\n' >> "$wt/src/feature.ts"
-PROGRESS_JSON="$(exited_progress)"
+DISPOSITION_KIND='settled'
 LAUNCH_RC=1
 run_guard "PAIR-7_c" "launch-fails"
 if [[ "$rc" == "0" ]] \
@@ -507,14 +522,7 @@ else
   fail "launch-failure handling wrong (rc=$rc)"
 fi
 
-# ── 11. Grace env validation ──────────────────────────────────────────────
-if [[ "$(WAVEMILL_CODING_DIRTY_HANDOFF_GRACE_SECONDS=abc coding_dirty_handoff_grace_seconds)" == "120" ]] \
-  && [[ "$(WAVEMILL_CODING_DIRTY_HANDOFF_GRACE_SECONDS=15 coding_dirty_handoff_grace_seconds)" == "15" ]]; then
-  pass "grace override is validated and falls back to 120s"
-else
-  fail "grace env validation wrong"
-fi
-
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
+

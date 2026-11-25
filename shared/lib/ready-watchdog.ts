@@ -62,7 +62,7 @@ import {
   evaluateReadyRemediationDisposition,
   gatherReadyTaskProgress,
   type ReadyRemediationDisposition,
-} from './ready-remediation-disposition.ts';
+} from './stage-agent-disposition.ts';
 import { termCapture, termPaneField } from './terminal-backend.ts';
 
 const execFileAsync = promisify(execFile);

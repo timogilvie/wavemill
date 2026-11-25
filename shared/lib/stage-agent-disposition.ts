@@ -35,14 +35,15 @@
  *
  * Enforced by `tools/check-ready-remediation-disposition.ts` (extended, not
  * replaced). Ready remediation decides here too: the Ready module
- * (`ready-remediation-disposition.ts`) only reads Ready's launch identity
- * (sub-stage and launch head) and maps the result onto Ready's actions.
+ * performs Ready's launch-identity read (sub-stage and launch head) and maps
+ * the result onto Ready's actions.
  *
  * @module stage-agent-disposition
  */
 
 import { basename, join } from 'node:path';
 import { statSync } from 'node:fs';
+import { createStateDirRetry } from './bounded-retry.ts';
 import { readLatestStageLaunch, type OwnershipKind, type OwnershipStage } from './session-ownership.ts';
 import { resolveTaskArtifact } from './task-artifact-lookup.ts';
 import {
@@ -55,8 +56,84 @@ import {
 } from './task-progress.ts';
 import { getResultFilePath, readStageResultSync, type StageName, type StageResult } from './stage-result.ts';
 import type { TaskRecord } from './workflow-state.ts';
+import { readMarker } from './transient-marker.ts';
 
 export type { StageAgentStage };
+
+export type ReadyRemediationKind = 'ci' | 'conflict';
+export type ReadyRemediationStage = 'ready-remediation' | 'conflict-resolution';
+export interface ReadyRemediationLaunch { remediation: ReadyRemediationKind; stage: ReadyRemediationStage; launchHead: string }
+export interface ReadyRemediationDisposition {
+  kind: StageAgentDispositionKind;
+  reason: string;
+  remediation: ReadyRemediationKind | null;
+  launchHead: string | null;
+  currentHead: string | null;
+  launchedAt: string | null;
+}
+export type ReadyRemediationProgress = StageAgentProgress;
+const readyRemediationBucket = createStateDirRetry('ready-remediation', { maxAttempts: 1 });
+const REMEDIATION_STAGE = { ci: 'ready-remediation', conflict: 'conflict-resolution' } as const;
+function nonEmpty(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+function remediationKind(result: Pick<StageResult, 'artifacts'> | null): ReadyRemediationKind {
+  return (result?.artifacts as { mergeConflict?: unknown } | undefined)?.mergeConflict === 'CONFLICTED' ? 'conflict' : 'ci';
+}
+export function readReadyRemediationLaunch(stateDir: string, result: Pick<StageResult, 'status' | 'startedAt' | 'artifacts'> | null): ReadyRemediationLaunch | null {
+  if (result?.status !== 'running') return null;
+  const remediation = remediationKind(result);
+  let launchHead: string | null = null;
+  if (remediation === 'conflict') {
+    const marker = readMarker({ path: join(stateDir, '.conflict-remediation.json'), kind: 'conflict-remediation' });
+    if (marker.status === 'present') launchHead = nonEmpty(marker.payload.detail?.launchHead) ?? nonEmpty(marker.payload.headSha);
+  } else {
+    try { launchHead = nonEmpty(readyRemediationBucket.readKey(stateDir).head); } catch { launchHead = null; }
+  }
+  return launchHead ? { remediation, stage: REMEDIATION_STAGE[remediation], launchHead } : null;
+}
+
+export function evaluateReadyRemediationDisposition(opts: {
+  stateDir: string; readyResult: Pick<StageResult, 'status' | 'startedAt' | 'artifacts'> | null;
+  currentHead: string | null; getProgress: () => ReadyRemediationProgress | null;
+}): ReadyRemediationDisposition {
+  const launch = readReadyRemediationLaunch(opts.stateDir, opts.readyResult);
+  if (!launch) return { kind: 'inactive', reason: opts.readyResult?.status === 'running' ? 'no-launch' : 'not-running', remediation: null, launchHead: null, currentHead: opts.currentHead, launchedAt: null };
+  const disposition = evaluateStageAgentDisposition({ stateDir: opts.stateDir, stage: launch.stage, stageResult: opts.readyResult,
+    currentHead: opts.currentHead, launchHead: launch.launchHead, getProgress: opts.getProgress });
+  return readyDispositionFromStage(disposition, launch, opts.currentHead);
+}
+
+/** Map the shared decision onto Ready's action contract. */
+export function readyDispositionFromStage(
+  disposition: Pick<StageAgentDisposition, 'kind' | 'reason' | 'blockingPrompt' | 'launch'>,
+  launch: ReadyRemediationLaunch,
+  currentHead: string | null,
+): ReadyRemediationDisposition {
+  // Ready must hold a recognised prompt: its `settled` action re-runs Ready,
+  // while the shared stage actor escalates once and leaves the agent alive.
+  const parkedAtPrompt = disposition.kind === 'settled' && disposition.blockingPrompt !== null;
+  return {
+    kind: parkedAtPrompt ? 'in-flight' : disposition.kind,
+    reason: disposition.reason,
+    remediation: launch.remediation,
+    launchHead: launch.launchHead,
+    currentHead,
+    launchedAt: disposition.launch.launchedAt,
+  };
+}
+
+export function gatherReadyTaskProgress(opts: {
+  issue: string; session: string; worktree: string; stateDir: string;
+  task?: Pick<TaskRecord, 'updated' | 'branch' | 'slug' | 'worktree' | 'status' | 'phase' | 'lifecycle' | 'windowId'>;
+  readyResult: Pick<StageResult, 'startedAt' | 'finishedAt' | 'artifacts'> | null; paneText?: string; panePid?: number | null; now?: Date;
+}): TaskProgress {
+  return gatherStageTaskProgress({
+    ...opts,
+    stage: REMEDIATION_STAGE[remediationKind(opts.readyResult)],
+    stageResult: opts.readyResult,
+  });
+}
 
 export type StageAgentDispositionKind = 'inactive' | 'advanced' | 'in-flight' | 'settled';
 

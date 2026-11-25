@@ -265,6 +265,7 @@ describe('prompt-registry', () => {
       logPromptUsage('tools/prompts/native-read-only-phase.md', 'phase prompt', { repoDir: wt });
 
       assert.equal(existsSync(join(wt, 'prompt-registry.jsonl')), false, 'registry leaked into worktree root');
+      assert.equal(existsSync(join(wt, '.wavemill', 'evals', 'prompt-registry.jsonl')), false, 'registry leaked into task worktree telemetry');
       assert.equal(existsSync(join(main, '.wavemill', 'evals', 'prompt-registry.jsonl')), true);
     } finally {
       rmSync(root, { recursive: true, force: true });

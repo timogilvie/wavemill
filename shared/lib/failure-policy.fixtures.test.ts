@@ -396,6 +396,17 @@ const HISTORICAL_FIXTURES: Fixture[] = [
     expectedClass: 'retryable',
     expectedKind: 'native-stage-timeout',
   },
+  // ── HOK-3512: a refused saved route (HOK-3500 incident, 2026-11-17) ──
+  {
+    name: 'HOK-3512: the saved coding route fails launch validation — terminal, never a wakeless wait',
+    evidence: {
+      stage: 'coding',
+      failureKind: 'recovery_contract_unavailable',
+      detail: 'agent_unsupported_for_model: Recovery contract for model kimi-k2.7-code is unavailable: current resolver supports agent native-openrouter, not persisted agent claude.',
+    },
+    expectedClass: 'terminal',
+    expectedKind: 'recovery_contract_unavailable',
+  },
 ];
 
 /** Recorded `challengeAborted` reasons from the window, parsed the way the resolver does. */

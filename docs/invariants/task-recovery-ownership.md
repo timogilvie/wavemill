@@ -38,6 +38,24 @@ owner — the controller composes them, never re-derives them:
 | Raising operator attention | `operator-escalation.*` (one step) |
 | Cost / attribution | SDK-owned; the controller records the action, not a price |
 
+## One refusal outcome (HOK-3512)
+
+"The saved route cannot launch: what now?" has one answer. Every caller that
+replays a saved route — the failed-stage path (`_monitor_claim_failed_stage_action`),
+the window-lost path and each recovery launch surface
+(`_restore_inflight_task_window_if_missing` → `_recovery_contract_refused`) —
+puts the validator's full result (`ok`, `reason`, `detail`, `contract`) on
+`RecoverySnapshot.contract`. Rule 4b classifies a refusal through
+`classifyFailure` as `recovery_contract_unavailable` (terminal allowlist:
+recovery replays the route, so retrying cannot change it) and returns a
+claimed `escalate` with a `policy-terminal` basis; `_execute_recovery_escalation`
+calls `escalate_operator_attention`, naming the stage, model and validator
+reason. The item expires on a new head or an operator event —
+`reroute-task.ts` records a `reroute` operator event — and the stage then
+relaunches under its bounded retry. A refusal is never a `wait`: every wake a
+controller wait names must have a producer (`RECOVERY_WAKE_PRODUCERS`), and
+no caller writes a private `stopped` state, failed result or hook for it.
+
 A deadline, a missing acknowledgement, or an Observer outage is **not** a
 model/provider failure, does not steal ownership, and does not terminate work.
 Explicit human holds survive restart and retry.
@@ -113,6 +131,11 @@ It fails on:
 6. `observer-autofix-surface` — the removed `autoFixDryRun` /
    `getObserverAutoFixConfig` / `ObserverAutoFixConfig` surface returning to
    `tools/observer.ts`.
+7. `contract-refusal-private-stop` — a private `stopReason =
+   recovery_contract_unavailable` write or raw `blocked` hook for a refused
+   saved route (HOK-3512).
+8. `recovery-wakeless-wait` (`TASK_RECOVERY_WAKE_GUARD`) — a controller `wait`
+   whose wake has no producer named in `RECOVERY_WAKE_PRODUCERS`.
 
 For a justified exception, add the path to
 `tools/task-recovery-ownership-allowlist.txt` with a `# reason`, or suppress one

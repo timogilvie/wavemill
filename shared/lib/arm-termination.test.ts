@@ -115,3 +115,22 @@ it('records cost and provider facts in reliability and failure evals before subm
   assert.equal(repeated.reliability.id, result.reliability.id);
   assert.equal(repeated.evalRecordId, result.evalRecordId);
 });
+
+// protects: HOK-3514 — a primary's dirty-handoff exhaustion reaches Hokusai while the arm keeps its hold.
+it('retainArm records the fault with executed model and fault class but never marks the arm aborted', async () => {
+  const featureDir = join(repoDir, 'features', 'primary');
+  mkdirSync(featureDir, { recursive: true });
+  const before = readFileSync(statePath, 'utf-8');
+  const result = await recordArmTermination({
+    issueId: 'HOK-3424', kind: 'coding-dirty-handoff', actor: 'monitor', stage: 'coding',
+    model: 'moonshotai/kimi-k2.7-code', scope: 'single', featureDir, repoDir, stateFile: statePath, retainArm: true,
+  });
+  assert.equal(result.stateMutated, false);
+  assert.equal(result.artifact, null);
+  assert.equal(existsSync(join(featureDir, '.challenge-aborted.json')), false);
+  assert.equal(readFileSync(statePath, 'utf-8'), before);
+  assert.equal(result.faultClass, 'model-fault');
+  assert.equal(result.reliability.model, 'moonshotai/kimi-k2.7-code');
+  assert.equal(result.reliability.challengeRole, 'primary');
+  assert.ok(result.evalRecordId, 'the failure eval record is written');
+});

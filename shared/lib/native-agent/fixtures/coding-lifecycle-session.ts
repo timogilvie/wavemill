@@ -129,6 +129,17 @@ export const codingLifecycleSessionTurns: ScriptedPiProviderTurn[] = [
     usage: USAGE_TURN_3,
     stopReason: 'toolUse',
   },
+  // HOK-3514: commit before the marker; .coding-complete is refused on a dirty tree.
+  {
+    content: [{ type: 'tool_call', id: 'coding-add-1', name: 'git_add', arguments: { paths: [CODING_FIXTURE_SOURCE_PATH] } }],
+    usage: USAGE_TURN_3,
+    stopReason: 'toolUse',
+  },
+  {
+    content: [{ type: 'tool_call', id: 'coding-commit-1', name: 'git_commit', arguments: { message: 'feat: update message' } }],
+    usage: USAGE_TURN_3,
+    stopReason: 'toolUse',
+  },
   {
     content: [{
       type: 'tool_call',

@@ -19,6 +19,7 @@ import { fillPromptTemplate } from './prompt-utils.ts';
 import { detectSubsystems } from './subsystem-detector.ts';
 import { detectDriftForIssue, formatDriftWarning } from './drift-detector.ts';
 import { errorMessage } from './error-utils.ts';
+import { resolveFromMainRepo } from './git-utils.ts';
 import { buildScopeConstraintContext, type OperatingMode } from './scope-shrinker.ts';
 import {
   getContextWindowFloorsConfig,
@@ -613,7 +614,7 @@ export interface TaskSizeEstimateRow {
 function appendTaskSizeEstimateRow(repoDir: string | undefined, row: TaskSizeEstimateRow): void {
   if (!repoDir) return;
   try {
-    const dir = path.join(repoDir, '.wavemill');
+    const dir = path.dirname(resolveFromMainRepo('.wavemill/task-size-estimates.jsonl', repoDir));
     mkdirSync(dir, { recursive: true });
     appendFileSync(path.join(dir, 'task-size-estimates.jsonl'), `${JSON.stringify(row)}\n`);
   } catch (error) {

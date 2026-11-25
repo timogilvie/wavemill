@@ -34,6 +34,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 helper_file="$tmp/safe-cleanup-helper.sh"
 {
+  cat "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh"
   printf '%s\n' 'WAVEMILL_GIT_REMOTE_TIMEOUT_DEFAULT=15'
   printf '%s\n' 'WAVEMILL_GIT_REMOTE_TIMEOUT_MIN=1'
   printf '%s\n' 'WAVEMILL_GIT_REMOTE_TIMEOUT_MAX=600'
@@ -47,6 +48,10 @@ helper_file="$tmp/safe-cleanup-helper.sh"
   extract_function "$COMMON_SCRIPT" "wavemill_git_remote_with_timeout"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_cleanup_run"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_tool_path"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_run_tool"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "_wavemill_incident_record_name"
   printf '\n'
@@ -68,7 +73,6 @@ helper_file="$tmp/safe-cleanup-helper.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_branch_deletion_mode"
   printf '\n'
-  printf '%s\n' 'WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT=".wavemill/observer-findings.jsonl"'
   extract_function "$COMMON_SCRIPT" "wavemill_task_worktree_identity"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_orphan_dir_scan"
@@ -79,13 +83,15 @@ helper_file="$tmp/safe-cleanup-helper.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_remove_orphan_task_dir"
   printf '\n'
-  extract_function "$COMMON_SCRIPT" "wavemill_worktree_dirty_status"
+  extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_mill_owned_path"
   printf '\n'
-  extract_function "$COMMON_SCRIPT" "wavemill_migrate_controller_observer_artifact"
+  extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_mill_owned_disposition"
   printf '\n'
-  extract_function "$COMMON_SCRIPT" "wavemill_discard_prompt_registry_artifact"
+  extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_mill_owned_dirty_line"
   printf '\n'
-  extract_function "$COMMON_SCRIPT" "wavemill_discard_hok3160_generated_artifacts"
+  extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_worktree_dirty_status"
+  printf '\n'
+  extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_discard_mill_owned_untracked"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_fetch_pr_terminal_evidence"
   printf '\n'
@@ -143,7 +149,7 @@ run_helper() {
   local issue="${6:-}" pr="${7:-}" gh_fixture="${8:-}" gate="${9:-}"
   REPO_DIR="$repo" WT_DIR="$wt_dir" BRANCH="$branch" BASE="$base_branch" CALLER="$caller" \
   ISSUE_ARG="$issue" PR_ARG="$pr" GH_FIXTURE="$gh_fixture" GATE="$gate" HELPER_FILE="$helper_file" \
-  WORKTREE_ROOT="$(dirname "$wt_dir")" bash -lc '
+  TOOLS_DIR="${TOOLS_DIR:-$REPO_ROOT/tools}" WORKTREE_ROOT="$(dirname "$wt_dir")" bash -lc '
     set -euo pipefail
     source "$HELPER_FILE"
     MILL_LOG_FILE="$REPO_DIR/mill.log"
@@ -467,9 +473,9 @@ case_prompt_registry_untracked_cleaned() {
   assert_absent "$wt"
 }
 
-# A copy an agent accidentally committed to the base, then appended to again,
-# shows as an unstaged modification; that alone must not retain either.
-case_prompt_registry_tracked_modified_cleaned() {
+# A tracked modification remains task work even when its path is known as
+# legacy telemetry; only untracked telemetry is migrated and discarded.
+case_prompt_registry_tracked_modified_retained() {
   local repo branch wt out
   repo="$(setup_repo prompt-registry-tracked)"
   printf '{"templateName":"old"}\n' > "$repo/prompt-registry.jsonl"
@@ -482,9 +488,10 @@ case_prompt_registry_tracked_modified_cleaned() {
   printf '{"templateName":"new"}\n' >> "$wt/prompt-registry.jsonl"
 
   out="$(run_helper "$repo" "$wt" "$branch")"
-  assert_contains "$out" "rc=0" "prompt-registry-tracked return"
-  branch_exists "$repo" "$branch" && fail "prompt-registry-tracked branch was retained"
-  assert_absent "$wt"
+  assert_contains "$out" "rc=10" "prompt-registry-tracked return"
+  assert_contains "$out" "outcome=retain_dirty" "prompt-registry-tracked outcome"
+  branch_exists "$repo" "$branch" || fail "prompt-registry-tracked branch was deleted"
+  assert_exists "$wt/prompt-registry.jsonl"
 }
 
 # The exclusion is exact: real work next to the registry log still retains.
@@ -698,7 +705,8 @@ case_all_sites_refactored() {
   assert_contains "$helper_matches" "worktree remove" "helper worktree cleanup"
   assert_contains "$helper_matches" "branch \"\$branch_delete_flag\"" "helper branch cleanup"
   assert_contains "$helper_matches" "branch_delete_flag=\"-D\"" "helper force cleanup only after guard"
-  [[ "$helper_matches" != *"--force"* ]] || fail "helper still force-removes worktrees"
+  assert_contains "$helper_matches" "wavemill_discard_mill_owned_untracked \"\$wt_dir\"" "helper mill-owned discard"
+  assert_contains "$helper_matches" "worktree remove \"\$wt_dir\"" "helper preserves real dirt after mill-owned discard"
 }
 
 # Assertion 1 (HOK-3042/HOK-3033 shape): an orphan task directory (no task-local
@@ -1023,7 +1031,7 @@ case_dirty_worktree_retained
 case_observer_artifact_only_cleaned
 case_observer_artifact_plus_user_file_retained
 case_prompt_registry_untracked_cleaned
-case_prompt_registry_tracked_modified_cleaned
+case_prompt_registry_tracked_modified_retained
 case_prompt_registry_plus_user_file_retained
 case_squash_pr_head_deleted
 case_pr_head_mismatch_retained
@@ -1230,9 +1238,108 @@ case_wavemill_audit_plus_user_file_retained() {
   assert_exists "$wt/notes.md"
 }
 
+# HOK-3503/HOK-3475 archive-then-discard: untracked evidence is hidden from
+# the dirty decision, so a terminal reap must archive it through the shared
+# inventory, discard only verified bytes, and then remove the worktree.
+seed_task_evidence() {
+  local wt="$1"
+  mkdir -p "$wt/features/wt"
+  printf '# plan\n' > "$wt/features/wt/plan.md"
+  printf '{"stage":"review","status":"completed"}\n' > "$wt/features/wt/.review-result.json"
+  printf '{}\n' > "$wt/features/wt/.terminal-history.jsonl"
+}
+
+case_terminal_evidence_archived_then_discarded() {
+  local repo branch wt out archive
+  repo="$(setup_repo evidence-archived)"
+  branch="task/evidence-archived"
+  wt="$tmp/evidence-archived/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  seed_task_evidence "$wt"
+
+  out="$(run_helper "$repo" "$wt" "$branch" auto/integration test HOK-9503)"
+  archive="$repo/.wavemill/evals/artifacts/HOK-9503"
+  assert_contains "$out" "rc=0" "evidence-archived return"
+  branch_exists "$repo" "$branch" && fail "evidence-archived branch was retained"
+  assert_absent "$wt"
+  cmp -s <(printf '# plan\n') "$archive/plan.md" || fail "plan.md was not archived before discard"
+  [[ -f "$archive/.review-result.json" && -f "$archive/.terminal-history.jsonl" ]] \
+    || fail "stage evidence was not archived before discard"
+  [[ "$(jq -r '[.artifacts[].name] | index("plan.md") != null' "$archive/.evidence-inventory.json")" == "true" ]] \
+    || fail "evidence inventory does not record plan.md"
+}
+
+case_terminal_evidence_archive_failure_retains() {
+  local repo branch wt out
+  repo="$(setup_repo evidence-archive-fails)"
+  branch="task/evidence-archive-fails"
+  wt="$tmp/evidence-archive-fails/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  seed_task_evidence "$wt"
+  mkdir -p "$wt/.wavemill"
+  printf '{"title":"finding"}\n' > "$wt/.wavemill/observer-findings.jsonl"
+  # The archive root cannot be created, so the capture fails.
+  mkdir -p "$repo/.wavemill/evals"
+  printf 'not a directory\n' > "$repo/.wavemill/evals/artifacts"
+
+  out="$(run_helper "$repo" "$wt" "$branch" auto/integration test HOK-9504 2>/dev/null)"
+  assert_contains "$out" "rc=20" "evidence-archive-fails return"
+  assert_contains "$out" "outcome=operation_failed" "evidence-archive-fails outcome"
+  assert_contains "$out" "Could not archive task evidence" "evidence-archive-fails warning"
+  branch_exists "$repo" "$branch" || fail "evidence-archive-fails branch was deleted"
+  assert_exists "$wt/features/wt/plan.md"
+  assert_exists "$wt/features/wt/.review-result.json"
+  assert_exists "$wt/features/wt/.terminal-history.jsonl"
+  # Nothing is discarded when the archive fails, not even runtime output.
+  assert_exists "$wt/.wavemill/observer-findings.jsonl"
+}
+
+case_live_task_evidence_untouched() {
+  local repo branch wt out
+  repo="$(setup_repo evidence-live)"
+  branch="task/evidence-live"
+  wt="$tmp/evidence-live/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  commit_in_worktree "$wt" "feature.txt" "in-flight work"
+  seed_task_evidence "$wt"
+
+  out="$(run_helper "$repo" "$wt" "$branch" auto/integration test HOK-9505)"
+  assert_contains "$out" "rc=10" "evidence-live return"
+  assert_contains "$out" "outcome=retain_unpublished" "evidence-live outcome"
+  assert_exists "$wt/features/wt/plan.md"
+  assert_exists "$wt/features/wt/.review-result.json"
+  assert_exists "$wt/features/wt/.terminal-history.jsonl"
+  assert_absent "$repo/.wavemill/evals/artifacts/HOK-9505"
+}
+
+# HOK-3503 replay: exercise the recorded terminal-cleanup residue through the
+# real linked-worktree reaper, not merely the generic incident observation loop.
+case_hok3503_task_size_estimate_replay_reaped() {
+  local repo branch wt out fixture row
+  fixture="$REPO_ROOT/tests/fixtures/incident-replay/real/hok3503-task-size-estimates-retain-dirty.json"
+  row="$(jq -r '.initialState.worktreeFiles[".wavemill/task-size-estimates.jsonl"]' "$fixture")"
+  repo="$(setup_repo hok3503-task-size-replay)"
+  branch="task/hok3503-task-size-replay"
+  wt="$tmp/hok3503-task-size-replay/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  mkdir -p "$wt/.wavemill"
+  printf '%s' "$row" > "$wt/.wavemill/task-size-estimates.jsonl"
+
+  out="$(run_helper "$repo" "$wt" "$branch")"
+  assert_contains "$out" "rc=0" "HOK-3503 replay return"
+  branch_exists "$repo" "$branch" && fail "HOK-3503 replay branch was retained"
+  assert_absent "$wt"
+  cmp -s <(printf '%s' "$row") "$repo/.wavemill/task-size-estimates.jsonl" \
+    || fail "HOK-3503 replay telemetry was not migrated to milled repo"
+}
+
 case_tend_rebased_delivered_pr_head_cherry
 case_tend_rebased_pr_head_cherry_only
+case_terminal_evidence_archived_then_discarded
+case_terminal_evidence_archive_failure_retains
+case_live_task_evidence_untouched
 case_wavemill_audit_only_cleaned
 case_wavemill_audit_plus_user_file_retained
+case_hok3503_task_size_estimate_replay_reaped
 
 echo "safe-branch-cleanup test passed"

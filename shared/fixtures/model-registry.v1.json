@@ -584,6 +584,56 @@
       }
     },
     {
+      "id": "gpt-6.1-terra",
+      "capabilities": {
+        "vendor": "openai",
+        "class": "strong_generalist",
+        "strengths": ["balanced professional reasoning", "coding", "tool use"],
+        "weaknesses": ["new routing candidate; evaluation evidence is still accumulating"],
+        "releasedAt": "2026-10-26",
+        "qualityScores": {
+          "routing": 62,
+          "planning": 94,
+          "coding": 91,
+          "review": 93,
+          "classify": 66
+        },
+        "pricing": {
+          "inputCostPerMTok": 1,
+          "outputCostPerMTok": 5,
+          "cacheWriteCostPerMTok": 1.25,
+          "cacheReadCostPerMTok": 0.05
+        },
+        "contextWindowTokens": 1050000,
+        "toolSupport": "full",
+        "multimodal": {
+          "text": true,
+          "image": true
+        },
+        "latencyTier": "standard",
+        "reasoningTier": "advanced",
+        "costPerMillionInputTokensUsd": 1,
+        "costPerMillionOutputTokensUsd": 5,
+        "agent": "codex",
+        "codexChatgptCapability": {
+          "supported": true
+        },
+        "identity": {
+          "status": "verified",
+          "revision": 1,
+          "fingerprint": "ad2fcc9ec1746c427ca4fd6d48bcad5ddbadc6752b7c00f1057963d6add2421a",
+          "displayName": "gpt-6.1-terra",
+          "family": "gpt",
+          "evidencePolicy": "eligible",
+          "lineage": {
+            "predecessors": ["gpt-5.6-terra"],
+            "disclosedAt": "2026-10-26",
+            "disclosureSource": "https://openai.com/index/introducing-gpt-6-1-terra/"
+          }
+        }
+      }
+    },
+    {
       "id": "gpt-6-luna",
       "capabilities": {
         "vendor": "openai",
@@ -3045,6 +3095,7 @@
       "deepseek-v4-flash",
       "claude-sonnet-5",
       "gpt-5.6-terra",
+      "gpt-6.1-terra",
       "deepseek-v4-pro",
       "claude-fable-5",
       "claude-opus-4-8",
@@ -3057,6 +3108,7 @@
       "claude-opus-4-8",
       "claude-opus-4-7",
       "gpt-5.6-terra",
+      "gpt-6.1-terra",
       "deepseek-reasoner",
       "deepseek-v4-pro",
       "claude-sonnet-5",
@@ -3067,6 +3119,7 @@
       "gpt-6-sol",
       "claude-fable-5",
       "gpt-5.6-terra",
+      "gpt-6.1-terra",
       "deepseek-v4-pro",
       "claude-sonnet-5",
       "claude-opus-4-8",
@@ -3083,12 +3136,13 @@
       "claude-opus-4-8",
       "claude-opus-4-7",
       "gpt-5.6-terra",
+      "gpt-6.1-terra",
       "deepseek-v4-pro",
       "claude-sonnet-5",
       "deepseek-reasoner",
       "claude-haiku-4-5-20251001"
     ],
-    "classify": ["claude-haiku-4-5-20251001", "deepseek-v4-flash", "claude-sonnet-5", "gpt-5.6-terra", "claude-fable-5"]
+    "classify": ["claude-haiku-4-5-20251001", "deepseek-v4-flash", "claude-sonnet-5", "gpt-5.6-terra", "gpt-6.1-terra", "claude-fable-5"]
   },
   "openrouterMappings": [
     {

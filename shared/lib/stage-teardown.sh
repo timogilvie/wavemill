@@ -96,25 +96,6 @@ _stage_teardown_mtime_epoch() {
   date +%s
 }
 
-# True (rc 0) when the task-progress primitive shows the agent already
-# settled: its own idle/Stop record landed, the terminal history already
-# carries a settled-idle entry, or its process is confirmed not live.
-_stage_teardown_agent_settled() {
-  local issue="$1" feature_dir="$2" phase="$3" worktree="$4"
-  declare -F task_progress_json >/dev/null 2>&1 || return 0
-  command -v jq >/dev/null 2>&1 || return 0
-
-  local -a progress_args=(--feature-dir "$feature_dir")
-  [[ -n "$phase" ]] && progress_args+=(--phase "$phase")
-  [[ -n "$worktree" ]] && progress_args+=(--worktree "$worktree")
-
-  local progress
-  progress="$(task_progress_json "$issue" "${progress_args[@]}" 2>/dev/null || printf '{}')"
-  printf '%s' "$progress" | jq -e '
-    (.agentIdle == true) or (.terminalIdle == true) or (.agentProcessLive == false)
-  ' >/dev/null 2>&1
-}
-
 stage_agent_teardown() {
   local issue="$1" feature_dir="$2" reason="$3"
   shift 3
@@ -139,7 +120,12 @@ stage_agent_teardown() {
   session="${SESSION:-${WAVEMILL_SESSION:-wavemill}}"
 
   # --- Phase 1: settle ------------------------------------------------------
-  if (( no_settle == 0 )) && ! _stage_teardown_agent_settled "$issue" "$feature_dir" "$phase" "$worktree"; then
+  local disposition settled=0
+  if (( no_settle == 0 )) && [[ -n "$phase" ]] && declare -F stage_agent_disposition >/dev/null 2>&1; then
+    disposition="$(stage_agent_disposition "$issue" "$feature_dir" "$worktree" "" "$phase")"
+    [[ "$(jq -r '.kind // empty' <<<"$disposition" 2>/dev/null)" == "settled" ]] && settled=1
+  fi
+  if (( no_settle == 0 && settled == 0 )); then
     local grace now start
     grace="$(_stage_teardown_grace_seconds)"
     now="$(mill_clock_now)"

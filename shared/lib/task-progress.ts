@@ -735,8 +735,8 @@ export function isWavemillControllerProcess(command: string): boolean {
 // while that child is still running. Invariant 1 (pane/process existence is
 // never progress) still holds: a live descendant never becomes a progress
 // `source` or moves `lastProgressAt`. It only suppresses `stalled` while the
-// agent is idle (see `deriveTaskProgress`), so `coding_stage_owner_lost` stops
-// firing on a healthy agent that is waiting on its own work.
+// agent is idle (see `deriveTaskProgress`), so the stage-agent disposition
+// holds a healthy agent that is waiting on its own work in flight.
 //
 // The rule (HOK-3374, replacing the HOK-3222 command-name classifier): build
 // the agent's process subtree from one `ps` snapshot and count a descendant
@@ -874,8 +874,8 @@ export function deriveAgentBackgroundWork(
 /**
  * Pure: does the pane root process still have a live descendant at all (any
  * command, no lag floor)? This is the original HOK-3101/HOK-2963 fast-death
- * signal (mirrors `mill_pane_has_live_blocking_process` in
- * wavemill-common.sh): a pane whose root process is gone, or whose root
+ * signal (formerly also re-derived by the retired shell probe
+ * `mill_pane_has_live_blocking_process`, HOK-3461): a pane whose root process is gone, or whose root
  * process has zero children, has lost its agent — any deeper descendant
  * necessarily traces through a direct child, so checking direct children is
  * sufficient. `agentProcessLive` is NEVER a progress source (invariant 1);

@@ -37,6 +37,7 @@ await test('auto mode uses degraded haiku-only routing in survival mode', async 
     'claude-opus-4-6': 'exhausted',
     'gpt-5.5': 'exhausted',
     'gpt-5.6-terra': 'exhausted',
+    'gpt-6.1-terra': 'exhausted',
     'gpt-6-luna': 'exhausted',
     ...restoredFrontierQuotaState('exhausted'),
   });
@@ -78,6 +79,7 @@ await test('auto mode excludes opus in constrained mode', async () => {
     'claude-opus-4-6': 'degrading',
     'gpt-5.5': 'degrading',
     'gpt-5.6-terra': 'degrading',
+    'gpt-6.1-terra': 'degrading',
     ...restoredFrontierQuotaState('degrading'),
   });
 
@@ -107,6 +109,7 @@ await test('auto mode emits a constrained router transparency line when quota is
     'claude-opus-4-6': 'degrading',
     'gpt-5.5': 'degrading',
     'gpt-5.6-terra': 'degrading',
+    'gpt-6.1-terra': 'degrading',
     ...restoredFrontierQuotaState('degrading'),
   });
 
@@ -176,6 +179,7 @@ await test('policy routing excludes retired frontier from substitution', async (
     'claude-opus-4-6': 'exhausted',
     'gpt-5.5': 'healthy',
     'gpt-5.6-terra': 'healthy',
+    'gpt-6.1-terra': 'healthy',
     'gpt-6-sol': 'exhausted',
     'gpt-6-luna': 'exhausted',
   });
@@ -212,6 +216,7 @@ await test('policy routing logs class downgrade without same-class metadata', as
     'claude-opus-4-6': 'degrading',
     'gpt-5.5': 'degrading',
     'gpt-5.6-terra': 'degrading',
+    'gpt-6.1-terra': 'degrading',
     ...restoredFrontierQuotaState('degrading'),
   });
 
@@ -280,6 +285,7 @@ await test('auto mode logs frontier substitution without constrained banner when
     'claude-opus-4-6': 'exhausted',
     'gpt-5.5': 'healthy',
     'gpt-5.6-terra': 'healthy',
+    'gpt-6.1-terra': 'healthy',
     'gpt-6-sol': 'exhausted',
     'gpt-6-luna': 'exhausted',
   });
@@ -325,6 +331,7 @@ await test('auto mode excludes retired frontier when anthropic frontier is exhau
     'claude-opus-4-6': 'exhausted',
     'gpt-5.5': 'healthy',
     'gpt-5.6-terra': 'healthy',
+    'gpt-6.1-terra': 'healthy',
     'gpt-6-sol': 'exhausted',
     'gpt-6-luna': 'exhausted',
   });
@@ -356,6 +363,7 @@ await test('tryPolicyResolution pools exclude retired frontier for all three rol
     'claude-opus-4-6': 'exhausted',
     'gpt-5.5': 'healthy',
     'gpt-5.6-terra': 'healthy',
+    'gpt-6.1-terra': 'healthy',
     'gpt-6-sol': 'exhausted',
     'gpt-6-luna': 'exhausted',
   });
@@ -387,6 +395,7 @@ await test('emits supported substitutions without selecting the retired frontier
     'claude-opus-4-6': 'exhausted',
     'gpt-5.5': 'healthy',
     'gpt-5.6-terra': 'healthy',
+    'gpt-6.1-terra': 'healthy',
     'gpt-6-sol': 'exhausted',
     'gpt-6-luna': 'exhausted',
   });
@@ -422,6 +431,7 @@ await test('emits constrained-mode banner when every frontier vendor is degradin
     'claude-opus-4-6': 'degrading',
     'gpt-5.5': 'degrading',
     'gpt-5.6-terra': 'degrading',
+    'gpt-6.1-terra': 'degrading',
     ...restoredFrontierQuotaState('degrading'),
   });
 
@@ -447,6 +457,7 @@ await test('emits survival-mode banner when every frontier vendor is exhausted (
     'claude-opus-4-6': 'exhausted',
     'gpt-5.5': 'exhausted',
     'gpt-5.6-terra': 'exhausted',
+    'gpt-6.1-terra': 'exhausted',
     'gpt-6-luna': 'exhausted',
     ...restoredFrontierQuotaState('exhausted'),
   });

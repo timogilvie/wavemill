@@ -29,6 +29,58 @@ if state_lock_acquire "$lock" 1 0.01 waiter; then echo 'FAIL: legacy lock reclai
 state_lock_reclaim_legacy "$lock"
 state_lock_acquire "$lock" 1 0.01 waiter
 state_lock_release "$lock"
+# HOK-3516: a foreign .reclaim entry travels with the released lock.
+lock_foreign="$TMP/foreign.json.lock"
+state_lock_acquire "$lock_foreign" 1 0.01 foreign-holder
+mkdir "$lock_foreign/.reclaim"
+state_lock_release "$lock_foreign"
+[[ ! -e "$lock_foreign" ]] || { echo 'FAIL: foreign .reclaim survived release at the lock path' >&2; exit 1; }
+# HOK-3516: an ownerless directory stays busy at runtime; only startup removes it.
+lock_dirform="$TMP/dirform.json.lock"
+mkdir "$lock_dirform"
+if state_lock_acquire "$lock_dirform" 1 0.01 waiter; then echo 'FAIL: ownerless directory reclaimed at runtime' >&2; exit 1; fi
+state_lock_reclaim_legacy "$lock_dirform" || { echo 'FAIL: startup did not retire the ownerless directory' >&2; exit 1; }
+# HOK-3516 deterministic replay of the 2026-11-21 incident interleaving
+# (tests/fixtures/incident-replay/real/hok3516-ownerless-lock/): a waiter
+# creates .reclaim between the removal's unlink of owner.json and its final
+# rmdir, then backs off. The lock path must end absent or owned, never an
+# ownerless directory. The shadowed rm models the kernel-level schedule the
+# evidence recorded; the rename-away removal never runs rm on the lock path.
+lock_replay="$TMP/replay.json.lock"
+(
+  rm() {
+    local arg target=''
+    for arg in "$@"; do target="$arg"; done
+    if [[ "$target" == "$lock_replay" ]]; then
+      command rm -f "$lock_replay/owner.json"
+      command mkdir "$lock_replay/.reclaim" 2>/dev/null || true
+      command rmdir "$lock_replay" 2>/dev/null || true
+      command rmdir "$lock_replay/.reclaim" 2>/dev/null || true
+      return 0
+    fi
+    command rm "$@"
+  }
+  state_lock_acquire "$lock_replay" 1 0.01 replay-holder || exit 1
+  state_lock_release "$lock_replay" || true
+  [[ ! -e "$lock_replay" || -e "$lock_replay/owner.json" ]]
+) || { echo 'FAIL: release interleaving stranded an ownerless lock directory' >&2; exit 1; }
+# HOK-3516 stress: concurrent waiters reclaim one dead owner's lock. Exactly
+# one generation wins at a time and the lock path is never ownerless.
+lock_stress="$TMP/stress.json.lock"
+stress_host="$(process_identity_host)"
+for round in 1 2 3; do
+  mkdir -p "$lock_stress"
+  printf '{"pid":99999999,"processStartTime":"gone","host":"%s","acquiredAt":"2026-11-21T05:06:37Z","purpose":"hok3516-dead-owner"}\n' "$stress_host" > "$lock_stress/owner.json"
+  wins="$TMP/wins.$round"; : > "$wins"; stress_pids=()
+  for i in 1 2 3 4; do
+    ( if state_lock_acquire "$lock_stress" 100 0.01 "stress-$i"; then echo w >> "$wins"; state_lock_release "$lock_stress"; fi ) &
+    stress_pids+=($!)
+  done
+  wait "${stress_pids[@]}"
+  [[ ! -e "$lock_stress" || -f "$lock_stress/owner.json" ]] || { echo "FAIL: round $round stranded an ownerless lock directory" >&2; exit 1; }
+  [[ -s "$wins" ]] || { echo "FAIL: round $round no waiter reclaimed the dead owner" >&2; exit 1; }
+  command rm -rf "$lock_stress"
+done
 mkdir -p "$TMP/locks"
 printf '%s\n' 99999999 > "$TMP/locks/tend-test.lock"
 state_lock_reclaim_legacy "$TMP/locks/tend-test.lock" || { echo 'FAIL: dead legacy singleton not reclaimed at startup' >&2; exit 1; }

@@ -498,9 +498,9 @@ describe('native-agent git tools', () => {
     const registry = createToolRegistry(createGitCommitTools('/repo', { tracker }));
     const metadata = registry.list();
 
-    assert.deepEqual(metadata.map((entry) => entry.name), ['git_add', 'git_commit']);
+    assert.deepEqual(metadata.map((entry) => entry.name), ['git_add', 'git_commit', 'discard_owned_path']);
     assert.deepEqual(gitMutationToolPolicyConfig, {
-      pathFieldsByTool: { git_add: ['paths'] },
+      pathFieldsByTool: { git_add: ['paths'], discard_owned_path: ['paths'] },
     });
     for (const entry of metadata) {
       assert.equal(entry.class, 'mutation');

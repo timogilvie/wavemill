@@ -46,6 +46,25 @@ done
 kill -KILL "$lock_writer_pid"
 wait "$lock_writer_pid" 2>/dev/null || true
 journey_assert "killed writer left its owner-stamped lock" test -f "$STATE_FILE.lock/owner.json"
+# HOK-3516: several writers race the monitor to reclaim the dead owner's lock.
+# A sampler watches the lock path throughout; the module's own operations must
+# never leave it as an ownerless directory (the 2026-11-21 incident shape).
+lock_violation="$JOURNEY_TMP/ownerless-lock-violation"
+fakes_spawn bash -c '
+  for _ in $(seq 1 300); do
+    if [[ -d "$1" && ! -e "$1/owner.json" ]]; then
+      sleep 0.2
+      if [[ -d "$1" && ! -e "$1/owner.json" ]]; then ls -la "$1" > "$2" 2>&1; exit 0; fi
+    fi
+    sleep 0.05
+  done' _ "$STATE_FILE.lock" "$lock_violation"
+for waiter in 1 2; do
+  fakes_spawn bash -c '
+    source "$1"
+    for _ in 1 2 3 4 5; do
+      if state_lock_acquire "$2" 200 0.01 "journey-race-$3"; then state_lock_release "$2"; fi
+    done' _ "$JOURNEY_INSTALL_DIR/shared/lib/state-lock.sh" "$STATE_FILE.lock" "$waiter"
+done
 journey_wait_until "$ISSUE" 8  "coding launched"             phase_is coding
 journey_wait_until "$ISSUE" 8  "review launched"             phase_is review
 journey_wait_until "$ISSUE" 15 "PR merged by tend"           journey_pr_merged
@@ -65,6 +84,10 @@ journey_assert "the happy path creates no retired duplicate audit" \
   test ! -e "$REPO_DIR/.wavemill/side-effect-duplicates.jsonl"
 journey_assert "post-merge eval completed without operator attention" \
   test "$JOURNEY_SAW_ATTENTION" = "0"
+# HOK-3516: no reclaim or release interleaving stranded an ownerless directory
+# at the workflow-state lock path while the writers raced.
+journey_assert "no writer stranded an ownerless workflow-state lock" \
+  test ! -e "$lock_violation"
 journey_assert_session_ownership "$ISSUE" planning coding review helper:json-code-review
 # HOK-3474: replay a repo-scoped provider home after reap. Every consumer must
 # recover the same owned coding evidence even though its cwd no longer exists.

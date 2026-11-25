@@ -1,0 +1,14 @@
+{
+  "issue": "HOK-3516",
+  "priorFix": "HOK-3403",
+  "observerFinding": "stale-state-wavemill",
+  "lockPath": ".wavemill/workflow-state.json.lock",
+  "strandedAt": "2026-11-21T05:06:37Z",
+  "capturedAt": "2026-11-24T21:40:00Z",
+  "strandedForm": "empty directory, no owner.json, mode drwx------, birth equal to the state file's last write",
+  "secondOccurrence": { "lockPath": ".wavemill/quota-state.lock", "strandedAt": "2026-11-19T20:23:25Z" },
+  "millLogCounts": { "timedOutAcquiringStateLock": 3462, "updateFreeSlotsFailed": 6924, "trackedJobPollFailed": 6924, "trackedLaunchNotPersisted": 3489 },
+  "heldTasks": ["HOK-3461", "HOK-3503", "HOK-3476"],
+  "interleaving": "unknown: release-vs-inspector or two racing reclaimers; the lock records nothing once owner.json is gone",
+  "expected": { "ownerlessDirectoryAtLockPath": "never" }
+}

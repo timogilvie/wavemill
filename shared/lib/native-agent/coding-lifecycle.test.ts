@@ -24,6 +24,8 @@ import {
   codingMutationPolicyConfig,
   createCodingMutationTools,
 } from './tools/mutation-tools.ts';
+import { createGitCommitTools, gitMutationToolPolicyConfig } from './tools/git.ts';
+import { createIntendedFileTracker, intendedFilesAfterToolCall } from './tools/intended-files.ts';
 import { toPiAgentTool } from './tools/pi-adapter.ts';
 import { createReadOnlyTools, READ_ONLY_PATH_FIELDS } from './tools/read-only.ts';
 import { createToolRegistry } from './tools/registry.ts';
@@ -46,9 +48,11 @@ describe('native-agent coding lifecycle', () => {
     const api = uniqueApi('coding-lifecycle');
     registerScriptedPiProvider({ api, turns: codingLifecycleSessionTurns });
 
+    const tracker = createIntendedFileTracker();
     const registry = createToolRegistry([
       ...createReadOnlyTools(repo),
       ...createCodingMutationTools(repo, { phase: 'coding' }),
+      ...createGitCommitTools(repo, { tracker }),
     ]);
     const events: LoopEvent[] = [];
 
@@ -67,7 +71,10 @@ describe('native-agent coding lifecycle', () => {
       },
       context,
       convertToLlm: (messages) => messages as unknown as Message[],
-      afterToolCall: codingMutationAfterToolCall,
+      afterToolCall: async (toolContext) => {
+        await intendedFilesAfterToolCall(toolContext, tracker);
+        return codingMutationAfterToolCall(toolContext);
+      },
       toolPolicy: {
         phase: 'coding',
         worktreePath: repo,
@@ -76,6 +83,7 @@ describe('native-agent coding lifecycle', () => {
           pathFieldsByTool: {
             ...READ_ONLY_PATH_FIELDS,
             ...codingMutationPolicyConfig.pathFieldsByTool,
+            ...gitMutationToolPolicyConfig.pathFieldsByTool,
           },
         },
       },
