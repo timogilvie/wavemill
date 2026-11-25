@@ -1587,6 +1587,7 @@ wavemill_orphan_dir_scan() {
         case "$(wavemill_mill_owned_disposition "$rel_path" 2>/dev/null || true)" in
           runtime|telemetry) continue ;;
         esac
+        wavemill_mill_owned_orphan_safe "$rel_path" && continue
       fi
     fi
 
