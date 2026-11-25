@@ -85,6 +85,8 @@ helper_file="$tmp/safe-cleanup-helper.sh"
   printf '\n'
   extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_mill_owned_path"
   printf '\n'
+  extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_mill_owned_disposition"
+  printf '\n'
   extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_mill_owned_dirty_line"
   printf '\n'
   extract_function "$(dirname "$COMMON_SCRIPT")/mill-owned-paths.sh" "wavemill_worktree_dirty_status"
