@@ -21,6 +21,16 @@
   ],
   "additionalProperties": false,
   "properties": {
+    "attemptLineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "run_id"],
+      "properties": {
+        "task_id": { "type": "string", "minLength": 1 },
+        "run_id": { "type": "string", "minLength": 1 },
+        "stage_attempt_id": { "type": "string", "minLength": 1 }
+      }
+    },
     "id": {
       "type": "string",
       "description": "Unique identifier for this eval record (UUID v4 recommended)."

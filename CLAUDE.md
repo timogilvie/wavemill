@@ -54,6 +54,7 @@ All business logic lives in `shared/lib/`, reusable across CLI tools, commands a
 - `outcome-collectors.ts` - Collect CI, test, review outcomes
 
 #### Utilities
+- **Attempt lineage (HOK-3476)** — Construct SDK references through the attempt-identity projection. Guard: `tools/check-attempt-lineage.ts`. → [docs/invariants/attempt-lineage.md](docs/invariants/attempt-lineage.md)
 - **Bounded retry (HOK-2924)** — New relaunch paths must use this helper — never implement a private retry counter. Guard: `tools/check-retry-sentinel.ts`. → [docs/invariants/bounded-retry.md](docs/invariants/bounded-retry.md)
 - **Install-health verdict (HOK-3315)** — Never compare lockfile bytes or hand-roll a `.packages` diff outside this file. Guard: `tools/check-install-verdict.ts`. → [docs/invariants/install-health-verdict.md](docs/invariants/install-health-verdict.md)
 - **Failure policy (HOK-3176/HOK-3513)** — Never add a classifier branch that parks; add a fixture to `failure-policy.fixtures.test.ts`. Only `invalidate_ready_verdict` invalidates a passed Ready; never park a conflict. Guard: `tools/check-failure-policy.ts`, `tools/check-ready-failure-policy.ts`. → [docs/invariants/failure-policy.md](docs/invariants/failure-policy.md)

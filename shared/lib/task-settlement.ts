@@ -67,6 +67,7 @@ export const TASK_CONTROL_FIELDS: ReadonlySet<string> = new Set([
   'phase',
   'pr',
   'runId',
+  'sdkRunId',
   'slug',
   'branch',
   'worktree',
@@ -303,8 +304,12 @@ function controlFieldsOf(task: JsonObject): string[] {
  */
 export function isNewRunReplacement(before: unknown, after: unknown): boolean {
   if (!isSettled(before)) return false;
+  if (isSettled(after)) return false;
+  const previousSdkId = isObject(before) && typeof before.sdkRunId === 'string' ? before.sdkRunId : null;
+  const nextSdkId = isObject(after) && typeof after.sdkRunId === 'string' ? after.sdkRunId : null;
+  if (previousSdkId && nextSdkId) return !isSameRunId(previousSdkId, nextSdkId);
   const nextRunId = taskRunId(after);
-  return nextRunId !== null && !isSameRunId(nextRunId, taskRunId(before)) && !isSettled(after);
+  return nextRunId !== null && !isSameRunId(nextRunId, taskRunId(before));
 }
 
 /**

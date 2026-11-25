@@ -2439,7 +2439,7 @@ fi
 $(agent_deepseek_gh_wrapper_snippet "$deepseek_state_dir")
 eval "\$env_block"
 $(agent_claude_isolated_home_seed_snippet)
-$(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "${resolved_model:-$model}")
+$(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "${resolved_model:-$model}" "$issue" "${STATE_FILE:-$repo_dir/.wavemill/workflow-state.json}")
 cat '$instr_file' | claude${effective_model_flag} --session-id "\$WM_SESSION_REF" --dangerously-skip-permissions
 echo "[wavemill] Agent exited (\$?)"
 LAUNCHEOF
@@ -2502,7 +2502,7 @@ export ANTHROPIC_DEFAULT_HAIKU_MODEL='$model'
 export CLAUDE_CODE_SUBAGENT_MODEL='$model'
 export CLAUDE_CODE_EFFORT_LEVEL='${effort_level:-medium}'
 $(agent_claude_isolated_home_seed_snippet)
-$(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "$model")
+$(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "$model" "$issue" "${STATE_FILE:-$repo_dir/.wavemill/workflow-state.json}")
 cat '$instr_file' | claude${model_flag} --session-id "\$WM_SESSION_REF" --dangerously-skip-permissions
 echo "[wavemill] Agent exited (\$?)"
 LAUNCHEOF
@@ -2519,7 +2519,7 @@ export WAVEMILL_ISSUE='$issue'
 export WAVEMILL_DASHBOARD_PID='$dashboard_pid'
 export WAVEMILL_PHASE='$phase_env'
 export WAVEMILL_RESOLVED_MODEL='$model'
-$(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "$model")
+$(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "$model" "$issue" "${STATE_FILE:-$repo_dir/.wavemill/workflow-state.json}")
 cat '$instr_file' | claude${model_flag} --session-id "\$WM_SESSION_REF" --dangerously-skip-permissions
 echo "[wavemill] Agent exited (\$?)"
 LAUNCHEOF
@@ -2542,7 +2542,7 @@ export WAVEMILL_RESOLVED_MODEL='$model'
 if [[ -n '$issue' ]]; then
   printf '%s\n' "working" > "/tmp/${session}-${issue}-status.txt"
 fi
-$(session_ownership_launch_snippet "$feature_dir" codex "$ownership_kind" "$model")
+$(session_ownership_launch_snippet "$feature_dir" codex "$ownership_kind" "$model" "$issue" "${STATE_FILE:-$repo_dir/.wavemill/workflow-state.json}")
 codex exec${model_flag} --dangerously-bypass-approvals-and-sandbox - < <(printf '%s\n' "\$WM_LAUNCH_NONCE_LINE"; cat '$instr_file')
 codex_rc=\$?
 if [[ -n "\${STATUS_LOG_FILE:-}" ]]; then
@@ -2975,7 +2975,7 @@ fi
 $(agent_deepseek_gh_wrapper_snippet "$deepseek_state_dir")
 eval "\$env_block"
 $(agent_claude_isolated_home_seed_snippet)
-$(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "${resolved_model:-$model}")
+$(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "${resolved_model:-$model}" "$issue" "${STATE_FILE:-$repo_dir/.wavemill/workflow-state.json}")
 claude${effective_model_flag}${agent_flags} --session-id "\$WM_SESSION_REF" --dangerously-skip-permissions "\$(cat '$prompt_file')"
       echo "[wavemill] Agent exited (\$?)"
 LAUNCHEOF
@@ -3030,7 +3030,7 @@ export ANTHROPIC_DEFAULT_HAIKU_MODEL='$model'
 export CLAUDE_CODE_SUBAGENT_MODEL='$model'
 export CLAUDE_CODE_EFFORT_LEVEL='${effort_level:-medium}'
 $(agent_claude_isolated_home_seed_snippet)
-$(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "$model")
+$(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "$model" "$issue" "${STATE_FILE:-$repo_dir/.wavemill/workflow-state.json}")
 claude${model_flag}${agent_flags} --session-id "\$WM_SESSION_REF" --dangerously-skip-permissions "\$(cat '$prompt_file')"
 echo "[wavemill] Agent exited (\$?)"
 LAUNCHEOF
@@ -3045,7 +3045,7 @@ export WAVEMILL_RESOLVED_MODEL='$model'
 if [[ -n '$issue' ]]; then
   printf '%s\n' "working" > "/tmp/${session}-${issue}-status.txt"
 fi
-$(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "$model")
+$(session_ownership_launch_snippet "$feature_dir" claude-code "$ownership_kind" "$model" "$issue" "${STATE_FILE:-$repo_dir/.wavemill/workflow-state.json}")
 claude${model_flag}${agent_flags} --session-id "\$WM_SESSION_REF" --dangerously-skip-permissions "\$(cat '$prompt_file')"
 echo "[wavemill] Agent exited (\$?)"
 LAUNCHEOF
@@ -3062,7 +3062,7 @@ export WAVEMILL_RESOLVED_MODEL='$model'
 if [[ -n '$issue' ]]; then
   printf '%s\n' "working" > "/tmp/${session}-${issue}-status.txt"
 fi
-$(session_ownership_launch_snippet "$feature_dir" codex "$ownership_kind" "$model")
+$(session_ownership_launch_snippet "$feature_dir" codex "$ownership_kind" "$model" "$issue" "${STATE_FILE:-$repo_dir/.wavemill/workflow-state.json}")
 codex${model_flag}${agent_flags} --no-alt-screen "\$WM_LAUNCH_NONCE_LINE
 \$(cat '$prompt_file')"
 echo "[wavemill] Agent exited (\$?)"

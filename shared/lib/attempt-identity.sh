@@ -121,3 +121,18 @@ linear_state_for_task() {
       elif $o == "closed" and ($t.status // "") == "completed-external" then "Done"
       else empty end' "$state_file" 2>/dev/null || true
 }
+
+# UUIDv7: 48-bit millisecond timestamp followed by random bits.
+attempt_identity_mint_sdk_run_id() {
+  local ms random hex
+  ms="$(($(date +%s) * 1000))"
+  random="$(od -An -N10 -tx1 /dev/urandom | tr -d ' \n')" || return 1
+  printf -v hex '%012x' "$ms"
+  printf '%s-%s-7%s-%x%s-%s\n' "${hex:0:8}" "${hex:8:4}" "${random:1:3}" "$(( (16#${random:4:1} & 3) | 8 ))" "${random:5:3}" "${random:8:12}"
+}
+attempt_identity_mint_stage_attempt_id() { attempt_identity_mint_sdk_run_id; }
+attempt_identity_project_attempt_ref() {
+  local task_id="${1:-}" run_id="${2:-}" stage_id="${3:-}"
+  [[ -n "$task_id" && -n "$run_id" ]] || return 0
+  jq -cn --arg task "$task_id" --arg run "$run_id" --arg stage "$stage_id" '{task_id:$task,run_id:$run} + (if $stage != "" then {stage_attempt_id:$stage} else {} end)'
+}

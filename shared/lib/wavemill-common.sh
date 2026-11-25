@@ -8296,9 +8296,10 @@ save_task_state() {
   # a settled row (that row's outcome, abort markers and PR stay with the old
   # run), and mints a fresh runId. Every other save keeps the row's runId and
   # still refuses to resurrect a reaped row from its tombstone (HOK-3125).
-  local launch_mode="${SAVE_TASK_STATE_LAUNCH:-0}" new_run_id
+  local launch_mode="${SAVE_TASK_STATE_LAUNCH:-0}" new_run_id new_sdk_run_id=""
   new_run_id="$(attempt_identity_mint_run_id "$issue" "$run_epoch" "$(date +%s)")"
   if [[ "$launch_mode" == "1" ]]; then
+    new_sdk_run_id="$(attempt_identity_mint_sdk_run_id)" || return 1
     if task_last_run_delivered "$issue"; then
       if declare -F log_warn >/dev/null 2>&1; then
         log_warn "save_task_state: refusing to relaunch $issue: its last run delivered (settled merged)"
@@ -8329,6 +8330,7 @@ save_task_state() {
         runId: (if ($existing.runId // "") != "" then $existing.runId else $runId end),
         updated: (now | todate)
       })
+      | if ($existing.sdkRunId // "") == "" and $launch == "1" then .tasks[$issue].sdkRunId = $sdkRunId else . end
       | if $agent != "" then .tasks[$issue].agent = $agent else . end
       | if $challenge != "" then .tasks[$issue].challenge = ($challenge == "true") else . end
       | if $challengePair != "" then .tasks[$issue].challengePairId = $challengePair else . end
@@ -8365,7 +8367,7 @@ save_task_state() {
      --arg requireConfirmSource "$require_confirm_source" \
      --arg mergeMethodSource "$merge_method_source" \
      --arg remoteDeletionAllowed "$remote_deletion_allowed" --arg session "${SESSION:-}" \
-     --arg runEpoch "$run_epoch" --arg runId "$new_run_id" --arg launch "$launch_mode"; then
+     --arg runEpoch "$run_epoch" --arg runId "$new_run_id" --arg sdkRunId "$new_sdk_run_id" --arg launch "$launch_mode"; then
     # log_warn is caller-provided (the mill and monitor define it; the startup
     # runner intentionally surfaces the failure through wavemill_lock_run).
     if declare -F log_warn >/dev/null 2>&1; then
