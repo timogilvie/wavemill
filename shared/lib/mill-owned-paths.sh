@@ -55,6 +55,8 @@ features/*/.*/**||runtime
 .wavemill/quota-state.json||runtime
 .wavemill/quota-state.lock||runtime
 .wavemill/merge-queue-selection.json||runtime
+.wavemill/registry/resources.jsonl||runtime
+.wavemill/observer-dedup/prompt-cache/**||runtime
 .wavemill/cache/**||runtime
 .wavemill/logs/**||runtime
 .wavemill/hokusai/**||runtime

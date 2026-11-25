@@ -211,6 +211,7 @@ test('filter drops only untracked features/<slug> mill artifacts', () => {
 test('filter does NOT drop arbitrary files under .wavemill/ outside declared output', () => {
   const raw = [
     '?? .wavemill/notes.md',
+    '?? .wavemill/registry/resources.jsonl',
     '?? .wavemill/registry/session.jsonl',
   ].join('\n');
   assert.deepEqual(filterWorktreeDirtyStatus(raw), [

@@ -77,6 +77,8 @@ __pycache__/
 .wavemill/quota-state.json
 .wavemill/quota-state.lock
 .wavemill/merge-queue-selection.json
+.wavemill/registry/resources.jsonl
+.wavemill/observer-dedup/prompt-cache/
 .wavemill/cache/
 .wavemill/logs/
 .wavemill/hokusai/
