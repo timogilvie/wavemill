@@ -454,6 +454,7 @@
       "Golden Journey (observer-attention-push)": "bash tests/journeys/run-journeys.sh observer-attention-push",
       "Golden Journey (required-files-review-scope)": "bash tests/journeys/run-journeys.sh required-files-review-scope",
       "Golden Journey (challenger-dirty-handoff-exhaustion)": "bash tests/journeys/run-journeys.sh challenger-dirty-handoff-exhaustion",
+      "Golden Journey (mill-owned-output-reap)": "bash tests/journeys/run-journeys.sh mill-owned-output-reap",
       "Golden Journeys": "bash tests/run-related.sh"
     },
     "postPrReconciliation": {

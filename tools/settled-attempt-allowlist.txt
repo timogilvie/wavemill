@@ -17,7 +17,7 @@ shared/lib/task-residue-archive.ts 1  # pre-HOK-3373 site (task-path-probe×1); 
 shared/lib/terminal-inbox-cleanup.ts 1  # pre-HOK-3373 site (task-path-probe×1); migrate to the resolver
 shared/lib/terminal-reconciler.sh 2  # reconciler-derived Linear move for challenge pairs (sibling-dependent; HOK-2972) + one HEAD probe
 shared/lib/transient-marker.sh 1  # pre-HOK-3373 site (task-path-probe×1); migrate to the resolver
-shared/lib/wavemill-common.sh 18  # pre-HOK-3373 task-path probes (cleanup classifier, lifecycle) ; migrate in batches
+shared/lib/wavemill-common.sh 10  # pre-HOK-3373 task-path probes (cleanup classifier, lifecycle) ; migrate in batches
 shared/lib/wavemill-mill.sh 1  # initial empty state-file creation at mill start (no rows yet)
 shared/lib/wavemill-monitor.sh 97  # pre-HOK-3373 task-path probes and launch/PR-open/merge Linear writes; migrate in batches
 shared/lib/wavemill-startup-runner.sh 4  # initial empty state-file creation + pre-HOK-3373 worktree probes
@@ -28,3 +28,5 @@ tools/resolve-executed-model.ts 2  # pre-HOK-3373 site (task-path-probe×2); mig
 tools/set-issue-state.ts 1  # the CLI behind linear_set_state_checked
 tools/stage-result-cli.ts 2  # pre-HOK-3373 site (task-path-probe×2); migrate to the resolver
 tools/state-invariants.ts 1  # pre-HOK-3373 site (task-path-probe×1); migrate to the resolver
+
+shared/lib/mill-owned-paths.sh 2  # generated dirty checks inspect the task worktree only to discard declared output
