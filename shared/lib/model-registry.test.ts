@@ -288,6 +288,7 @@ describe('model-registry', () => {
       'gpt-5.4',
       'gpt-5.6-sol',
       'gpt-5.6-terra',
+      'gpt-6.1-terra',
       'gpt-5.6-luna',
       'gpt-6-sol',
       'gpt-6-luna',
@@ -477,6 +478,16 @@ describe('model-registry', () => {
     assert.equal(resolveModelSuccessor('gpt-5.5', DEFAULT_MODEL_REGISTRY, { stage: 'coding' }), 'gpt-5.6-terra');
   });
 
+  it('registers gpt-6.1-terra as a Codex model descended from gpt-5.6-terra without retiring gpt-5.6-terra yet', () => {
+    const terra61 = DEFAULT_MODEL_REGISTRY.models['gpt-6.1-terra'];
+    assert.equal(terra61.agent, 'codex');
+    assert.equal(terra61.codexChatgptCapability?.supported, true);
+    assert.deepEqual(terra61.identity?.lineage?.predecessors, ['gpt-5.6-terra']);
+    // gpt-5.6-terra is still launchable until OpenAI retires it, so a route
+    // that names it must not be rewritten to its successor yet.
+    assert.equal(resolveModelSuccessor('gpt-5.6-terra', DEFAULT_MODEL_REGISTRY, { stage: 'coding' }), null);
+  });
+
   describe('registry admission criteria', () => {
     it('accepts the default registry', () => {
       assert.doesNotThrow(() => assertRegistryAdmissionCriteria(DEFAULT_MODEL_REGISTRY));
@@ -617,12 +628,13 @@ describe('model-registry', () => {
       'deepseek-v4-flash',
       'claude-sonnet-5',
       'gpt-5.6-terra',
+      'gpt-6.1-terra',
       'claude-fable-5',
     ]);
   });
 
   it('admits newly-added Claude Opus 5.5 and GPT-6 models for planning, coding, and review', () => {
-    for (const modelId of ['claude-opus-5-5', 'gpt-6-sol', 'gpt-6-luna']) {
+    for (const modelId of ['claude-opus-5-5', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-terra']) {
       const capabilities = DEFAULT_MODEL_REGISTRY.models[modelId];
       assert.ok(capabilities, `${modelId} should exist in the registry`);
       assert.equal(capabilities.toolSupport, 'full');
@@ -757,6 +769,7 @@ describe('model-registry', () => {
       'claude-opus-4-8',
       'claude-opus-4-7',
       'gpt-5.6-terra',
+      'gpt-6.1-terra',
       'deepseek-v4-pro',
       'deepseek-reasoner',
       'claude-haiku-4-5-20251001',
@@ -775,7 +788,7 @@ describe('model-registry', () => {
   it('rankCandidates returns an empty ladder when every candidate is excluded', () => {
     assert.deepEqual(
       rankCandidates(DEFAULT_MODEL_REGISTRY, 'classify', {
-        excluded: ['claude-haiku-4-5-20251001', 'deepseek-v4-flash', 'claude-sonnet-5', 'gpt-5.5', 'gpt-5.6-terra', 'claude-fable-5'],
+        excluded: ['claude-haiku-4-5-20251001', 'deepseek-v4-flash', 'claude-sonnet-5', 'gpt-5.5', 'gpt-5.6-terra', 'gpt-6.1-terra', 'claude-fable-5'],
       }),
       []
     );
@@ -787,6 +800,7 @@ describe('model-registry', () => {
       'gpt-6-sol',
       'claude-fable-5',
       'gpt-5.6-terra',
+      'gpt-6.1-terra',
       'deepseek-v4-pro',
       'claude-sonnet-5',
       'claude-opus-4-8',
