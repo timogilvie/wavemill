@@ -36,6 +36,7 @@ CONTROL_SOCKET_ALIAS="$TMP_ROOT/controller-real/server.sock"
 PRIVATE_SOCKET="$TMP_ROOT/private/server.sock"
 
 run_guard() {
+  env -u TMUX \
   PATH="$GUARD_DIR:$PATH" \
   FAKE_LOG="$FAKE_LOG" \
   WAVEMILL_REAL_TMUX="$FAKE_TMUX" \
