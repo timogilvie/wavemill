@@ -1,7 +1,7 @@
 /** The sole inventory of paths written by Wavemill inside a task worktree. */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { TASK_EVIDENCE_NAMES } from './task-artifact-lookup.ts';
+import { isOrphanSafeTaskEvidence, TASK_EVIDENCE_NAMES } from './task-artifact-lookup.ts';
 
 export type MillOwnedDisposition = 'evidence' | 'telemetry' | 'runtime';
 export interface MillOwnedPath { pattern: string; disposition: MillOwnedDisposition; destination?: string; gitignore?: boolean; orphanSafe?: boolean }
@@ -12,7 +12,7 @@ export const MILL_OWNED_PATHS: readonly MillOwnedPath[] = [
   // wins first so its telemetry destination remains explicit.
   { pattern: '.wavemill/evals/**', disposition: 'runtime', gitignore: true },
   { pattern: '.wavemill/audits/**', disposition: 'runtime', gitignore: true },
-  ...TASK_EVIDENCE_NAMES.map(pattern => ({ pattern: `features/*/${pattern}`, disposition: 'evidence' as const, orphanSafe: pattern === '.terminal-history.jsonl' || pattern === '.review-result.json' })), { pattern: 'features/*/.*-result.attempt-*.json', disposition: 'evidence' }, { pattern: 'features/*/.*', disposition: 'runtime' },
+  ...TASK_EVIDENCE_NAMES.map(pattern => ({ pattern: `features/*/${pattern}`, disposition: 'evidence' as const, orphanSafe: isOrphanSafeTaskEvidence(pattern) })), { pattern: 'features/*/.*-result.attempt-*.json', disposition: 'evidence' }, { pattern: 'features/*/.*', disposition: 'runtime' },
   ...['.needs-attention','.ready-bypass-warned','.coding-complete','.workflow-aborted','.coding-blocked-completion.json','.condition-reconcile.jsonl','.ready-waiting-on.json','.challenge-intent.json','challenge-intent.json','selected-task.json','.phase-config.json','.coding-uncommitted-output*','.coding-recovery-instruction.md','.blocked-completion-announced','.retry-coding-dirty-handoff-*','.plan-approved','.stale-artifacts/**','ready-checked-head','.*/**'].map(pattern => ({ pattern: `features/*/${pattern}`, disposition: 'runtime' as const })),
   { pattern: '.claude/settings.local.json', disposition: 'runtime' }, { pattern: '.wavemill-config.local.json', disposition: 'runtime' },
   ...['.wavemill/workflow-state.json','.wavemill/native-status.json','.wavemill/quota-state.json','.wavemill/quota-state.lock','.wavemill/merge-queue-selection.json','.wavemill/registry/resources.jsonl','.wavemill/observer-dedup/prompt-cache/**','.wavemill/cache/**','.wavemill/logs/**','.wavemill/hokusai/**','.wavemill/state/**','.wavemill/locks/**','.wavemill/runs/**','.wavemill/session-events/**','.wavemill/artifacts/**','.wavemill/tool-decisions/**','.wavemill/merge-retry/**','.wavemill/runtime-env/**','.wavemill/linear-retry-drain.last-run','.wavemill/workflow-state.json.bak-*','.wavemill/ledger.sqlite*'].map(pattern => ({ pattern, disposition: 'runtime' as const, gitignore: true })),
