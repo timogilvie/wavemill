@@ -18,7 +18,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { filterMillOwnedDirtyStatus } from './mill-owned-paths.ts';
+import { filterMillOwnedDirtyStatus, millOwnedEntry } from './mill-owned-paths.ts';
 
 export type WorktreeDirtyState = 'clean' | 'dirty' | 'unreadable' | 'absent';
 
@@ -126,21 +126,13 @@ export function readWorktreeStatusEntries(worktree: string, git: GitRunner = def
 }
 
 /**
- * TypeScript twin of `wavemill_owned_dirty_path` (wavemill-monitor.sh): the
- * Wavemill-owned generated/runtime paths a coding handoff never has to commit.
- * Keep the two in step until HOK-3503's single mill-output list replaces both.
+ * The generated/runtime paths declared in the one mill-owned inventory that a
+ * coding handoff never has to commit. Scope feature artifacts to this task so
+ * one arm cannot hide another arm's changes.
  */
 export function isWavemillOwnedDirtyPath(path: string, slug: string): boolean {
-  if (path === '.claude/settings.local.json') return true;
-  if (path.startsWith('.wavemill/')) return true;
-  if (path === '.wavemill-config.local.json') return true;
-  if (path === 'prompt-registry.jsonl') return true;
   const prefix = `features/${slug}/`;
-  if (!slug || !path.startsWith(prefix)) return false;
-  const rest = path.slice(prefix.length);
-  if (rest.startsWith('.')) return true;
-  return rest === 'plan.md' || /^task-packet.*\.md$/.test(rest) || rest === 'challenge-intent.json'
-    || rest === 'selected-task.json' || rest === 'trace.jsonl' || rest === 'routing.jsonl';
+  return !!millOwnedEntry(path) && (!path.startsWith('features/') || (!!slug && path.startsWith(prefix)));
 }
 
 export type TaskDirtyPaths =

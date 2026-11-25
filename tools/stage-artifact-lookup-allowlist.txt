@@ -31,5 +31,3 @@ tools/observer.ts 3  # observer live-only stage-result inspection
 tools/launch-native-review.ts 1  # review stage-result writer
 tools/hok2415-verify-native-planning.ts 1  # verification tool for native planning stage-result
 tools/review-gate-remediation-cli.ts 2  # CLI tool that reads review-result.json directly for classification; legitimate direct access (HOK-2890)
-
-shared/lib/mill-owned-paths.sh 1  # generated declaration of evidence artifact names; no reads or writes

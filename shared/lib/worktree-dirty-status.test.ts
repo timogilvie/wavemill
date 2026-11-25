@@ -251,11 +251,12 @@ test.describe('readTaskDirtyPaths', () => {
       writeFileSync(join(repo, 'features/demo/notes.md'), 'task output\n');
       mkdirSync(join(repo, '.wavemill'), { recursive: true });
       writeFileSync(join(repo, '.wavemill/native-status.json'), '{}\n');
+      writeFileSync(join(repo, '.wavemill/unlisted-output.json'), '{}\n');
       const result = readTaskDirtyPaths({ worktree: repo, slug: 'demo' });
       assert.deepEqual(result, {
         state: 'readable',
         // A rename reports its destination, as the monitor's coding_output_dirty_paths does.
-        paths: ['features/demo/notes.md', 'new name.ts', 'shared/lib/scratch.txt'],
+        paths: ['.wavemill/unlisted-output.json', 'features/demo/notes.md', 'new name.ts', 'shared/lib/scratch.txt'],
       });
     } finally { rmSync(repo, { recursive: true, force: true }); }
   });
@@ -272,6 +273,7 @@ test.describe('readTaskDirtyPaths', () => {
     assert.equal(isWavemillOwnedDirtyPath('features/other/.coding-complete', 'demo'), false);
     assert.equal(isWavemillOwnedDirtyPath('features/demo/task-packet-details.md', 'demo'), true);
     assert.equal(isWavemillOwnedDirtyPath('.claude/settings.local.json', 'demo'), true);
+    assert.equal(isWavemillOwnedDirtyPath('.wavemill/unlisted-output.json', 'demo'), false);
     assert.equal(isWavemillOwnedDirtyPath('scratch.txt', 'demo'), false);
   });
 });
