@@ -8,9 +8,9 @@ import { millOwnedEntry } from '../shared/lib/mill-owned-paths.ts';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Returns each statically knowable .wavemill output passed to a filesystem writer. */
-function millOutputWrites(source: string): StructuralMatch[] {
+function millOutputWrites(source: string, file: string): StructuralMatch[] {
   const findings: StructuralMatch[] = [];
-  const call = /(?:writeFileSync|appendFileSync|mkdirSync|writeFile|appendFile|mkdir)\s*\(([\s\S]{0,600}?)\)/g;
+  const call = /(?:writeFileSync|appendFileSync|createWriteStream|mkdirSync|writeFile|appendFile|mkdir)\s*\(([\s\S]{0,600}?)\)/g;
   for (const match of source.matchAll(call)) {
     const strings = [...match[1].matchAll(/['\"]([^'\"]+)['\"]/g)].map((part) => part[1]);
     const start = strings.findIndex((part) => part === '.wavemill' || part.startsWith('.wavemill/'));
@@ -22,6 +22,14 @@ function millOutputWrites(source: string): StructuralMatch[] {
     if (millOwnedEntry(output)) continue;
     const offset = match.index ?? 0;
     findings.push({ line: source.slice(0, offset).split('\n').length, detail: output });
+  }
+  // Shell writers with a literal .wavemill subpath (dynamic subpaths cannot
+  // be resolved statically and are left to the runtime ownership matcher).
+  for (const match of (file.endsWith('.sh') ? source : '').matchAll(/(?:>{1,2}\s*|\btee\s+|\bmkdir\s+-p\s+)[^\n;|]*?\/.wavemill\/([A-Za-z0-9_.\/-]+)/g)) {
+    const lineStart = source.lastIndexOf('\n', match.index - 1) + 1;
+    if (source.slice(lineStart, match.index).trimStart().startsWith('#')) continue;
+    const output = `.wavemill/${match[1]}`;
+    if (!millOwnedEntry(output)) findings.push({ line: source.slice(0, match.index).split('\n').length, detail: output });
   }
   return findings;
 }

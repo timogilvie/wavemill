@@ -76,7 +76,6 @@ __pycache__/
 .wavemill/native-status.json
 .wavemill/quota-state.json
 .wavemill/quota-state.lock
-.wavemill/project-context.md
 .wavemill/merge-queue-selection.json
 .wavemill/cache/
 .wavemill/logs/

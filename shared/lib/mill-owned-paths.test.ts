@@ -12,6 +12,7 @@ test('declares telemetry, evidence and runtime paths and leaves task context vis
   assert.equal(millOwnedEntry('features/task/.review-result.json')?.disposition, 'evidence');
   assert.equal(millOwnedEntry('.wavemill/audits/report.json')?.disposition, 'runtime');
   assert.equal(millOwnedEntry('.wavemill/context/task-notes.md'), undefined);
+  assert.equal(millOwnedEntry('.wavemill/project-context.md'), undefined);
   assert.equal(millOwnedEntry('.wavemill/unknown.json'), undefined);
   // Nested mill state under a feature dot-directory (the challenge fork snapshot)
   // stays owned, so an active arm's coding completion is not read as dirty.

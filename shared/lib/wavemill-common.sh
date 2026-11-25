@@ -1556,7 +1556,7 @@ wavemill_task_worktree_identity() {
 }
 
 # Scan an orphan task directory for files unexpected in wavemill-created resources.
-# Only exact, disposable terminal markers are allowed. In particular, a task
+# Only declared disposable output is allowed. In particular, a task
 # packet or other file under features/ is recoverable work, not cleanup debris.
 # Returns 1 if unexpected files found; prints the offending paths (max 20) and total count to stdout.
 #
@@ -1584,8 +1584,8 @@ wavemill_orphan_dir_scan() {
           features|features/*|.wavemill) continue ;;
         esac
       elif [[ -f "$file" ]]; then
-        case "$rel_path" in
-          features/*/.needs-attention|features/*/.terminal-history.jsonl|features/*/.ready-bypass-warned|features/*/.operator-events.jsonl|features/*/.condition-reconcile.jsonl|features/*/.ready-waiting-on.json|.wavemill/observer-findings.jsonl) continue ;;
+        case "$(wavemill_mill_owned_disposition "$rel_path" 2>/dev/null || true)" in
+          runtime|telemetry) continue ;;
         esac
       fi
     fi
