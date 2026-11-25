@@ -9,6 +9,8 @@ export const STATE_LOCK_GUARD: GuardSpec = {
     { name: 'private-directory-lock-ts', description: 'use state-lock instead of a lock directory', lang: 'ts', re: /\bmkdirSync\(\s*(?!dirname\(|path\.dirname\()[^\n]*(?:\.lock|lockPath|lock_path|lock_dir)/i },
     { name: 'private-directory-lock-sh', description: 'use state-lock instead of a lock directory', lang: 'sh', re: /\bmkdir\s+(?:-p\s+)?[^\n]*(?:\.lock|lock_path|lock_dir)/i },
     { name: 'private-flock', description: 'use state-lock instead of flock for state writes', lang: 'sh', re: /\bflock\s+(?:-[A-Za-z]+\s+)?(?:\d+|['"]?\$)/ },
+    { name: 'private-lock-removal-ts', description: 'remove a lock path only through the state-lock rename-away helper (HOK-3516)', lang: 'ts', re: /\brmSync\([^\n]*(?:\.lock\b|lockPath|lock_path|lockDir|lock_dir)[^\n]*\brecursive\b|\brmdirSync\([^\n]*(?:\.lock\b|lockPath|lock_path|lockDir|lock_dir)/i },
+    { name: 'private-lock-removal-sh', description: 'remove a lock path only through the state-lock rename-away helper (HOK-3516)', lang: 'sh', re: /\brm\s+-[A-Za-z]*r[A-Za-z]*\s+[^\n]*(?:\.lock\b|lock_path|lock_dir)|\brmdir\s+[^\n]*(?:\.lock\b|lock_path|lock_dir)/i },
     { name: 'private-shell-pid-liveness', description: 'use process-identity instead of PID-only lock-owner liveness', lang: 'sh', re: /\bkill\s+-0\s+/ },
     { name: 'private-node-pid-liveness', description: 'use process-identity instead of PID-only lock-owner liveness', lang: 'ts', re: /\bprocess\.kill\([^,]+,\s*0\)/ },
   ],
