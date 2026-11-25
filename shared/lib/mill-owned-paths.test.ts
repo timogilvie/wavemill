@@ -48,12 +48,16 @@ test('generated Bash matcher agrees with the TypeScript corpus', () => {
       '.wavemill/evals/prompt-registry.jsonl', '.wavemill/evals/other.jsonl', '.wavemill/ledger.sqlite-wal', '.wavemill/cache/a/b', '.wavemill/context/task.md', '.wavemill/unknown',
       'features/a/.coding-complete', 'features/a/.review-result.json', 'features/a/plan.md', 'features/a/subdir/.env', 'features/a/subdir/plan.md', 'features/a/file.txt',
       'prompt-registry.jsonl', '.claude/settings.local.json', '.wavemill-config.local.json', 'src/app.ts', 'features/a/.stale-artifacts/x', 'features/a/.retry-coding-dirty-handoff-1',
-      'features/a/.fork-snapshot/JRN-5_c/plan.md', 'features/a/sub/.hidden/notes.md', 'features/a/sub/.stale-artifacts/x', '?? features/a/.fork-snapshot/JRN-5_c/.plan-approved',
+      'features/a/.fork-snapshot/JRN-5_c/plan.md', 'features/a/sub/.hidden/notes.md', 'features/a/sub/.stale-artifacts/x', 'src/foo/plan.md', '?? features/a/.fork-snapshot/JRN-5_c/.plan-approved',
       'M  .wavemill/task-size-estimates.jsonl', ' M .wavemill/task-size-estimates.jsonl', '?? .wavemill/task-size-estimates.jsonl', '!! .wavemill/evals/prompt-registry.jsonl',
       '?? ./ .wavemill/task-size-estimates.jsonl', 'R  old.ts -> .wavemill/task-size-estimates.jsonl', '?? src/quoted name.ts', '?? features/a/subdir/.env', '?? features/a/.coding-complete',
     ];
     const shell = `source ${JSON.stringify(shellFile)}; for value in "$@"; do if [[ "$value" == *'  '* || "$value" == '?? '* || "$value" == '!! '* ]]; then wavemill_mill_owned_dirty_line "$value" && echo 1 || echo 0; else wavemill_mill_owned_path "$value" && echo 1 || echo 0; fi; done`;
-    const result = execFileSync('bash', ['-c', shell, 'bash', ...cases], { encoding: 'utf8' }).trim().split('\n');
+    mkdirSync(join(tmp, 'features/a'), { recursive: true });
+    mkdirSync(join(tmp, '.wavemill/evals'), { recursive: true });
+    writeFileSync(join(tmp, 'features/a/plan.md'), 'pattern-expansion fixture\n');
+    writeFileSync(join(tmp, '.wavemill/evals/output.jsonl'), 'pattern-expansion fixture\n');
+    const result = execFileSync('bash', ['-c', shell, 'bash', ...cases], { cwd: tmp, encoding: 'utf8' }).trim().split('\n');
     const expected = cases.map(value => (value.startsWith('?? ') || value.startsWith('!! ') || value.startsWith('M  '))
       ? Number((value.startsWith('?? ') || value.startsWith('!! ')) && !!millOwnedEntry(value.slice(3)))
       : Number(!!millOwnedEntry(value))).map(String);
