@@ -291,6 +291,7 @@ await test('policy routing can return DeepSeek when explicitly configured', () =
       'gpt-5-mini': 'exhausted',
       'gpt-5.5': 'exhausted',
       'gpt-5.6-terra': 'exhausted',
+      'gpt-6.1-terra': 'exhausted',
       'gpt-6-sol': 'exhausted',
       'gpt-6-luna': 'exhausted',
       'deepseek-r1': 'exhausted',
