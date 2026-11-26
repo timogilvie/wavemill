@@ -94,7 +94,6 @@ All business logic lives in `shared/lib/`, reusable across CLI tools, commands a
 - **Inputs before approval (HOK-3253)** — Never write planning `awaiting_user` without passing this gate. Guard: journey only. → [docs/invariants/inputs-before-approval.md](docs/invariants/inputs-before-approval.md)
 - **Native loop budget** — Native coding uses the shared loop budget; whole tool batches, invalid calls included, are admitted before dispatch. Production launches supply the task spend limit (`resolveTaskSpendRemainder`, HOK-3492). Guard: `tools/check-stage-exit-identity.ts`. → [docs/invariants/native-loop-budget.md](docs/invariants/native-loop-budget.md)
 - **Native harness deadlines (HOK-3382)** — No private harness-time deadline on a native stage. Guard: `tools/check-native-harness-deadlines.ts`. → [docs/invariants/native-harness-deadlines.md](docs/invariants/native-harness-deadlines.md)
-- `prompt-utils.ts` - Prompt template filling
 - **Output reservation (HOK-3448)** — `AdapterLimits.reservedOutputTokens` is preflight context space, not the invocation cap `AdapterInvokeOptions.maxOutputTokens`. Guard: `tools/check-output-reservation.ts`. → [docs/invariants/output-reservation.md](docs/invariants/output-reservation.md)
 - **Model input (HOK-3493)** — Never call `gh pr diff` outside `fetchPrDiff` or add a prompt byte cap; changes enter prompts through `buildBudgetedChangeInput`. Guard: `tools/check-model-input.ts`. → [docs/invariants/model-input.md](docs/invariants/model-input.md)
 - **Review result (HOK-3448)** — `claude-cli-output.ts` is the only interpreter of Claude CLI stdout; `review-engine.ts` never decides review completion from text shape. Guard: `tools/check-review-report-boundary.ts`. → [docs/invariants/review-result.md](docs/invariants/review-result.md)
@@ -102,13 +101,7 @@ All business logic lives in `shared/lib/`, reusable across CLI tools, commands a
 - **Completion gate (HOK-3514)** — Write `.coding-complete` only via the gate; the intended-file tracker decides dirty paths. Guard: `tools/check-completion-gate.ts`. → [docs/invariants/completion-gate.md](docs/invariants/completion-gate.md)
 - **NativePatch (HOK-3500)** — Schema validates; never hand-parse. Guard: `tools/check-native-patch-fields.ts`. → [docs/invariants/native-patch-fields.md](docs/invariants/native-patch-fields.md)
 - **Model transport (HOK-3460)** — Model CLI transport stays in `shared/lib/model-adapters/`. Guard: `tools/check-model-transport.ts`. → [docs/invariants/model-transport.md](docs/invariants/model-transport.md)
-- `llm-cli.ts` - `callLLM` policy (candidate ladder, retry/backoff, quota state, fallback events); transport runs through `model-adapters/`
-- `string-utils.ts` - String manipulation
-- `shell-utils.ts` - Safe shell command execution
-- `linear.js` - Linear API client
-- `config.ts` - Centralized config loading
-- `model-registry.ts` - Canonical model capability registry with task-specific fallback ladders
-- `resource-registry.ts` / `resource-manifest.ts` - Runtime resource tracking and per-run attribution
+- Supporting utilities include prompt, CLI, string, shell, Linear, config, model-registry, and resource modules.
 
 ### Refactoring Pattern
 
