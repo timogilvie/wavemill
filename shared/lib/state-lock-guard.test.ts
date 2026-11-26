@@ -14,3 +14,17 @@ test('state-lock guard catches private cross-runtime lock forms', () => {
   assert.deepEqual(names('tools/private.ts', 'process.kill(pid, 0);'), ['private-node-pid-liveness']);
   assert.deepEqual(names('tools/private.ts', 'mkdirSync(dirname(lockPath));'), []);
 });
+
+test('state-lock guard catches direct lock-path removal outside the rename-away helper (HOK-3516)', () => {
+  assert.deepEqual(names('tools/private.ts', 'rmSync(lockPath, { recursive: true, force: true });'), ['private-lock-removal-ts']);
+  // allow-template-curly: the ${...} is a literal guard-test sample line
+  assert.deepEqual(names('tools/private.ts', "rmSync(`${statePath}.lock`, { recursive: true });"), ['private-lock-removal-ts']);
+  assert.deepEqual(names('tools/private.ts', 'rmdirSync(lockPath);'), ['private-lock-removal-ts']);
+  assert.deepEqual(names('tools/private.sh', 'rm -rf "$lock_path" 2>/dev/null || true'), ['private-lock-removal-sh']);
+  assert.deepEqual(names('tools/private.sh', 'rm -r "$state.lock"'), ['private-lock-removal-sh']);
+  assert.deepEqual(names('tools/private.sh', 'rmdir "$lock_path"'), ['private-lock-removal-sh']);
+  // Single-step unlinks of a lock file and unrelated removals stay allowed.
+  assert.deepEqual(names('tools/private.ts', 'rmSync(lockPath, { force: true });'), []);
+  assert.deepEqual(names('tools/private.sh', 'rm -f "$lock_path/owner.json"'), []);
+  assert.deepEqual(names('tools/private.sh', 'rm -rf "$temp"'), []);
+});

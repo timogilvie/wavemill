@@ -72,6 +72,7 @@ export const STAGE_ARTIFACT_LOOKUP_GUARD: GuardSpec = {
     'shared/lib/stage-result.ts',
     'shared/lib/evals-paths.ts',
     'shared/lib/wavemill-common.sh',
+    'shared/lib/mill-owned-paths.sh',
     'shared/lib/stage-artifact-lookup-guard.ts',
     'tools/migrate-archived-stage-artifacts.ts', // install-paths: allow repo-relative invariant source path, not an argv
   ],

@@ -61,7 +61,7 @@ extract_function() {
   ' "$1"
 }
 FUNC_FILE="$TEST_TMP/monitor-functions.sh"
-for fn in read_stage_status conflict_remediation_marker_path ready_remediation_disposition; do
+for fn in read_stage_status conflict_remediation_marker_path stage_agent_disposition ready_remediation_disposition; do
   extract_function "$MONITOR_SCRIPT_FILE" "$fn" >> "$FUNC_FILE"
 done
 # shellcheck source=/dev/null
@@ -178,7 +178,7 @@ replay_case "live sibling: a working remediation agent still holds the head" \
   working PreToolUse "in-flight agent-working" RRD-3316L
 
 echo ""
-echo "=== Fail-safe and hot-pass pre-filters ==="
+echo "=== Fail-safe and canonical disposition ==="
 
 # protects: a broken probe relaunching work — the wrapper holds this tick instead.
 dir="$TEST_TMP/failsafe"
@@ -189,19 +189,23 @@ check_eq "a failed CLI spawn holds (in-flight progress-unavailable)" \
   "$(_with_timeout() { return 1; }; ready_remediation_disposition "RRD-FS" "$state" "$wt" "$head")" \
   "in-flight progress-unavailable"
 
-# protects: the monitor hot pass spawning tsx for every Ready task.
+# protects: the monitor wrapper's inactive answers coming from the canonical
+# disposition rather than a private Ready pre-filter.
 : > "$TEST_TMP/spawns"
-wavemill_run_tool() { printf 'spawn\n' >> "$TEST_TMP/spawns"; }
+wavemill_run_tool() {
+  printf 'spawn\n' >> "$TEST_TMP/spawns"
+  npx tsx "$REPO_DIR/tools/$1" "${@:2}"
+}
 dir="$TEST_TMP/prefilter"
 read -r wt state head < <(new_task "$dir" "RRD-PF")
 write_ready_result "$state" running '{"type":"ready","verdict":"pending"}'
-check_eq "running Ready with nothing launched is inactive without a spawn" \
+check_eq "running Ready with nothing launched is inactive from the disposition" \
   "$(ready_remediation_disposition "RRD-PF" "$state" "$wt" "$head")" "inactive no-launch"
 write_ready_result "$state" completed '{"type":"ready","verdict":"pass"}'
 bounded_retry_increment "$state" "ready-remediation" "$head" >/dev/null
-check_eq "completed Ready is inactive without a spawn" \
+check_eq "completed Ready is inactive from the disposition" \
   "$(ready_remediation_disposition "RRD-PF" "$state" "$wt" "$head")" "inactive not-running"
-check_eq "pre-filtered calls spawn nothing" "$(wc -l < "$TEST_TMP/spawns" | tr -d ' ')" "0"
+check_eq "inactive answers use the canonical disposition" "$(wc -l < "$TEST_TMP/spawns" | tr -d ' ')" "2"
 
 echo ""
 echo "--- Results: $PASS passed, $FAIL failed ---"

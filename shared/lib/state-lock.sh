@@ -17,6 +17,27 @@ state_lock_owner_reclaimable() {
   [[ "$host" == "$this_host" && "$pid" =~ ^[0-9]+$ && -n "$start" ]] && ! process_identity_alive "$pid" "$start"
 }
 
+# HOK-3516: the only way a lock path stops existing. A direct rm -rf is two
+# filesystem steps, and a concurrent waiter's mkdir .reclaim between them
+# strands an ownerless directory that is never reclaimable at runtime. The
+# rename detaches the lock path atomically; whatever a waiter put inside
+# leaves with it. A failed rename never falls back to removing the lock path.
+_state_lock_remove() {
+  local lock_path="$1" detached_parent
+  # A fresh private parent guarantees the rename target never exists, so the
+  # rename cannot replace an existing path (POSIX permits replacing an empty
+  # directory, which would silently discard another claimant's lock).
+  detached_parent="$(mktemp -d "${lock_path}.rm.XXXXXX")" || return 1
+  if perl -e 'rename $ARGV[0], $ARGV[1] or exit 1' "$lock_path" "$detached_parent/lock"; then
+    # Mutual exclusion was released by the rename; cleanup is best effort.
+    rm -rf "$detached_parent" 2>/dev/null || true
+    return 0
+  fi
+  rm -rf "$detached_parent" 2>/dev/null || true
+  # ENOENT means another remover already won; anything else is a failure.
+  [[ ! -e "$lock_path" ]]
+}
+
 _state_lock_claim() {
   local lock_path="$1" purpose="$2" temp owner pid start host
   [[ ! -e "$lock_path" ]] || return 1
@@ -40,7 +61,7 @@ state_lock_acquire() {
       if state_lock_owner_reclaimable "$owner" "$host" && mkdir "$lock_path/.reclaim" 2>/dev/null; then
         current="$(cat "$lock_path/owner.json" 2>/dev/null || true)"
         if [[ "$current" == "$owner" ]] && state_lock_owner_reclaimable "$current" "$host"; then
-          rm -rf "$lock_path" 2>/dev/null || true
+          _state_lock_remove "$lock_path" || rmdir "$lock_path/.reclaim" 2>/dev/null || true
           continue
         fi
         rmdir "$lock_path/.reclaim" 2>/dev/null || true
@@ -58,18 +79,18 @@ state_lock_release() {
   self_start="$(process_identity_start_time "$self_pid")"
   owner="$(cat "$lock_path/owner.json" 2>/dev/null || true)"; pid="$(jq -r '.pid // empty' <<<"$owner" 2>/dev/null)"; start="$(jq -r '.processStartTime // empty' <<<"$owner" 2>/dev/null)"
   [[ "$pid" == "$self_pid" && "$start" == "$self_start" ]] || return 0
-  rm -rf "$lock_path"
+  _state_lock_remove "$lock_path"
 }
 
 state_lock_reclaim_legacy() {
   local lock_path="$1" legacy_pid
   [[ -e "$lock_path" ]] || return 1
-  if [[ -f "$lock_path" && ! -s "$lock_path" ]] || [[ -d "$lock_path" && ! -e "$lock_path/owner.json" ]]; then rm -rf "$lock_path"; return 0; fi
+  if [[ -f "$lock_path" && ! -s "$lock_path" ]] || [[ -d "$lock_path" && ! -e "$lock_path/owner.json" ]]; then _state_lock_remove "$lock_path"; return 0; fi
   # The previous service-singleton format was a file containing only a PID.
   # At startup, retire it only when that PID is demonstrably absent.
   if [[ "$lock_path" == */locks/*.lock && -f "$lock_path" ]]; then
     legacy_pid="$(cat "$lock_path" 2>/dev/null || true)"
-    if process_identity_pid_gone "$legacy_pid"; then rm -f "$lock_path"; return 0; fi
+    if process_identity_pid_gone "$legacy_pid"; then _state_lock_remove "$lock_path"; return 0; fi
   fi
   return 1
 }

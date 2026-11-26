@@ -13,7 +13,7 @@ import {
   type ReadyTaskSnapshot,
 } from './ready-watchdog.ts';
 import { buildWorkflowState } from '../../tests/lib/task-builder.ts';
-import type { ReadyRemediationDisposition } from './ready-remediation-disposition.ts';
+import type { ReadyRemediationDisposition } from './stage-agent-disposition.ts';
 import { createStateDirRetry } from './bounded-retry.ts';
 import { appendOwnershipRow } from './session-ownership.ts';
 import type { TaskProgress } from './task-progress.ts';

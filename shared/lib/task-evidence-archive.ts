@@ -112,6 +112,14 @@ export function archiveTaskEvidence(input: ArchiveTaskEvidenceInput, logger: Pic
   return inventory;
 }
 
+/** HOK-3503 archive-then-discard: one `<sha256> <name>` line per artifact the
+ * archive verified, with `name` relative to the feature directory. A worktree
+ * evidence file may be discarded only while its current bytes match a line,
+ * so anything written after the capture, or never captured, is retained. */
+export function evidenceReleaseList(manifest: TaskEvidenceManifest): string {
+  return manifest.artifacts.map(artifact => `${artifact.sha256} ${artifact.name}\n`).join('');
+}
+
 /** Preserve a late notifier's result as history, then use the shared inventory
  * and owned-session capture. Current stage results remain current. */
 export function archiveLateStageEvidence(input: ArchiveTaskEvidenceInput & { runId: string; result: StageResult }): TaskEvidenceManifest {

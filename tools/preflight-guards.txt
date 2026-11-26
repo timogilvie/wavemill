@@ -1,4 +1,5 @@
 # Preflight guards, one tool path per line. `npm run test:preflight`
+tools/check-mill-owned-paths.ts
 # (tools/run-preflight.ts) runs every guard listed here, in any order and
 # concurrently, and reports all failures. A guard must only read the tree.
 # To add a guard, add its line; nothing else lists them.
