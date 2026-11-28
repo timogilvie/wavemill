@@ -281,7 +281,10 @@ export async function drain(opts: DrainRetryQueueOptions = {}): Promise<DrainRet
       });
       const unavailable = staleDetails.filter((detail) => detail.reason === 'state_order_unavailable');
       const stale = staleDetails.filter((detail) => detail.reason !== 'state_order_unavailable');
-      if (stale.length > 0 && unavailable.length === 0) {
+      // A batch is all-or-nothing: once any issue has passed the target, a
+      // replay would regress that issue.  Keep any unavailable ordering in
+      // the audit details, but never let it keep the stale write retryable.
+      if (stale.length > 0) {
         appendRecord(repoDir, {
           schemaVersion: SCHEMA_VERSION,
           recordType: 'dropped',
@@ -290,7 +293,7 @@ export async function drain(opts: DrainRetryQueueOptions = {}): Promise<DrainRet
           issueIds: [...record.issueIds],
           targetState: record.targetState,
           reason: 'stale_state',
-          details: stale,
+          details: staleDetails,
         });
         result.dropped += 1;
         log.error(`Linear retry queue dropped ${record.id}: stale state (${stale.map((detail) => `${detail.issueId}=${detail.observedState}:${detail.reason}`).join(', ')})`);

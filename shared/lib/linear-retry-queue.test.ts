@@ -17,6 +17,7 @@ import {
 } from './linear-retry-queue.ts';
 
 const queuePath = (repoDir: string) => join(repoDir, '.wavemill', 'registry', 'linear-retry-queue.jsonl');
+const hok3520FixturePath = join(import.meta.dirname, '..', '..', 'tests', 'fixtures', 'incident-replay', 'real', 'hok3520-linear-retry-stale-state.json');
 
 function readJsonl(path: string): unknown[] {
   return readFileSync(path, 'utf-8')
@@ -160,17 +161,15 @@ test('drain appends a tombstone after a successful retry', async () => {
 
 test('incident replay drops an old In Progress batch when every issue is Done', async () => {
   const repoDir = makeRepoDir();
-  writeRecords(repoDir, [{
-    schemaVersion: '1.0', recordType: 'pending', id: 'hok-3520-incident',
-    enqueuedAt: '2026-11-09T16:24:15Z',
-    issueIds: ['HOK-3426', 'HOK-3448', 'HOK-3455'], targetState: 'In Progress', attempts: 1,
-    nextRetryAt: '2026-11-09T16:25:15Z', lastError: failure(),
-  }]);
+  const fixture = JSON.parse(readFileSync(hok3520FixturePath, 'utf-8')) as {
+    retryQueue: { pending: Record<string, unknown>; observedState: { name: string; position: number; type: string; completedAt: string } };
+  };
+  writeRecords(repoDir, [fixture.retryQueue.pending]);
   let writes = 0;
   const result = await drain({
     repoDir,
     now: new Date('2026-11-10T17:20:00Z'),
-    getIssueReplayStateImpl: async (id) => replayState(id, 'Done', 2, 'completed', '2026-11-09T17:00:00Z'),
+    getIssueReplayStateImpl: async (id) => replayState(id, fixture.retryQueue.observedState.name, fixture.retryQueue.observedState.position, fixture.retryQueue.observedState.type, fixture.retryQueue.observedState.completedAt),
     setIssuesStateImpl: async () => { writes += 1; return { updated: [], failed: [] }; },
   });
   const records = readJsonl(queuePath(repoDir)) as Array<Record<string, unknown>>;
@@ -221,6 +220,29 @@ test('drain drops canceled and later custom states without partially writing a b
   assert.equal(writes, 0);
   const dropped = readJsonl(queuePath(repoDir)).at(-1) as { details: Array<{ issueId: string; reason: string }> };
   assert.deepEqual(dropped.details.map((detail) => detail.reason).sort(), ['current_state_later_than_target', 'issue_canceled']);
+});
+
+test('a stale issue drops a batch even when another issue cannot be ordered', async () => {
+  const repoDir = makeRepoDir();
+  writeRecords(repoDir, [{
+    schemaVersion: '1.0', recordType: 'pending', id: 'retry-stale-with-unavailable',
+    enqueuedAt: '2026-05-12T12:00:00Z', issueIds: ['HOK-13', 'HOK-14'], targetState: 'In Progress', attempts: 1,
+    nextRetryAt: '2026-05-12T12:00:10Z', lastError: failure(),
+  }]);
+  let writes = 0;
+  const result = await drain({
+    repoDir,
+    now: new Date('2026-05-12T12:01:00Z'),
+    getIssueReplayStateImpl: async (id) => id === 'HOK-13'
+      ? replayState(id, 'Done', 2, 'completed', '2026-05-12T12:00:00Z')
+      : { ...replayState(id), teamStates: [] },
+    setIssuesStateImpl: async () => { writes += 1; return { updated: [], failed: [] }; },
+  });
+  const dropped = readJsonl(queuePath(repoDir)).at(-1) as { recordType: string; details: Array<{ issueId: string; reason: string }> };
+  assert.equal(result.dropped, 1);
+  assert.equal(writes, 0);
+  assert.equal(dropped.recordType, 'dropped');
+  assert.deepEqual(dropped.details.map((detail) => detail.reason).sort(), ['issue_completed', 'state_order_unavailable']);
 });
 
 test('preflight transport failure retries without calling the writer', async () => {
