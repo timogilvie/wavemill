@@ -43,7 +43,7 @@ export const RETRY_SENTINEL_GUARD: GuardSpec = {
       name: 'private-count-file',
       description: 'private `-count` counter file — use the bounded-retry helper with a stage-failure bucket',
       lang: 'both',
-      re: /(?:\/tmp\/wavemill-[^\s'"`]*-count\b|\$[A-Za-z_][A-Za-z0-9_]*\/\.(?!retry-)(?!push-retry-count)[a-z0-9][a-z0-9_-]*-count(?:\.json)?\b)/,
+      re: /(?:\/tmp\/wavemill-[^\s'"`]*-count\b|\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)\/\.(?!retry-)(?!push-retry-count)[a-z0-9][a-z0-9_-]*-count(?:\.json)?\b)/,
     },
     {
       name: 'retry-state-file',
