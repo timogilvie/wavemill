@@ -409,6 +409,22 @@ describe('challenger intent resolution', () => {
     }
   });
 
+  it('proves the challenger from its worktree when its slug is absent', () => {
+    const repoDir = makeRepo(challengerWithoutStateIntent());
+    try {
+      writeArmIntent(repoDir, 'c', { pairId: 'PAIR-1', createdAt: INTENT_AT, selectedStage: 'review' });
+      editState(repoDir, (tasks) => {
+        delete tasks['PAIR-1_c'].slug;
+        tasks['PAIR-1_c'].worktree = join(repoDir, 'worktrees', 'c');
+      });
+      const assessment = assess(repoDir, 'PAIR-1');
+      assert.equal(assessment.intentProven, true);
+      assert.equal(assessment.arms[1].intentSource, 'feature-dir');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
   it('ignores a fallback intent that names a different pair', () => {
     const repoDir = makeRepo(challengerWithoutStateIntent());
     try {

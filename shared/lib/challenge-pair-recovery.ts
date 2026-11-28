@@ -114,7 +114,7 @@ export type ArmIntentSource = 'task-state' | 'primary-challenge-arm' | 'feature-
 /** The task-record fields recovery reads. */
 type ArmTask = Pick<
   TaskRecord,
-  'slug' | 'linearIssueId' | 'challengePairId' | 'challengeRole' | 'pr' | 'challengeExecutionIntent' | 'challengeArms'
+  'slug' | 'worktree' | 'linearIssueId' | 'challengePairId' | 'challengeRole' | 'pr' | 'challengeExecutionIntent' | 'challengeArms'
 >;
 
 function defaultResolvePrIdentity(pr: string, repoDir: string): { url: string; headSha: string } {
@@ -180,12 +180,15 @@ function resolveArmIntent(
   }
   // The challenge-intent files have no live-vs-archived rename rule yet; probe
   // every live feature dir the arm might have executed in (HOK-2891).
-  const slug = task?.slug;
-  if (slug) {
-    const resolved = resolveChallengeIntent({ repoDir, issueId, challengePairId: pairId, slug });
-    if (resolved?.source === 'feature-dir' && belongsToPair(resolved.intent as ExecutionIntent)) {
-      return { intent: resolved.intent as ExecutionIntent, source: 'feature-dir' };
-    }
+  const resolved = resolveChallengeIntent({
+    repoDir,
+    issueId,
+    challengePairId: pairId,
+    slug: task?.slug,
+    worktreePath: task?.worktree,
+  });
+  if (resolved?.source === 'feature-dir' && belongsToPair(resolved.intent as ExecutionIntent)) {
+    return { intent: resolved.intent as ExecutionIntent, source: 'feature-dir' };
   }
   return {};
 }
