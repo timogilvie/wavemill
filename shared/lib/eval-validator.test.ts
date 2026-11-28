@@ -81,6 +81,13 @@ afterEach(() => {
 });
 
 describe('eval-validator', () => {
+  it('accepts legacy and SDK lineage records', () => {
+    const context = { file: 'evals.jsonl', line: 1 };
+    const legacy = makeRecord();
+    const lineage = makeRecord({ attemptLineage: { task_id: 'HOK-1', run_id: '018f0000-0000-7000-8000-000000000001', stage_attempt_id: '018f0000-0000-7000-8000-000000000002' } });
+    assert.deepEqual(validateEvalRecord(legacy, context), []);
+    assert.deepEqual(validateEvalRecord(lineage, context), []);
+  });
   it('reports an all-valid file with no issues', async () => {
     const filePath = writeJsonlFile([
       JSON.stringify(makeRecord({ id: 'eval-1' })),

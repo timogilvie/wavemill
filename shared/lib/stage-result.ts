@@ -31,12 +31,14 @@ export type { ReadyRemediationDecision } from './native-agent/workflow-tools/rea
 import type { ReviewExecutedIdentitySet } from './challenge-execution-contract.ts';
 import type { MergeQueueState } from './merge-queue.ts';
 export type { ReviewExecutedIdentitySet, ExecutedIdentity, ExecutedIdentityRole } from './challenge-execution-contract.ts';
+import type { TaskAttemptRef } from './sdk-task-cost/contract.ts';
 import { isSameRunId, runIdStartedAt } from './attempt-identity.ts';
 import { challengeModelIdsEquivalent } from './challenge-comparison.ts';
 import { acquireStateLockSync, releaseStateLock } from './state-lock.ts';
 import { readWorkflowState } from './workflow-state.ts';
 import { resolveBranchTask } from './pr-task-resolver.ts';
 import { archiveLateStageEvidence } from './task-evidence-archive.ts';
+import { readLatestStageLaunch } from './session-ownership.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -524,6 +526,7 @@ export type StageArtifacts = (
 export interface StageResult {
   /** Task run captured at launch, when available. Never reassigned on completion. */
   runId?: string | null;
+  attemptRef?: TaskAttemptRef;
   stage: StageName;
   status: StageStatus;
   startedAt: string;
@@ -569,7 +572,7 @@ export interface StageResult {
 
 export type StageResultHistoryEntry = Pick<
   StageResult,
-  'runId' | 'status' | 'agent' | 'model' | 'intendedModel' | 'executedModel' | 'startedAt' | 'finishedAt' | 'notes'
+  'runId' | 'attemptRef' | 'status' | 'agent' | 'model' | 'intendedModel' | 'executedModel' | 'startedAt' | 'finishedAt' | 'notes'
 > & {
   error?: string;
   failureReason?: string | null;
@@ -1188,10 +1191,21 @@ export async function writeStageResult(
   result: StageResult,
 ): Promise<void> {
   await fs.mkdir(featureDir, { recursive: true });
-  if (result.runId === undefined && result.status !== 'running' && result.startedAt) {
+  if (result.status !== 'running') {
     const launched = await readStageResult({ featureDir, stage: result.stage });
-    // A different launch may already own the path. Never relabel late bytes.
-    if (launched?.runId && launched.startedAt === result.startedAt) result = { ...result, runId: launched.runId };
+    // A completion explicitly naming an older stage must not replace the current one.
+    if (launched?.attemptRef && result.attemptRef
+        && (launched.attemptRef.run_id !== result.attemptRef.run_id
+          || launched.attemptRef.stage_attempt_id !== result.attemptRef.stage_attempt_id
+          || launched.attemptRef.task_id !== result.attemptRef.task_id)) return;
+    // Typed lineage wins; timestamps remain only for legacy unstamped writes.
+    const sameAttempt = launched?.attemptRef?.stage_attempt_id && result.attemptRef?.stage_attempt_id
+      && launched.attemptRef.run_id === result.attemptRef.run_id
+      && launched.attemptRef.stage_attempt_id === result.attemptRef.stage_attempt_id
+      && launched.attemptRef.task_id === result.attemptRef.task_id;
+    if (launched && (sameAttempt || (!result.attemptRef && result.startedAt && launched.startedAt === result.startedAt))) {
+      result = { ...result, runId: result.runId ?? launched.runId, attemptRef: launched.attemptRef ?? result.attemptRef };
+    }
   }
 
   const validation = validateSeamArtifactValue('stage-result', result);
@@ -1221,12 +1235,30 @@ export async function writeStageResult(
  * @param stage - Stage name to update
  * @param patch - Partial StageResult fields to merge
  */
+/** Bind a running result only to the launch that still owns the stage. */
+export async function bindStageAttempt(featureDir: string, stage: StageName, attemptRef: TaskAttemptRef): Promise<boolean> {
+  if (stage === 'ready') return false;
+  const launch = readLatestStageLaunch(featureDir, stage);
+  const existing = await readStageResult({ featureDir, stage });
+  if (!existing || existing.status !== 'running' || existing.attemptRef
+      || launch?.attemptRef?.stage_attempt_id !== attemptRef.stage_attempt_id
+      || launch?.attemptRef?.run_id !== attemptRef.run_id
+      || launch?.attemptRef?.task_id !== attemptRef.task_id) return false;
+  await updateStageResult(featureDir, stage, { attemptRef });
+  return true;
+}
+
 export async function updateStageResult(
   featureDir: string,
   stage: StageName,
   patch: Partial<StageResult>,
 ): Promise<void> {
   const existing = await readStageResult({ featureDir, stage });
+  // Once bound, updates cannot replace the identity of this attempt.
+  if (existing?.attemptRef && patch.attemptRef
+      && (existing.attemptRef.run_id !== patch.attemptRef.run_id
+        || existing.attemptRef.stage_attempt_id !== patch.attemptRef.stage_attempt_id
+        || existing.attemptRef.task_id !== patch.attemptRef.task_id)) return;
 
   const merged: StageResult = {
     stage,
@@ -1257,6 +1289,7 @@ export async function writeStageResultWithHistory(
     ? [{
       status: existing.status,
       runId: existing.runId,
+      attemptRef: existing.attemptRef,
       agent: existing.agent,
       model: existing.model,
       startedAt: existing.startedAt,
@@ -1333,10 +1366,14 @@ export async function withStageResultRunFence(input: {
     const state = readWorkflowState(stateFile);
     const resolved = state && resolveBranchTask(input.branchName, state, {site:'stage-result.publish-run'});
     const location = resolved?.location;
+    const staleSdkRun = input.result.attemptRef?.run_id && location?.task.sdkRunId
+      && input.result.attemptRef.run_id !== location.task.sdkRunId;
+    const staleLegacyRun = input.result.runId && location?.task.runId
+      && !isSameRunId(input.result.runId, location.task.runId);
     if (location && path.resolve(location.featureDir) === path.resolve(input.featureDir)
-        && input.result.runId && location.task.runId && !isSameRunId(input.result.runId,location.task.runId)) {
+        && (staleSdkRun || staleLegacyRun)) {
       archiveLateStageEvidence({issueId:location.taskId,slug:location.slug,repoDir:input.repoDir,
-        worktreeDir:location.worktree,runId:input.result.runId,result:input.result});
+        worktreeDir:location.worktree,runId:input.result.runId ?? input.result.attemptRef!.run_id,result:input.result});
       return;
     }
     await publish();

@@ -36,6 +36,9 @@
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { mintStageAttemptId, projectTaskAttemptRef } from './attempt-identity.ts';
+import { validateTaskAttemptRef, type TaskAttemptRef } from './sdk-task-cost/contract.ts';
+import { readWorkflowState } from './workflow-state.ts';
 import type { ExecutionEconomicsStageRole } from './eval-schema.ts';
 
 /** File name, identical live and in the archive. */
@@ -75,6 +78,7 @@ const HELPER_KIND_RE = /^helper:[a-z0-9][a-z0-9._-]{0,63}$/;
 
 export interface SessionOwnershipRow {
   /** Exact session id, or `pending:<nonce>` until a Codex thread id resolves. */
+  attemptRef?: TaskAttemptRef;
   sessionRef: string;
   harness: SessionHarness;
   kind: OwnershipKind;
@@ -104,6 +108,7 @@ interface ResolutionLine {
 }
 
 export interface AppendOwnershipRowInput {
+  attemptRef?: TaskAttemptRef;
   sessionRef: string;
   harness: SessionHarness;
   kind: OwnershipKind;
@@ -113,6 +118,7 @@ export interface AppendOwnershipRowInput {
   attemptId?: string;
   launchedAt?: string | Date;
   cwd?: string;
+  taskIdentity?: { taskId: string; sdkRunId?: string | null };
   /** Worktree HEAD used for the default attempt id. */
   head?: string | null;
 }
@@ -279,7 +285,11 @@ export function appendOwnershipRow(stateDir: string, input: AppendOwnershipRowIn
   const launchedAt = input.launchedAt instanceof Date
     ? input.launchedAt
     : input.launchedAt ? new Date(input.launchedAt) : new Date();
+  const attemptRef = input.attemptRef ?? (input.taskIdentity?.sdkRunId
+    ? projectTaskAttemptRef({ ...input.taskIdentity, stageAttemptId: mintStageAttemptId() }) : null);
+  if (attemptRef) validateTaskAttemptRef(attemptRef);
   const row: SessionOwnershipRow = {
+    ...(attemptRef ? { attemptRef } : {}),
     sessionRef: input.sessionRef.trim(),
     harness: input.harness,
     kind: input.kind,
@@ -346,12 +356,17 @@ export interface OwnershipReadResult {
 
 function parseLaunch(value: Record<string, unknown>): SessionOwnershipRow | null {
   const { sessionRef, harness, kind, stage, model, launchedAt, attemptId, cwd } = value;
+  let attemptRef: TaskAttemptRef | undefined;
+  if (value.attemptRef !== undefined) {
+    try { validateTaskAttemptRef(value.attemptRef); attemptRef = value.attemptRef; } catch { return null; }
+  }
   if (typeof sessionRef !== 'string' || sessionRef === '') return null;
   if (!SESSION_HARNESSES.includes(harness as SessionHarness)) return null;
   if (!isOwnershipKind(kind)) return null;
   if (typeof launchedAt !== 'string' || !Number.isFinite(Date.parse(launchedAt))) return null;
   const validStage = (OWNERSHIP_STAGES as readonly unknown[]).includes(stage) ? stage as OwnershipStage : undefined;
   return {
+    ...(attemptRef ? { attemptRef } : {}),
     sessionRef,
     harness: harness as SessionHarness,
     kind,
@@ -630,4 +645,10 @@ export function ownedSessionWindows(
     windows.push({ sessionRef: row.sessionRef, kind: row.kind, harness: row.harness, fromMs, toMs });
   }
   return windows;
+}
+
+/** Resolve the active task row for a launch; legacy or unavailable state has no lineage. */
+export function launchTaskIdentity(repoDir: string, taskId: string): { taskId: string; sdkRunId?: string } {
+  const statePath = process.env.STATE_FILE || join(repoDir, '.wavemill', 'workflow-state.json');
+  return { taskId, sdkRunId: readWorkflowState(statePath)?.tasks?.[taskId]?.sdkRunId };
 }

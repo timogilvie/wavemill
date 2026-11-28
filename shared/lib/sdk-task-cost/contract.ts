@@ -8,6 +8,8 @@
  */
 
 export {
+  TASK_ATTEMPT_SCHEMA_VERSION,
+  validateTaskAttemptRef,
   aggregateTaskCost,
   isTaskCostSummaryV1,
   validateTaskCostEventV1,
@@ -28,6 +30,8 @@ export {
 } from '@hokusai/core';
 
 export type {
+  TaskAttemptRef,
+  TaskAttemptLogEntryV1,
   TaskCostBasis,
   TaskCostCoverage,
   TaskCostDiagnosticCode,

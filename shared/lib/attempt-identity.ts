@@ -18,6 +18,8 @@
  * @module attempt-identity
  */
 
+import { validateTaskAttemptRef } from './sdk-task-cost/contract.ts';
+
 /** Inputs of {@link mintRunId}. */
 export interface MintRunIdArgs {
   /** The `.tasks` key (challenger keys included). */
@@ -58,4 +60,28 @@ export function runIdStartedAt(runId: string | null | undefined): number | null 
   if (!runIdIssue(runId)) return null;
   const seconds = Number(runId!.split(':').at(-1));
   return Number.isSafeInteger(seconds) && seconds >= 0 ? seconds * 1000 : null;
+}
+
+/** Mint a time-ordered RFC 9562 UUIDv7 without a dependency. */
+export function mintSdkRunId(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  let time = Date.now();
+  for (let i = 5; i >= 0; i--) { bytes[i] = time % 256; time = Math.floor(time / 256); }
+  bytes[6] = (bytes[6] & 0x0f) | 0x70;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+export const mintStageAttemptId = mintSdkRunId;
+
+export function taskSdkRunId(task: { sdkRunId?: string | null } | null | undefined): string | null {
+  return task?.sdkRunId || null;
+}
+
+export function projectTaskAttemptRef(args: { taskId: string; sdkRunId?: string | null; stageAttemptId?: string }): import('./sdk-task-cost/contract.ts').TaskAttemptRef | null {
+  if (!args.sdkRunId) return null;
+  const ref = { task_id: args.taskId, run_id: args.sdkRunId, ...(args.stageAttemptId ? { stage_attempt_id: args.stageAttemptId } : {}) };
+  validateTaskAttemptRef(ref);
+  return ref;
 }
