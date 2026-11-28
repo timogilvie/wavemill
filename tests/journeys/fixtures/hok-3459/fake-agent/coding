@@ -1,3 +1,5 @@
+# Fixture provenance: hand-authored HOK-3459 golden-journey adapter for this
+# bounded-retry consolidation; it is not a production-incident replay.
 # HOK-3459: emit an unrecognized agent error on the first coding launch. The
 # monitor must persist the ordinary failed result and use stage-failure-coding.
 if [[ ! -f "$FEATURE_DIR/hok-3459-error-injected" ]]; then

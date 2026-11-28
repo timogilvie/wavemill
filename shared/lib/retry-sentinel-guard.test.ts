@@ -34,6 +34,7 @@ describe('retry-sentinel guard — forbidden shapes', () => {
 
   it('flags legacy retry files and generic count files', () => {
     assert.deepEqual(patternsOf('a.sh', 'retry_file="/tmp/wavemill-$session-$issue.retry"\n'), ['legacy-private-retry-file']);
+    assert.deepEqual(patternsOf('a.sh', 'count_file="/tmp/wavemill-456-count"\n'), ['private-count-file']);
     assert.deepEqual(patternsOf('a.sh', 'count_file="$state_dir/.transient-mergeability-count"\n'), ['private-count-file']);
   });
 });
