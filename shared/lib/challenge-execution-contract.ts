@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import type { ChallengeStage } from './challenge-mode.ts';
 import { challengeModelIdsEquivalent } from './challenge-comparison.ts';
@@ -7,6 +7,7 @@ import type { EvalRecord, EvalRouting } from './eval-schema.ts';
 import { resolveEffectiveChallengeRole } from './challenge-role-utils.ts';
 import { challengerTaskKey } from './task-identity.ts';
 import { readWorkflowState, type TaskRecord } from './workflow-state.ts';
+import { resolveTaskArtifactDirs } from './task-artifact-lookup.ts';
 
 export type ChallengeValidity = 'valid' | 'invalid_challenge' | 'identical_control';
 export const INVALID_CHALLENGE_REASONS = [
@@ -1227,6 +1228,68 @@ export function loadChallengeIntentFromFeatureDir(featureDir: string): Challenge
     }
   }
   return undefined;
+}
+
+export interface ResolvedChallengeIntent {
+  intent: ChallengeExecutionIntent;
+  source: 'workflow-state' | 'feature-dir' | 'archive';
+  featureDir?: string;
+}
+
+/** Resolve the durable intent for one pair, tolerating stale branch slugs. */
+export function resolveChallengeIntent(input: {
+  repoDir: string;
+  issueId?: string;
+  challengePairId?: string;
+  worktreePath?: string;
+  slug?: string;
+}): ResolvedChallengeIntent | undefined {
+  const pairId = clean(input.challengePairId);
+  if (!pairId) return undefined;
+  const belongsToPair = (value: unknown): value is ChallengeExecutionIntent =>
+    Boolean(value && typeof value === 'object' && (value as ChallengeExecutionIntent).pairId === pairId);
+  const stateIntent = loadChallengeIntentFromState(input.repoDir, input.issueId, pairId);
+
+  const dirs = resolveTaskArtifactDirs({
+    issueId: input.issueId ?? pairId,
+    slug: input.slug,
+    worktreeDir: input.worktreePath,
+    repoDir: input.repoDir,
+  });
+  const candidates = [...dirs.liveFeatureDirs, ...(dirs.archiveDir ? [dirs.archiveDir] : [])];
+  // The caller's worktree is authoritative even when branch metadata is stale.
+  if (input.worktreePath) {
+    for (const parent of ['features', 'bugs']) {
+      const root = path.join(input.worktreePath, parent);
+      try {
+        for (const entry of readdirSync(root, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          const name = entry.name;
+          const candidate = path.join(root, name);
+          if (!candidates.includes(candidate)) candidates.push(candidate);
+        }
+      } catch { /* absent artifact root */ }
+    }
+  }
+  let fileResolution: ResolvedChallengeIntent | undefined;
+  for (const dir of candidates) {
+    for (const name of ['challenge-intent.json', '.challenge-intent.json']) {
+      const file = path.join(dir, name);
+      if (!existsSync(file)) continue;
+      try {
+        const intent: unknown = JSON.parse(readFileSync(file, 'utf8'));
+        if (belongsToPair(intent)) {
+          fileResolution = { intent, source: dirs.archiveDir === dir ? 'archive' : 'feature-dir', featureDir: dir };
+          break;
+        }
+      } catch { /* malformed candidates do not mask a later valid intent */ }
+    }
+    if (fileResolution) break;
+  }
+  if (belongsToPair(stateIntent)) {
+    return { intent: stateIntent, source: 'workflow-state', ...(fileResolution?.featureDir ? { featureDir: fileResolution.featureDir } : {}) };
+  }
+  return fileResolution;
 }
 
 export interface ChallengedStageIntent {

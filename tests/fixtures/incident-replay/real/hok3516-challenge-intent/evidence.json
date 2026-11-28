@@ -1,0 +1,30 @@
+{
+  "incident": "HOK-3516",
+  "sourceEval": {
+    "id": "2636f3ae-f21b-4c4a-b31f-6a739c4a7ff9",
+    "issueId": "HOK-3516",
+    "challengePairId": "HOK-3516",
+    "challengeSide": "primary",
+    "challengeDivergenceReason": "missing_challenge_intent",
+    "invalidChallenge": true,
+    "challengeIntent": null,
+    "modelId": "claude-fable-5",
+    "prUrl": "https://github.com/timogilvie/wavemill/pull/1909",
+    "evaluatedPrHeadSha": "4a889366ca3dcdea04de9b800ec9c22775d9d40f",
+    "nonRewardReason": {
+      "code": "INVALID_CHALLENGE",
+      "message": "Invalid challenge: no persisted intent for pair HOK-3516; cannot attest which stage was varied."
+    }
+  },
+  "observedArtifacts": {
+    "pairId": "HOK-3516",
+    "primaryIntentFile": ".challenge-intent.json",
+    "challengerIntentFile": "challenge-intent.json",
+    "primaryRoute": {
+      "challengeStage": "review",
+      "coderModel": "claude-fable-5",
+      "reviewerModel": "gpt-6-luna"
+    },
+    "branchMetadata": "stale-or-absent"
+  }
+}

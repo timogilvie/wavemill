@@ -166,6 +166,21 @@ comparison_winner() {
   [[ -f "$file" ]] || return 0
   jq -r 'select((.winner // "") != "") | .winner' "$file" 2>/dev/null | tail -1
 }
+both_eval_intents_recorded() {
+  local file="$STATE_DIR/evals/evals.jsonl"
+  [[ -f "$file" ]] || return 1
+  jq -se --arg pair "$ISSUE" '
+    [.[] | select(.challengePairId == $pair and .challengeIntent.pairId == $pair) | .challengeSide]
+    | unique | length == 2
+  ' "$file" >/dev/null 2>&1
+}
+no_missing_intent_rejection() {
+  local file="$STATE_DIR/evals/evals.jsonl"
+  [[ -f "$file" ]] || return 1
+  ! jq -se --arg pair "$ISSUE" '
+    any(.[]; .challengePairId == $pair and .challengeDivergenceReason == "missing_challenge_intent")
+  ' "$file" >/dev/null 2>&1
+}
 WINNER_PR=""
 winner_merged() { pair_tick; [[ -n "$WINNER_PR" && "$(pr_state "$WINNER_PR")" == "MERGED" ]]; }
 # Winner reaped (row and worktree gone), loser retired (terminal closed row),
@@ -228,6 +243,8 @@ journey_assert "the pair was rolled as a challenge (role recorded on both arms)"
   test "$(grep -c "phase=coding issue=" "$FAKE_AGENT_LOG")" -ge 2
 journey_assert "both arms were evaluated before the comparison" \
   bash -c '(( $(grep -c "Challenge eval completed for" "$1") >= 2 ))' _ "$JOURNEY_TMP/logs/status.log"
+journey_assert "both arm intents reached their eval records" both_eval_intents_recorded
+journey_assert "the pair was not rejected as missing challenge intent" no_missing_intent_rejection
 journey_assert "the comparison chose the scripted winner ($WINNER)" \
   test "$(comparison_winner)" = "challenger"
 journey_assert "the judge was consulted through the fake (no live LLM)" \

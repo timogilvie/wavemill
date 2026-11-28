@@ -106,8 +106,7 @@ import type { OperatingMode } from './operating-mode.ts';
 import {
   attestEvalRecordChallengeExecution,
   enforceChallengeIntentPresence,
-  loadChallengeIntentFromFeatureDir,
-  loadChallengeIntentFromState,
+  resolveChallengeIntent,
   resolveChallengeSide,
   type ChallengeExecutionIntent,
 } from './challenge-execution-contract.ts';
@@ -126,15 +125,13 @@ function resolvePostCompletionBudget(input: Pick<PostCompletionEnrichmentInput, 
 function loadPostCompletionChallengeIntent(input: PostCompletionEnrichmentInput): ChallengeExecutionIntent | undefined {
   const slug = input.branchName?.replace(/^(task|bug)\//, '') || input.issueId?.toLowerCase() || '';
   if (!input.challengePairId) return undefined;
-  const stateIntent = loadChallengeIntentFromState(input.repoDir, input.issueId, input.challengePairId);
-  if (stateIntent) return stateIntent;
-  if (input.worktreePath && slug) {
-    for (const dir of ['features', 'bugs']) {
-      const intent = loadChallengeIntentFromFeatureDir(path.join(input.worktreePath, dir, slug));
-      if (intent) return intent;
-    }
-  }
-  return undefined;
+  return resolveChallengeIntent({
+    repoDir: input.repoDir,
+    issueId: input.issueId,
+    challengePairId: input.challengePairId,
+    worktreePath: input.worktreePath,
+    slug,
+  })?.intent;
 }
 
 const __filename = fileURLToPath(import.meta.url);

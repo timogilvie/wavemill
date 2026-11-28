@@ -688,6 +688,8 @@ export function deriveNoComparisonReason(
   // (aborted-arm-was-invalid) carry the aborted eval's invalidChallengeReason
   // as their no-comparison reason.
   if (record.comparisonOutcome === 'invalid_challenge') {
+    // Typed reasons survive when the comparison writer received one; only
+    // historical rows without a reason use the compatibility default.
     return 'missing_challenge_intent';
   }
 

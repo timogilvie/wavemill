@@ -126,6 +126,16 @@ test('active comparisons exclude a voided forfeit while retaining a later compar
   }
 });
 
+test('invalid challenge uses its typed reason and defaults only for legacy rows', () => {
+  assert.equal(deriveNoComparisonReason({
+    comparisonOutcome: 'invalid_challenge',
+    invalidChallengeReason: 'state_vs_derived_side_mismatch',
+  } as StoredChallengeComparison), 'state_vs_derived_side_mismatch');
+  assert.equal(deriveNoComparisonReason({
+    comparisonOutcome: 'invalid_challenge',
+  } as StoredChallengeComparison), 'missing_challenge_intent');
+});
+
 test('appendChallengeComparison round-trips judge provenance, cost, and criterion rationales', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'challenge-comparison-test-'));
   try {
@@ -1648,16 +1658,19 @@ test('isDecisiveChallengeComparison excludes quarantined rows', () => {
   assert.equal(isDecisiveChallengeComparison(quarantined), false);
 });
 
-test('deriveNoComparisonReason maps invalid_challenge to missing_challenge_intent', () => {
+test('deriveNoComparisonReason preserves invalid_challenge reason and defaults legacy rows', () => {
   const row: StoredChallengeComparison = {
     ...makeRecord(),
     comparisonOutcome: 'invalid_challenge',
     invalidChallenge: true,
+    invalidChallengeReason: 'state_vs_derived_side_mismatch',
     terminalReason: 'challenger_challenge_aborted',
     winner: undefined,
   };
   const reason = deriveNoComparisonReason(row);
-  assert.equal(reason, 'missing_challenge_intent');
+  assert.equal(reason, 'state_vs_derived_side_mismatch');
+  delete row.invalidChallengeReason;
+  assert.equal(deriveNoComparisonReason(row), 'missing_challenge_intent');
 });
 
 process.on('exit', () => {

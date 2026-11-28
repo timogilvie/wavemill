@@ -34,6 +34,7 @@ import { taskHasPendingChallengeArm } from './tend-challenge-gate.ts';
 import { challengerTaskKey, parseTaskId } from './task-identity.ts';
 import { readWorkflowState, type TaskRecord } from './workflow-state.ts';
 import { challengeModelIdsEquivalent } from './challenge-comparison.ts';
+import { resolveChallengeIntent } from './challenge-execution-contract.ts';
 import type { StageName } from './stage-result.ts';
 import { resolveTaskArtifact, resolveTaskArtifactDirs } from './task-artifact-lookup.ts';
 
@@ -181,14 +182,9 @@ function resolveArmIntent(
   // every live feature dir the arm might have executed in (HOK-2891).
   const slug = task?.slug;
   if (slug) {
-    const dirs = resolveTaskArtifactDirs({ issueId, slug, repoDir });
-    for (const dir of dirs.liveFeatureDirs) {
-      for (const name of ['challenge-intent.json', '.challenge-intent.json']) {
-        const intent = readJson<ExecutionIntent>(join(dir, name));
-        if (belongsToPair(intent)) {
-          return { intent, source: 'feature-dir' };
-        }
-      }
+    const resolved = resolveChallengeIntent({ repoDir, issueId, challengePairId: pairId, slug });
+    if (resolved?.source === 'feature-dir' && belongsToPair(resolved.intent as ExecutionIntent)) {
+      return { intent: resolved.intent as ExecutionIntent, source: 'feature-dir' };
     }
   }
   return {};
