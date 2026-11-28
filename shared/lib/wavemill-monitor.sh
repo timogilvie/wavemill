@@ -354,32 +354,6 @@ _update_effective_max_parallel
 # Ensure gh commands target the correct GitHub repo (not inherited CWD)
 cd "$REPO_DIR"
 
-# Classify API failures conservatively so the monitor only retries errors that
-# are likely to succeed on a later attempt.
-is_transient_error() {
-  local detail="${1:-}"
-
-  [[ -n "$detail" ]] || return 1
-
-  if printf '%s\n' "$detail" | grep -Eiq '(500|502|503|529|internal server error|service unavailable|bad gateway|overloaded)'; then
-    return 0
-  fi
-
-  if printf '%s\n' "$detail" | grep -Eiq '(429|too many requests|rate limit|rate.limit)'; then
-    return 0
-  fi
-
-  if printf '%s\n' "$detail" | grep -Eiq '(timeout|timed out|connection.*reset|connection.*refused|network.*error)'; then
-    return 0
-  fi
-
-  if printf '%s\n' "$detail" | grep -Eiq '(401|403|400|unauthorized|forbidden|bad request|invalid.*key)'; then
-    return 1
-  fi
-
-  return 1
-}
-
 CODEX_CAPACITY_MESSAGE="Selected model is at capacity. Please try a different model."
 CODEX_CAPACITY_REASON="model_at_capacity"
 
@@ -531,239 +505,6 @@ codex_capacity_idle_confirmed() {
   now="$(date +%s)"
   dwell_seconds="$(wavemill_capacity_stall_seconds)"
   (( now - first_seen >= dwell_seconds ))
-}
-
-retry_state_file() {
-  local session="$1"
-  local issue="$2"
-  printf '/tmp/wavemill-%s-%s.retry\n' "$session" "$issue"
-}
-
-get_retry_count() {
-  local retry_file
-  retry_file="$(retry_state_file "$1" "$2")"
-
-  if [[ ! -f "$retry_file" ]]; then
-    echo "0"
-    return 0
-  fi
-
-  jq -r '.count // 0' "$retry_file" 2>/dev/null || echo "0"
-}
-
-get_retry_timestamp() {
-  local retry_file
-  retry_file="$(retry_state_file "$1" "$2")"
-
-  if [[ ! -f "$retry_file" ]]; then
-    echo "0"
-    return 0
-  fi
-
-  jq -r '.timestamp // 0' "$retry_file" 2>/dev/null || echo "0"
-}
-
-increment_retry_count() {
-  local session="$1"
-  local issue="$2"
-  local retry_file tmp_file current_count new_count timestamp
-
-  retry_file="$(retry_state_file "$session" "$issue")"
-  tmp_file="${retry_file}.tmp.$$"
-  current_count="$(get_retry_count "$session" "$issue")"
-  new_count=$((current_count + 1))
-  timestamp="$(date +%s)"
-
-  if jq -n \
-    --argjson count "$new_count" \
-    --argjson timestamp "$timestamp" \
-    '{count: $count, timestamp: $timestamp}' > "$tmp_file" 2>/dev/null; then
-    mv "$tmp_file" "$retry_file" 2>/dev/null || rm -f "$tmp_file"
-  else
-    rm -f "$tmp_file"
-  fi
-}
-
-reset_retry_count() {
-  local retry_file
-  retry_file="$(retry_state_file "$1" "$2")"
-  rm -f "$retry_file" 2>/dev/null || true
-}
-
-get_backoff_delay() {
-  local count="${1:-0}"
-  case "$count" in
-    1) echo "30" ;;
-    2) echo "60" ;;
-    3) echo "120" ;;
-    *) echo "240" ;;
-  esac
-}
-
-handle_agent_error_recovery() {
-  local issue="$1"
-  local agent_cmd="$2"
-  local hook_file="/tmp/wavemill-${SESSION}-${issue}.hook"
-  local retry_file hook_state hook_agent error_detail hook_ts now staleness retry_count last_retry_ts backoff_delay
-  local time_since_last_retry time_since_error next_retry max_retries
-
-  retry_file="$(retry_state_file "$SESSION" "$issue")"
-  [[ -f "$hook_file" ]] || return 0
-
-  # Native agents are single processes that exit on failure — there is no live
-  # TUI to send-keys a resume into, so this path would type into a dead pane,
-  # burn the retry counter, and race the failed-stage relaunch machinery
-  # (maybe_retry_failed_stage). Native failures are handled by phase relaunch
-  # instead.
-  hook_agent=$(jq -r '.agent // empty' "$hook_file" 2>/dev/null || echo "")
-  [[ "$hook_agent" != "native" ]] || return 0
-
-  hook_state=$(jq -r '.state // empty' "$hook_file" 2>/dev/null || echo "")
-  error_detail=$(jq -r '.detail // empty' "$hook_file" 2>/dev/null || echo "")
-  hook_ts=$(jq -r '.timestamp // 0' "$hook_file" 2>/dev/null || echo "0")
-
-  now="$(date +%s)"
-  staleness=$(( now - hook_ts ))
-
-  if [[ "$hook_state" != "error" ]]; then
-    if [[ -f "$retry_file" ]] && [[ "$hook_state" == "working" || "$hook_state" == "waiting" || "$hook_state" == "idle" ]]; then
-      last_retry_ts="$(get_retry_timestamp "$SESSION" "$issue")"
-      if (( hook_ts >= last_retry_ts )); then
-        log "info" "Agent recovered for $issue, resetting retry count"
-        reset_retry_count "$SESSION" "$issue"
-      fi
-    fi
-    return 0
-  fi
-
-  if ! is_transient_error "$error_detail"; then
-    return 0
-  fi
-
-  retry_count="$(get_retry_count "$SESSION" "$issue")"
-  max_retries=4
-  last_retry_ts="$(get_retry_timestamp "$SESSION" "$issue")"
-  if (( staleness >= 300 )); then
-    if (( retry_count > 0 )); then
-      terminalize_transient_retry_failure "$issue" "$agent_cmd" "$error_detail" "retry process stopped updating after a transient error"
-    fi
-    return 0
-  fi
-
-  if (( retry_count >= max_retries )); then
-    time_since_last_retry=$(( now - last_retry_ts ))
-    if (( hook_ts >= last_retry_ts )) || [[ "$time_since_last_retry" -ge 300 ]]; then
-      terminalize_transient_retry_failure "$issue" "$agent_cmd" "$error_detail" "transient retries exhausted"
-    fi
-    return 0
-  fi
-
-  backoff_delay="$(get_backoff_delay $((retry_count + 1)))"
-  time_since_last_retry=$(( now - last_retry_ts ))
-
-  if (( retry_count == 0 )); then
-    time_since_error=$(( now - hook_ts ))
-    (( time_since_error >= backoff_delay )) || return 0
-  else
-    (( time_since_last_retry >= backoff_delay )) || return 0
-  fi
-
-  next_retry=$((retry_count + 1))
-  log "info" "Retrying $issue after transient error (attempt $next_retry/$max_retries, backoff ${backoff_delay}s): $error_detail"
-  increment_retry_count "$SESSION" "$issue"
-
-  if agent_resume_after_error "$SESSION" "$issue" "$agent_cmd"; then
-    log "debug" "  Resume command sent to $issue"
-  else
-    log_error "  Failed to resume $issue after transient error"
-    terminalize_transient_retry_failure "$issue" "$agent_cmd" "$error_detail" "retry resume command failed"
-  fi
-}
-
-terminalize_transient_retry_failure() {
-  local issue="$1" agent_cmd="${2:-}" error_detail="${3:-}" terminal_reason="${4:-transient retry failed}"
-  local slug wt_dir phase result_stage feature_dir is_challenge pr model notes artifacts_json win next_action
-
-  [[ -n "$issue" ]] || return 1
-  slug=$(pass_task_field "$issue" slug)
-  wt_dir=$(pass_task_field "$issue" worktree)
-  [[ -z "$wt_dir" && -n "$slug" ]] && wt_dir="${WORKTREE_ROOT}/${slug}"
-  phase=$(read_state_value "coding" --arg i "$issue" '.tasks[$i].phase // "coding"')
-  case "$phase" in
-    planning|coding|review|ready) result_stage="$phase" ;;
-    *) result_stage="coding" ;;
-  esac
-  [[ -n "$wt_dir" && -n "$slug" ]] && feature_dir="${wt_dir}/features/${slug}"
-
-  next_action="transient upstream failure persisted, retire the challenge arm and relaunch if needed"
-  notes="Native ${result_stage} failed after retry recovery (${terminal_reason}): ${error_detail}. Next: ${next_action}"
-  artifacts_json="$(jq -cn \
-    --arg failureKind "provider-transient-error" \
-    --arg detail "$error_detail" \
-    --arg terminalReason "$terminal_reason" \
-    --arg nextAction "$next_action" \
-    '{type:"transientRetryFailure", failureKind:$failureKind, detail:$detail, terminalReason:$terminalReason, nextAction:$nextAction}' \
-    2>/dev/null || printf '{}')"
-
-  if [[ -n "$feature_dir" ]]; then
-    model="$(stage_result_field "$feature_dir" "$result_stage" "model" 2>/dev/null || true)"
-    write_stage_result "$feature_dir" "$result_stage" "failed" "$agent_cmd" "$model" "$notes" "$artifacts_json"
-  fi
-
-  state_mutate "$STATE_FILE" '
-    if .tasks[$issue] == null then
-      .
-    else
-      .tasks[$issue].status = "error"
-      | .tasks[$issue].retryFailure = $reason
-      | .tasks[$issue].retryFailureDetail = $detail
-      | .tasks[$issue].updated = (now | todateiso8601)
-    end
-  ' --arg issue "$issue" --arg reason "$terminal_reason" --arg detail "$error_detail" >/dev/null 2>&1 || true
-
-  # Record condition for reconciler (HOK-3172)
-  task_status_error_condition_record "$issue" "$feature_dir" "$terminal_reason" 2>/dev/null || true
-
-  is_challenge="$(get_task_meta "$issue" "challenge" 2>/dev/null || true)"
-  pr=$(pass_task_field "$issue" pr)
-  if [[ "$is_challenge" == "true" && -z "$pr" && -n "$feature_dir" ]]; then
-    win="${issue}-${slug}"
-    challenge_abort_pair "$issue" "$feature_dir" "$win" "$result_stage" "$model" \
-      "retry_exhausted:provider-transient-error" "$notes" "$next_action" \
-      "$(challenge_abort_scope_for_failure "$issue" "provider-transient-error")" || true
-    cleanup_quarantined_no_pr_challenge_arm "$issue" "$feature_dir" "$result_stage" "$terminal_reason" || true
-    log_warn "$issue → challenge arm failed after transient retry recovery. Pair quarantined. $next_action"
-  else
-    log_warn "$issue → transient retry recovery reached terminal state: $terminal_reason"
-  fi
-  return 0
-}
-
-transient_error_recovery_pending() {
-  local issue="$1"
-  local hook_file="/tmp/wavemill-${SESSION}-${issue}.hook"
-  local hook_state hook_agent error_detail hook_ts now staleness retry_count
-
-  [[ -f "$hook_file" ]] || return 1
-
-  # Mirror the native guard in handle_agent_error_recovery: a dead native
-  # process must not be held "active" by the TUI resume path.
-  hook_agent=$(jq -r '.agent // empty' "$hook_file" 2>/dev/null || echo "")
-  [[ "$hook_agent" != "native" ]] || return 1
-
-  hook_state=$(jq -r '.state // empty' "$hook_file" 2>/dev/null || echo "")
-  [[ "$hook_state" == "error" ]] || return 1
-
-  error_detail=$(jq -r '.detail // empty' "$hook_file" 2>/dev/null || echo "")
-  is_transient_error "$error_detail" || return 1
-
-  hook_ts=$(jq -r '.timestamp // 0' "$hook_file" 2>/dev/null || echo "0")
-  now="$(date +%s)"
-  staleness=$(( now - hook_ts ))
-  (( staleness < 300 )) || return 1
-
-  retry_count="$(get_retry_count "$SESSION" "$issue")"
-  (( retry_count < 4 ))
 }
 
 # Close auxiliary panes when monitor exits so quitting control is a single action.
@@ -1661,7 +1402,6 @@ challenge_cancel_challenger_arm() {
 
     git -C "$REPO_DIR" worktree prune >>"${MILL_LOG_FILE:-/dev/null}" 2>/dev/null || true
     rm -f "/tmp/wavemill-${SESSION}-${challenger_key}.hook" 2>/dev/null || true
-    reset_retry_count "$SESSION" "$challenger_key" 2>/dev/null || true
     remove_task_state "$challenger_key"
     monitor_deregister_terminal_task "$challenger_key"
   fi
@@ -11343,8 +11083,6 @@ ready_pending_is_challenge_work() {
   esac
 }
 
-READY_TRANSIENT_MAX_ATTEMPTS=6
-
 # Failed-ready re-check budget (HOK-2893). Operator env overrides survive the
 # `:=` defaults; all knobs are validated at point of use with these fallbacks.
 : "${READY_FAILED_RECHECK_MAX_ATTEMPTS:=4}"
@@ -11581,43 +11319,6 @@ cross_pr_revert_gate_apply_result() {
     --exit-code "$rc" >/dev/null 2>&1 || true
   log_error "  Cross-PR revert guard failed for $issue (PR #$pr_number)"
   return 1
-}
-
-transient_mergeability_count() {
-  local state_dir="$1"
-  local count_file="$state_dir/.transient-mergeability-count"
-
-  if [[ ! -f "$count_file" ]]; then
-    echo "0"
-    return 0
-  fi
-
-  local count
-  count=$(cat "$count_file" 2>/dev/null || echo "0")
-  if [[ ! "$count" =~ ^[0-9]+$ ]]; then
-    echo "0"
-    return 0
-  fi
-
-  echo "$count"
-}
-
-increment_transient_mergeability_count() {
-  local state_dir="$1"
-  local count
-  count=$(transient_mergeability_count "$state_dir")
-  count=$((count + 1))
-  mkdir -p "$state_dir"
-  printf '%s\n' "$count" > "$state_dir/.transient-mergeability-count"
-  echo "$count"
-}
-
-clear_transient_mergeability_state() {
-  local state_dir="$1"
-  # HOK-3360: the transient attention kind (.needs-attention-transient) is
-  # removed — a transient mergeability is a retry state, not an attention kind.
-  # Only the pending-hold counter remains to clear.
-  rm -f "$state_dir/.transient-mergeability-count"
 }
 
 clear_ready_attention() {
@@ -14342,48 +14043,23 @@ launch_ready_phase() {
   fi
 
   if [[ "$merge_status" == "UNKNOWN" || "$merge_status" == "ERROR" ]]; then
-    local transient_count transient_limit pending_artifacts_json
-    transient_limit="${READY_TRANSIENT_MAX_ATTEMPTS:-6}"
-    transient_count=$(increment_transient_mergeability_count "$state_dir")
-
-    if (( transient_count <= transient_limit )); then
-      pending_artifacts_json=$(jq -cn \
-        --arg merge_status "${merge_status:-UNKNOWN}" \
-        --argjson checks_run "${checks_run:-0}" \
-        --argjson checks_passed "${checks_passed:-0}" \
-        --argjson pr_number "${pr_number}" \
-        --argjson attempts "$transient_count" \
-        '{
-          type: "ready",
-          verdict: "pending",
-          checksRun: $checks_run,
-          checksPassed: $checks_passed,
-          mergeConflict: $merge_status,
-          prNumber: $pr_number,
-          transientMergeabilityAttempts: $attempts
-        }')
-      pending_artifacts_json=$(merge_queue_enrich_ready_artifacts "$state_dir" "$pending_artifacts_json" "candidate-progress")
-      write_stage_result "$state_dir" "ready" "running" "$current_agent" "$current_model" \
-        "pending GitHub mergeability - will retry (attempt ${transient_count}/${transient_limit})" \
-        "$pending_artifacts_json"
-      marker_clear "$state_dir/.needs-attention"
-      log "info" "  Merge status for $issue is $merge_status - will retry (attempt ${transient_count}/${transient_limit})"
-      return 4
-    fi
-
-    # HOK-3360: a persisted GitHub mergeability UNKNOWN/ERROR is retryable
-    # (the HOK-1576 semantic). The transient attention kind is removed; record
-    # the failed stage result so stage-failure-ready owns retries like any
-    # other Ready failure, and never page on the first occurrence.
+    # Mergeability UNKNOWN/ERROR is retryable by default. Record it as an
+    # ordinary failed Ready result so stage-failure-ready owns all retries.
+    local mergeability_artifacts_json
+    mergeability_artifacts_json=$(jq -cn \
+      --argjson pr_number "$pr_number" \
+      --arg merge_status "${merge_status:-UNKNOWN}" \
+      --argjson checks_run "${checks_run:-0}" \
+      --argjson checks_passed "${checks_passed:-0}" \
+      '{type:"ready",verdict:"fail",prNumber:$pr_number,mergeConflict:$merge_status,checksRun:$checks_run,checksPassed:$checks_passed,failureKind:"mergeability-unknown"}')
+    mergeability_artifacts_json=$(merge_queue_enrich_ready_artifacts "$state_dir" "$mergeability_artifacts_json" "candidate-progress")
     write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$current_model" \
-      "Merge status $merge_status persisted after $transient_count checks for PR #$pr_number." \
-      "$(jq -cn --argjson pr "$pr_number" --arg ms "$merge_status" '{type:"ready",verdict:"fail",prNumber:$pr,mergeConflict:$ms,failureKind:"mergeability-unknown"}')"
-    log_error "  Merge status $merge_status persisted for $issue after $transient_count attempts"
-    return 1
+      "Merge status $merge_status unavailable for PR #$pr_number." "$mergeability_artifacts_json"
+    log "info" "  Merge status for $issue is $merge_status - recording a retryable Ready failure"
+    return 4
   fi
 
   marker_clear "$state_dir/.needs-attention"
-  clear_transient_mergeability_state "$state_dir"
 
   if [[ "$ready_rc" -eq 0 ]]; then
     local main_sha completed_artifacts_json label_failed_artifacts_json label_output transition_stage transition_detail transition_output transition_failure_json
@@ -16346,7 +16022,6 @@ cleanup_aborted_challenge_arm() {
 
   git -C "$REPO_DIR" worktree prune >>"${MILL_LOG_FILE:-/dev/null}" 2>/dev/null || true
   rm -f "/tmp/wavemill-${SESSION}-${issue}.hook" 2>/dev/null || true
-  reset_retry_count "$SESSION" "$issue" 2>/dev/null || true
   if [[ -n "${cleanup_candidate_json:-}" ]]; then
     cleanup_episode_record_outcome "$issue" "reaped" "none" "cleanup-complete" "$cleanup_candidate_json" "" 2>/dev/null || true
   fi
@@ -20657,7 +20332,6 @@ monitor_issue_state() {
         ready_stage_warn_bypass_once "$merged_ready_dir" "$ISSUE" "$PR" || true
         escalate_operator_attention "$merged_ready_dir" operator-decision merged-before-ready "PR #$PR was merged before the Release Readiness Check passed." || true
       else
-        clear_transient_mergeability_state "$merged_ready_dir"
         marker_clear "$merged_ready_dir/.needs-attention"
       fi
     fi
@@ -20701,29 +20375,6 @@ monitor_issue_state() {
     execute git -C "$REPO_DIR" worktree prune 2>/dev/null || true
     return 0
   fi
-
-  if [[ "$task_status" == "error" ]]; then
-    if check_pr_exists "$BRANCH"; then
-      local recovered_pr
-      recovered_pr=$(find_pr_for_branch "$BRANCH")
-      if [[ -n "$recovered_pr" ]]; then
-        PR_BY_ISSUE["$ISSUE"]="$recovered_pr"
-        log "status" "$ISSUE → Found PR #$recovered_pr for errored task (updating state)"
-        # Pass `active` explicitly: an empty status keeps an existing terminal
-        # status, so the task stayed `error` and this branch re-ran every pass
-        # with nothing driving Ready or remediation (HOK-3246).
-        save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "$recovered_pr" "active" "$current_agent"
-        set_task_phase "$ISSUE" "review"
-      fi
-    fi
-    set_window_attention_state "$WIN" "needs-user"
-    active_count=$((active_count + 1))
-    return 0
-  fi
-
-  # Recovery runs inside per-issue monitoring so retries share the same task,
-  # phase, and cleanup state as the rest of the controller.
-  handle_agent_error_recovery "$ISSUE" "${current_agent:-$AGENT_CMD}"
 
   # Check if PR exists
   if [[ -z "$PR" ]]; then
@@ -20818,6 +20469,10 @@ monitor_issue_state() {
         return 0
       fi
       if [[ "$launch_rc" -eq 4 || "$launch_rc" -eq 6 ]]; then
+        if [[ "$launch_rc" -eq 4 && "$(read_stage_status "$ready_state_dir_path" ready 2>/dev/null || true)" == "failed" ]]; then
+          ready_failure_classify_and_act "$ISSUE" "$SLUG" "$ready_state_dir_path" \
+            "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$PR" "$WIN" "$current_head" || true
+        fi
         set_window_attention_state "$WIN" "clear"
         active_count=$((active_count + 1))
         return 0
@@ -20880,6 +20535,24 @@ monitor_issue_state() {
       # Resolve current phase from controller-owned stage state
       local resolved_phase
       resolved_phase=$(resolve_phase "$FEATURE_DIR")
+
+      # Let terminal agent hooks on the active stage reach the shared failure
+      # policy before task-level error handling can park the task.
+      if [[ "$task_status" == "error" && "$(read_stage_status "$FEATURE_DIR" "$current_phase" 2>/dev/null || true)" != "running" ]]; then
+        if check_pr_exists "$BRANCH"; then
+          local recovered_pr
+          recovered_pr=$(find_pr_for_branch "$BRANCH")
+          if [[ -n "$recovered_pr" ]]; then
+            PR_BY_ISSUE["$ISSUE"]="$recovered_pr"
+            log "status" "$ISSUE → Found PR #$recovered_pr for errored task (updating state)"
+            save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "$recovered_pr" "active" "$current_agent"
+            set_task_phase "$ISSUE" "review"
+          fi
+        fi
+        set_window_attention_state "$WIN" "needs-user"
+        active_count=$((active_count + 1))
+        return 0
+      fi
 
       case "$current_phase" in
         routing)
@@ -21957,6 +21630,11 @@ monitor_issue_state() {
               return 0
             fi
             if [[ "$launch_rc" -eq 4 || "$launch_rc" -eq 6 ]]; then
+              if [[ "$(read_stage_status "$ready_state_dir_path" ready 2>/dev/null || true)" == "failed" ]]; then
+                ready_failure_classify_and_act "$ISSUE" "$SLUG" "$ready_state_dir_path" \
+                  "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$pr_number" "$WIN" \
+                  "$(git -C "${WORKTREE_ROOT}/${SLUG}" rev-parse HEAD 2>/dev/null || true)" || true
+              fi
               set_window_attention_state "$WIN" "clear"
               active_count=$((active_count + 1))
               return 0
@@ -22117,12 +21795,6 @@ monitor_issue_state() {
         return 0
       fi
 
-      if transient_error_recovery_pending "$ISSUE"; then
-        set_window_attention_state "$WIN" "clear"
-        active_count=$((active_count + 1))
-        return 0
-      fi
-
       # Window itself is gone (shouldn't happen with remain-on-exit, but
       # handle gracefully). Flag for attention instead of cleaning up
       # immediately — the worktree and branch still have value.
@@ -22227,7 +21899,6 @@ monitor_issue_state() {
       ready_stage_warn_bypass_once "$merged_ready_dir" "$ISSUE" "$PR" || true
       escalate_operator_attention "$merged_ready_dir" operator-decision merged-before-ready "PR #$PR was merged before the Release Readiness Check passed." || true
     else
-      clear_transient_mergeability_state "$merged_ready_dir"
       marker_clear "$merged_ready_dir/.needs-attention"
     fi
 
@@ -22915,6 +22586,10 @@ monitor_issue_state() {
           return 0
         fi
         if [[ "$launch_rc" -eq 0 || "$launch_rc" -eq 3 || "$launch_rc" -eq 4 || "$launch_rc" -eq 5 || "$launch_rc" -eq 6 ]]; then
+          if [[ "$launch_rc" -eq 4 && "$(read_stage_status "$ready_state_dir_path" ready 2>/dev/null || true)" == "failed" ]]; then
+            ready_failure_classify_and_act "$ISSUE" "$SLUG" "$ready_state_dir_path" \
+              "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$PR" "$WIN" "$current_head" || true
+          fi
           [[ "$launch_rc" -eq 0 ]] && log "status" "$ISSUE → Ready checks completed after challenge comparison (PR #$PR)"
           set_window_attention_state "$WIN" "clear"
           active_count=$((active_count + 1))
@@ -23072,6 +22747,10 @@ monitor_issue_state() {
         return 0
       fi
       if [[ "$launch_rc" -eq 4 || "$launch_rc" -eq 6 ]]; then
+        if [[ "$launch_rc" -eq 4 && "$(read_stage_status "$ready_state_dir_path" ready 2>/dev/null || true)" == "failed" ]]; then
+          ready_failure_classify_and_act "$ISSUE" "$SLUG" "$ready_state_dir_path" \
+            "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$PR" "$WIN" "$current_head" || true
+        fi
         bounded_retry_clear "$ready_state_dir_path" "pending-ready-recheck"
         set_window_attention_state "$WIN" "clear"
         active_count=$((active_count + 1))

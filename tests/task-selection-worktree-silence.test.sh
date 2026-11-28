@@ -243,7 +243,6 @@ run_cleanup_case() {
     archive_stage_artifacts() { :; }
     log() { LOG_OUTPUT+="$*\n"; }
     log_warn() { LOG_OUTPUT+="warn $*\n"; }
-    reset_retry_count() { :; }
     remove_task_state() { :; }
     pr_state() { printf "%s\n" "MERGED"; }
     _with_timeout() { shift; "$@"; }

@@ -286,7 +286,6 @@ EOF
     WARN_OUTPUT=""
     ATTENTION=""
     REMOVE_STATE_CALLS=0
-    RESET_RETRY_CALLS=0
     KILLED=0
     GIT_CALLS=""
     ORDER=""
@@ -298,7 +297,6 @@ EOF
     log() { LOG_OUTPUT+="$*\n"; }
     log_warn() { WARN_OUTPUT+="$*\n"; }
     set_window_attention_state() { ATTENTION="$2"; }
-    reset_retry_count() { RESET_RETRY_CALLS=$((RESET_RETRY_CALLS + 1)); ORDER+="reset;"; }
     remove_task_state() { REMOVE_STATE_CALLS=$((REMOVE_STATE_CALLS + 1)); ORDER+="remove-state;"; }
     check_challenge_sibling_merged() { [[ "$TEST_CASE" == "closed-loser-abandoned" ]]; }
     _with_timeout() { shift; "$@"; }
@@ -494,7 +492,6 @@ EOF
     printf "rc=%s\n" "$rc"
     printf "outcome=%s\n" "${WAVEMILL_CLEANUP_OUTCOME:-}"
     printf "remove_state_calls=%s\n" "$REMOVE_STATE_CALLS"
-    printf "reset_retry_calls=%s\n" "$RESET_RETRY_CALLS"
     printf "cleaned=%s\n" "$(monitor_task_registered "$ISSUE" || echo 1)"
     printf "attention=%s\n" "$ATTENTION"
     printf "record=%s\n" "$([[ -f "$REPO_DIR/.wavemill/evals/artifacts/$ISSUE/terminal-record.json" ]] && echo present || echo absent)"
@@ -597,7 +594,6 @@ EOF
     log() { LOG_OUTPUT+="$*\n"; }
     log_warn() { WARN_OUTPUT+="$*\n"; }
     set_window_attention_state() { :; }
-    reset_retry_count() { :; }
     remove_task_state() { REMOVE_STATE_CALLS=$((REMOVE_STATE_CALLS + 1)); }
     pr_state() { printf "%s\n" "MERGED"; }
     cleanup_episode_should_attempt() { printf "%s\n" "attempt"; return 0; }
@@ -636,8 +632,7 @@ check_contains "renamed title resolves current window id" "$output" "target=@31"
 output="$(run_cleanup_case dead-pane-success)"
 check_contains "cleanup success returns zero" "$output" "rc=0"
 check_contains "cleanup success reports safe structured outcome" "$output" "outcome=safe_ancestor"
-check_contains "cleanup archives before destructive cleanup" "$output" "order=archive;tmux-kill;worktree-remove;branch-delete;ls-remote;push-delete;prune;reset;remove-state;"
-check_contains "cleanup success resets retry state" "$output" "reset_retry_calls=1"
+  check_contains "cleanup archives before destructive cleanup" "$output" "order=archive;tmux-kill;worktree-remove;branch-delete;ls-remote;push-delete;prune;remove-state;"
 check_contains "cleanup success removes task state" "$output" "remove_state_calls=1"
 check_contains "cleanup success marks issue cleaned" "$output" "cleaned=1"
 check_contains "cleanup success keeps attention clear" "$output" "attention="
@@ -645,7 +640,7 @@ check_not_contains "cleanup success avoids warnings" "$output" "keeping task sta
 
 output="$(run_cleanup_case local-branch-absent)"
 check_contains "missing local branch still completes" "$output" "rc=0"
-check_contains "missing local branch skips branch deletion" "$output" "order=archive;tmux-kill;worktree-remove;ls-remote;push-delete;prune;reset;remove-state;"
+  check_contains "missing local branch skips branch deletion" "$output" "order=archive;tmux-kill;worktree-remove;ls-remote;push-delete;prune;remove-state;"
 
 output="$(run_cleanup_case merged-remote-present)"
 check_contains "merged PR deletes remote branch" "$output" "push origin --delete task/task-slug"
@@ -677,7 +672,6 @@ check_contains "preserved local work returns non-zero" "$output" "rc=1"
 check_contains "preserved local work classifies changed-after-PR-head as retained" "$output" "outcome=retain_unpublished"
 check_contains "preserved local work records unique patch evidence" "$output" "unique_local_patch"
 check_contains "preserved local work keeps state" "$output" "remove_state_calls=0"
-check_contains "preserved local work preserves retry state" "$output" "reset_retry_calls=0"
 check_contains "preserved local work requests attention" "$output" "attention=needs-user"
 check_contains "preserved local work logs deferral" "$output" "cleanup deferred by physical step"
 check_not_contains "preserved local work skips remote cleanup" "$output" "push origin --delete"
@@ -748,7 +742,6 @@ check_contains "archive failure warns" "$output" "could not archive stage artifa
 output="$(run_cleanup_case worktree-fails)"
 check_contains "worktree failure returns non-zero" "$output" "rc=1"
 check_contains "worktree failure preserves state" "$output" "remove_state_calls=0"
-check_contains "worktree failure preserves retry state" "$output" "reset_retry_calls=0"
 check_not_contains "worktree failure skips branch deletion" "$output" "branch -D"
 check_not_contains "worktree failure skips dynamic branch deletion" "$output" "branch -d"
 check_contains "worktree failure still released the pane first" "$output" "order=archive;tmux-kill;worktree-remove;"
@@ -765,7 +758,6 @@ output="$(run_cleanup_case push-fails)"
 check_contains "push failure returns non-zero" "$output" "rc=1"
 check_contains "push failure warns" "$output" "Remote branch cleanup failed (retained): task/task-slug"
 check_contains "push failure preserves state" "$output" "remove_state_calls=0"
-check_contains "push failure preserves retry state" "$output" "reset_retry_calls=0"
 check_contains "push failure keeps pane released" "$output" "order=archive;tmux-kill;"
 check_contains "push failure keeps terminal record" "$output" "record=present"
 check_contains "push failure records verification-required disposition" "$output" "verification-required:remote-branch-cleanup-unverified;"

@@ -185,7 +185,6 @@ EOF
     log() { LOG_OUTPUT+="$*\n"; }
     log_warn() { WARN_OUTPUT+="$*\n"; }
     set_window_attention_state() { ATTENTION="$2"; }
-    reset_retry_count() { :; }
     check_challenge_sibling_merged() { [[ "$TEST_CASE" == "sibling-merged-unpublished" ]]; }
     archive_stage_artifacts() {
       ORDER+="archive;"

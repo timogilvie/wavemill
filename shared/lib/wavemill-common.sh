@@ -665,18 +665,6 @@ wavemill_pane_area() {
   printf '%s\n' "$(( width * height ))"
 }
 
-retry_state_file() {
-  local session="$1"
-  local issue="$2"
-  printf '/tmp/wavemill-%s-%s.retry\n' "$session" "$issue"
-}
-
-reset_retry_count() {
-  local retry_file
-  retry_file="$(retry_state_file "$1" "$2")"
-  rm -f "$retry_file" 2>/dev/null || true
-}
-
 wavemill_cleanup_run() {
   if command -v execute >/dev/null 2>&1; then
     execute "$@"
@@ -2765,7 +2753,6 @@ cleanup_completed_task() {
   reconciliation_lease_release "${WORKTREE_ROOT}/${slug}/features/${slug}" 2>/dev/null || true
   rm -f "${WORKTREE_ROOT}/${slug}/features/${slug}/.pane-release-blocked.json" 2>/dev/null || true
   rm -f "/tmp/wavemill-${SESSION}-${issue}.hook" 2>/dev/null || true
-  reset_retry_count "$SESSION" "$issue" 2>/dev/null || true
   if [[ -n "$cleanup_candidate_json" ]]; then
     cleanup_episode_record_outcome "$issue" "reaped" "none" "cleanup-complete" "$cleanup_candidate_json" "" 2>/dev/null || true
   fi

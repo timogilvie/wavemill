@@ -179,7 +179,6 @@ harness_extract_real_functions() {
     get_main_head_sha \
     ready_stage_allows_merge \
     ready_stage_pending_verdict \
-    clear_transient_mergeability_state \
     post_pr_reconciliation_config_json \
     post_pr_reconciliation_enabled \
     pane_release_config_json \
@@ -627,7 +626,6 @@ harness_run_tick() {
       esac
     }
     write_phase_config() { :; }
-    handle_agent_error_recovery() { :; }
     handle_phase_launch_result() { return 0; }
     launch_planning_phase() { PLANNING_LAUNCHED="true"; return 0; }
     launch_coding_phase() {
@@ -680,7 +678,6 @@ harness_run_tick() {
     save_migration_reservation() { :; }
     closed_pr_resource_policy() { printf "%s\n" "pane-release-only"; }
     wavemill_release_terminal_pane() { return 0; }
-    transient_error_recovery_pending() { return 1; }
     codex_has_pending_approval() { return 1; }
     launch_background_post_merge_eval() { :; }
     # HOK-3101 primitive: no evidence by default, which the dirty-handoff guard

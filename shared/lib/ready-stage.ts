@@ -237,9 +237,6 @@ export interface MergeConflictResult {
   error?: string;
 }
 
-export const MAX_TRANSIENT_ATTEMPTS = 3;
-export const INITIAL_BACKOFF_MS = 5000;
-export const MAX_BACKOFF_MS = 15000;
 
 export async function sleep(ms: number): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, ms));
@@ -2173,121 +2170,96 @@ export function ciStatusToReadyCheck(ci: PrCiStatus): ReadyCheck {
  * Check GitHub mergeability state for an open PR.
  *
  * GitHub computes mergeability lazily and may initially report `UNKNOWN`.
- * Retry a few times before giving up so the monitor can distinguish transient
- * API latency from an actual conflicted PR.
+ * Return that observation to the monitor; its stage-failure-ready bucket owns
+ * retries and backoff. Real conflicts remain distinct and immediate.
  */
 export async function checkMergeConflicts(
   prNumber: number,
   repoDir: string,
   options: { stateDir?: string } = {},
 ): Promise<MergeConflictResult> {
-  let lastError: string | undefined;
+  try {
+    const mergeabilityJson = readyStageDeps.execShellCommand(
+      `gh pr view ${escapeShellArg(String(prNumber))} --json mergeable,mergeStateStatus,headRefOid`,
+      { encoding: 'utf-8', cwd: repoDir }
+    );
+    const mergeability = JSON.parse(mergeabilityJson.toString()) as {
+      mergeable?: string | null;
+      mergeStateStatus?: string | null;
+      headRefOid?: string | null;
+    };
 
-  for (let attempt = 1; attempt <= MAX_TRANSIENT_ATTEMPTS; attempt += 1) {
-    try {
-      const mergeabilityJson = readyStageDeps.execShellCommand(
-        `gh pr view ${escapeShellArg(String(prNumber))} --json mergeable,mergeStateStatus,headRefOid`,
-        { encoding: 'utf-8', cwd: repoDir }
-      );
-      const mergeability = JSON.parse(mergeabilityJson.toString()) as {
-        mergeable?: string | null;
-        mergeStateStatus?: string | null;
-        headRefOid?: string | null;
-      };
+    const mergeable = mergeability.mergeable ?? null;
+    const mergeStateStatus = mergeability.mergeStateStatus ?? null;
 
-      const mergeable = mergeability.mergeable ?? null;
-      const mergeStateStatus = mergeability.mergeStateStatus ?? null;
-
-      if (mergeable === 'MERGEABLE' || mergeStateStatus === 'CLEAN' || mergeStateStatus === 'HAS_HOOKS') {
-        // HOK-3316: GitHub's 3-way merge can be clean while tend's per-commit
-        // rebase onto the same base conflicts. Tend's recorded rebase failure
-        // for this head and base is the conflict that matters for merging,
-        // so it routes to the same conflict remediation as a GitHub conflict.
-        const tendConflict = options.stateDir && mergeability.headRefOid
-          ? readValidTendAttemptFact(options.stateDir, {
-              prHeadSha: mergeability.headRefOid,
-              integrationBaseSha: resolveIntegrationBaseSha(repoDir),
-            })
-          : null;
-        if (tendConflict?.phase === 'rebase') {
-          return {
-            status: 'CONFLICTED',
-            message: 'Tend could not rebase this PR onto the integration branch commit by commit '
-              + `(GitHub reports ${mergeable ?? mergeStateStatus}): rebase onto `
-              + `${tendConflict.baseSha ? tendConflict.baseSha.slice(0, 12) : 'the integration branch'} and resolve each conflicting commit.\n`
-              + tendConflict.excerpt,
-            mergeable,
-            mergeStateStatus,
-            attempts: attempt,
-          };
-        }
-        return {
-          status: 'CLEAN',
-          message: 'No merge conflicts detected',
-          mergeable,
-          mergeStateStatus,
-          attempts: attempt,
-        };
-      }
-
-      if (mergeable === 'CONFLICTING' || mergeStateStatus === 'DIRTY') {
+    if (mergeable === 'MERGEABLE' || mergeStateStatus === 'CLEAN' || mergeStateStatus === 'HAS_HOOKS') {
+      // HOK-3316: GitHub's 3-way merge can be clean while tend's per-commit
+      // rebase onto the same base conflicts. Tend's recorded rebase failure
+      // for this head and base is the conflict that matters for merging,
+      // so it routes to the same conflict remediation as a GitHub conflict.
+      const tendConflict = options.stateDir && mergeability.headRefOid
+        ? readValidTendAttemptFact(options.stateDir, {
+            prHeadSha: mergeability.headRefOid,
+            integrationBaseSha: resolveIntegrationBaseSha(repoDir),
+          })
+        : null;
+      if (tendConflict?.phase === 'rebase') {
         return {
           status: 'CONFLICTED',
-          message: 'PR has merge conflicts with base branch',
+          message: 'Tend could not rebase this PR onto the integration branch commit by commit '
+            + `(GitHub reports ${mergeable ?? mergeStateStatus}): rebase onto `
+            + `${tendConflict.baseSha ? tendConflict.baseSha.slice(0, 12) : 'the integration branch'} and resolve each conflicting commit.\n`
+            + tendConflict.excerpt,
           mergeable,
           mergeStateStatus,
-          attempts: attempt,
+          attempts: 1,
         };
       }
-
-      if (mergeable === 'UNKNOWN' || mergeStateStatus === 'UNKNOWN' || (!mergeable && !mergeStateStatus)) {
-        if (attempt < MAX_TRANSIENT_ATTEMPTS) {
-          await readyStageDeps.sleep(
-            Math.min(INITIAL_BACKOFF_MS * 2 ** (attempt - 1), MAX_BACKOFF_MS)
-          );
-          continue;
-        }
-
-        return {
-          status: 'UNKNOWN',
-          message: 'GitHub is still computing mergeability',
-          mergeable,
-          mergeStateStatus,
-          attempts: attempt,
-        };
-      }
-
       return {
-        status: 'ERROR',
-        message: `Unexpected mergeability state: ${mergeable ?? 'null'} / ${mergeStateStatus ?? 'null'}`,
+        status: 'CLEAN',
+        message: 'No merge conflicts detected',
         mergeable,
         mergeStateStatus,
-        attempts: attempt,
-      };
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
-      if (attempt < MAX_TRANSIENT_ATTEMPTS) {
-        await readyStageDeps.sleep(
-          Math.min(INITIAL_BACKOFF_MS * 2 ** (attempt - 1), MAX_BACKOFF_MS)
-        );
-        continue;
-      }
-
-      return {
-        status: 'ERROR',
-        message: 'Unable to fetch mergeability from GitHub',
-        attempts: attempt,
-        error: lastError,
+        attempts: 1,
       };
     }
-  }
 
-  return {
-    status: 'UNKNOWN',
-    message: 'GitHub is still computing mergeability',
-    attempts: MAX_TRANSIENT_ATTEMPTS,
-    ...(lastError ? { error: lastError } : {}),
-  };
+    if (mergeable === 'CONFLICTING' || mergeStateStatus === 'DIRTY') {
+      return {
+        status: 'CONFLICTED',
+        message: 'PR has merge conflicts with base branch',
+        mergeable,
+        mergeStateStatus,
+        attempts: 1,
+      };
+    }
+
+    if (mergeable === 'UNKNOWN' || mergeStateStatus === 'UNKNOWN' || (!mergeable && !mergeStateStatus)) {
+      return {
+        status: 'UNKNOWN',
+        message: 'GitHub is still computing mergeability',
+        mergeable,
+        mergeStateStatus,
+        attempts: 1,
+      };
+    }
+
+    return {
+      status: 'ERROR',
+      message: `Unexpected mergeability state: ${mergeable ?? 'null'} / ${mergeStateStatus ?? 'null'}`,
+      mergeable,
+      mergeStateStatus,
+      attempts: 1,
+    };
+  } catch (error) {
+    const lastError = error instanceof Error ? error.message : String(error);
+    return {
+      status: 'ERROR',
+      message: 'Unable to fetch mergeability from GitHub',
+      attempts: 1,
+      error: lastError,
+    };
+  }
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -2420,7 +2392,7 @@ export async function runReadyStage(options: {
       status:
         mergeConflict.status === 'CLEAN' ? 'pass'
           : mergeConflict.status === 'CONFLICTED' ? 'fail'
-          : mergeConflict.status === 'UNKNOWN' ? 'pending'
+          : mergeConflict.status === 'UNKNOWN' || mergeConflict.status === 'ERROR' ? 'fail'
           : 'warn',
       message: mergeConflict.message,
       details: {
