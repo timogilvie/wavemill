@@ -2175,6 +2175,7 @@ export interface StageExecutionIdentity {
  * score, timing, and any human interventions that occurred.
  */
 export interface EvalRecord {
+  attemptLineage?: import('./sdk-task-cost/contract.ts').TaskAttemptRef;
   /** Unique identifier for this eval record (UUID v4 recommended) */
   id: string;
 

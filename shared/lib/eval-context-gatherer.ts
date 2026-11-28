@@ -35,6 +35,8 @@ import {
   resolveRouterPolicyVersion,
 } from './route-artifact.ts';
 import { resolveTaskArtifact } from './task-artifact-lookup.ts';
+import { getResultFilePath } from './stage-result.ts';
+import { validateTaskAttemptRef, type TaskAttemptRef } from './sdk-task-cost/contract.ts';
 import type { BudgetSource } from './budget-source.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1065,6 +1067,7 @@ export function gatherStageArtifacts(
   executionModel?: string;
   /** Directory containing `.{stage}-result.json` files, when found (HOK-2958). */
   stageResultsDir?: string;
+  attemptLineage?: TaskAttemptRef;
   /** Feature slug; locates the live `.session-ownership.jsonl` (HOK-3328). */
   featureSlug?: string;
 } {
@@ -1101,7 +1104,19 @@ export function gatherStageArtifacts(
     : undefined;
   const routing = loadResolvedModelRouting(repoDir, issueId, slug, worktreePath);
 
+  const stageResultsDir = findStageResultsDir(repoDir, slug, worktreePath, issueId);
+  let attemptLineage: TaskAttemptRef | undefined;
+  if (stageResultsDir) {
+    try {
+      const coding = JSON.parse(readFileSync(getResultFilePath(stageResultsDir, 'coding'), 'utf8'));
+      if (['completed', 'failed', 'aborted'].includes(coding.status)) {
+        validateTaskAttemptRef(coding.attemptRef);
+        attemptLineage = coding.attemptRef;
+      }
+    } catch { /* Missing or legacy evidence is unknown. */ }
+  }
   return {
+    attemptLineage,
     taskPacket,
     planContent,
     selfReviewSummary,
@@ -1112,7 +1127,7 @@ export function gatherStageArtifacts(
     planningExecutionOutcome: loadPlanningExecutionOutcome(repoDir, slug, issueId, worktreePath),
     phaseDurations: computePhaseDurations(repoDir, slug, worktreePath, issueId),
     executionModel: loadStageExecutionModel(repoDir, slug, worktreePath),
-    stageResultsDir: findStageResultsDir(repoDir, slug, worktreePath, issueId),
+    stageResultsDir,
     featureSlug: slug,
   };
 }

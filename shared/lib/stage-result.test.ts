@@ -18,6 +18,8 @@ import { fileURLToPath } from 'node:url';
 import { MERGE_QUEUE_STATES } from './merge-queue.ts';
 
 import {
+  bindStageAttempt,
+  withStageResultRunFence,
   appendReviewIteration,
   existingReviewIterations,
   nextReviewIterationNumber,
@@ -1581,4 +1583,45 @@ describe('stage result task-run identity', () => {
     assert.equal(stageResultRunIdentity({startedAt:''},run),'unverifiable');
     assert.equal(stageResultRunIdentity({startedAt:''},null),'legacy');
   });
+});
+
+
+it('binds the current ownership launch and preserves it through completion and history', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'stage-lineage-'));
+  try {
+    await writeStageResultWithHistory(dir, 'coding', { status: 'running' });
+    const row = appendOwnershipRow(dir, { sessionRef: 's', harness: 'native', kind: 'coding', model: 'm', taskIdentity: { taskId: 'HOK-1', sdkRunId: '018f0000-0000-7000-8000-000000000001' } });
+    assert.ok(row.attemptRef);
+    assert.equal(await bindStageAttempt(dir, 'coding', row.attemptRef), true);
+    await updateStageResult(dir, 'coding', { status: 'failed' });
+    const current = await readStageResult(dir, 'coding');
+    assert.ok(current);
+    const staleRef = { ...row.attemptRef, stage_attempt_id: '018f0000-0000-7000-8000-000000000002' };
+    await updateStageResult(dir, 'coding', { attemptRef: staleRef });
+    assert.deepEqual((await readStageResult(dir, 'coding'))?.attemptRef, row.attemptRef);
+    await writeStageResult(dir, { ...current, attemptRef: staleRef, notes: 'late' });
+    assert.notEqual((await readStageResult(dir, 'coding'))?.notes, 'late');
+    assert.deepEqual((await readStageResult(dir, 'coding'))?.attemptRef, row.attemptRef);
+    await writeStageResultWithHistory(dir, 'coding', { status: 'running' });
+    const next = await readStageResult(dir, 'coding');
+    assert.equal(next?.attemptRef, undefined);
+    assert.deepEqual(next?.history?.[0].attemptRef, row.attemptRef);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+
+it('fences a stale SDK run even when legacy run IDs collide', async () => {
+  const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'sdk-run-fence-'));
+  try {
+    const dir = path.join(repo, 'features', 'run-stamp');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.mkdir(path.join(repo, '.wavemill'), { recursive: true });
+    await fs.writeFile(path.join(repo, '.wavemill', 'workflow-state.json'), JSON.stringify(buildWorkflowState({
+      'HOK-1': { runId: 'legacy', sdkRunId: '018f0000-0000-7000-8000-000000000001', worktree: repo, slug: 'run-stamp', branch: 'task/run-stamp' },
+    })));
+    let published = false;
+    const result = makeResult({ stage: 'coding', runId: 'legacy', attemptRef: { task_id: 'HOK-1', run_id: '018f0000-0000-7000-8000-000000000002' } });
+    await withStageResultRunFence({ featureDir: dir, result, repoDir: repo, branchName: 'task/run-stamp' }, async () => { published = true; });
+    assert.equal(published, false);
+  } finally { await fs.rm(repo, { recursive: true, force: true }); }
 });

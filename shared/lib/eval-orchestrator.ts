@@ -762,6 +762,7 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
 
   // 10. Enrich record with metadata
   enrichTrainingMetadata(record, {
+    attemptLineage: stageArtifacts.attemptLineage,
     agentType,
     provider: providerMetadata?.provider,
     endpoint: providerMetadata?.endpoint,

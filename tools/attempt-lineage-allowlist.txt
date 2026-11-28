@@ -1,0 +1,1 @@
+shared/lib/hokusai-schema.ts 1  # Existing Hokusai submission envelope has unrelated run_id and task_id fields.

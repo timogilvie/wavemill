@@ -1,3 +1,4 @@
+import { bindStageAttempt } from '../stage-result.ts';
 import { randomUUID } from 'node:crypto';
 import {
   existsSync,
@@ -133,7 +134,7 @@ import { reportPromptCacheHitRate } from './prompt-cache-detector.ts';
 import { getNativeContextManagementConfig, getNativePayloadCaptureConfig } from '../config.ts';
 import { equivalentOpenRouterModelIds, type NormalizedPricing } from '../openrouter-catalog.ts';
 import { logPromptUsage } from '../prompt-registry.ts';
-import { buildAttemptId, nativeLaunchKind, newSessionRef, recordLaunch } from '../session-ownership.ts';
+import { launchTaskIdentity, buildAttemptId, nativeLaunchKind, newSessionRef, recordLaunch } from '../session-ownership.ts';
 import { loopCostLimitUsd, resolveTaskSpendRemainder } from '../task-spend.ts';
 import type { ResourceRef } from '../resource-registry.ts';
 import {
@@ -1255,7 +1256,8 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
 
     // Construct session stream configuration and create persistent writer
     // HOK-3328: own the transcript's session before the loop starts.
-    recordLaunch(featureDir, {
+    const ownership = recordLaunch(featureDir, {
+      taskIdentity: launchTaskIdentity(options.repoDir, options.issue),
       sessionRef: codingNativeSessionId,
       harness: 'native',
       kind: launchKind,
@@ -1265,6 +1267,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       attemptId: buildAttemptId(launchKind, null, launchedAt, launchToken),
       cwd: options.wtDir,
     });
+    if (ownership?.attemptRef) await bindStageAttempt(featureDir, 'coding', ownership.attemptRef);
     const eventStreamPath = resolveSessionEventStreamPath(codingNativeSessionId, options.repoDir);
 
     // Create a persistent session stream writer for the entire launch lifecycle

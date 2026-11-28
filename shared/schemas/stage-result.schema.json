@@ -9,6 +9,16 @@
     "status"
   ],
   "properties": {
+    "attemptRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "run_id"],
+      "properties": {
+        "task_id": { "type": "string", "minLength": 1 },
+        "run_id": { "type": "string", "minLength": 1 },
+        "stage_attempt_id": { "type": "string", "minLength": 1 }
+      }
+    },
     "stage": {
       "enum": [
         "planning",
@@ -233,6 +243,16 @@
       "type": "array",
       "items": {
         "type": "object",
+        "properties": { "attemptRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "run_id"],
+      "properties": {
+        "task_id": { "type": "string", "minLength": 1 },
+        "run_id": { "type": "string", "minLength": 1 },
+        "stage_attempt_id": { "type": "string", "minLength": 1 }
+      }
+    } },
         "additionalProperties": true
       }
     },

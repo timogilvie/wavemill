@@ -89,7 +89,7 @@ _session_ownership_attempt_id() {
 
 session_ownership_append() {
   local state_dir="${1:-}" session_ref="${2:-}" harness="${3:-}" kind="${4:-}" model="${5:-}"
-  local attempt_id="${6:-}" cwd="${7:-}"
+  local attempt_id="${6:-}" cwd="${7:-}" attempt_ref="${8:-}"
   [[ -n "$state_dir" && -n "$session_ref" ]] || return 1
   case "$harness" in claude-code|codex|native) ;; *) return 1 ;; esac
   _session_ownership_valid_kind "$kind" || return 1
@@ -106,11 +106,12 @@ session_ownership_append() {
   line="$(jq -nc \
     --arg sessionRef "$session_ref" --arg harness "$harness" --arg kind "$kind" \
     --arg stage "$stage" --arg model "$model" --arg launchedAt "$launched_at" \
-    --arg attemptId "$attempt_id" --arg cwd "$cwd" \
+    --arg attemptId "$attempt_id" --arg cwd "$cwd" --argjson attemptRef "${attempt_ref:-null}" \
     '{schemaVersion: 1, type: "launch", sessionRef: $sessionRef, harness: $harness, kind: $kind}
      + (if $stage == "" then {} else {stage: $stage} end)
      + {model: $model, launchedAt: $launchedAt, attemptId: $attemptId}
-     + (if $cwd == "" then {} else {cwd: $cwd} end)')" || return 1
+     + (if $cwd == "" then {} else {cwd: $cwd} end)
+     + (if $attemptRef == null then {} else {attemptRef: $attemptRef} end)')" || return 1
 
   mkdir -p "$state_dir" 2>/dev/null || return 1
   # A single short append: concurrent launchers never interleave lines.
@@ -118,16 +119,23 @@ session_ownership_append() {
 }
 
 session_ownership_launch_snippet() {
-  local state_dir="${1:-}" harness="${2:-}" kind="${3:-}" model="${4:-}"
-  local q_lib q_dir q_kind q_model q_harness
+  local state_dir="${1:-}" harness="${2:-}" kind="${3:-}" model="${4:-}" issue="${5:-}" state_file="${6:-}"
+  local q_lib q_dir q_kind q_model q_harness q_issue q_state_file q_identity q_cli
   printf -v q_lib '%q' "$SESSION_OWNERSHIP_LIB"
   printf -v q_dir '%q' "$state_dir"
   printf -v q_kind '%q' "$kind"
   printf -v q_model '%q' "$model"
   printf -v q_harness '%q' "$harness"
+  printf -v q_issue '%q' "$issue"
+  printf -v q_state_file '%q' "$state_file"
+  printf -v q_identity '%q' "${SESSION_OWNERSHIP_LIB%/*}/attempt-identity.sh"
+  printf -v q_cli '%q' "${SESSION_OWNERSHIP_LIB%/shared/lib/*}/tools/stage-result-cli.ts"
   cat <<SNIPPET
 # HOK-3328: record this session before the harness starts.
 source $q_lib
+source $q_identity
+WM_SDK_RUN_ID="\$(jq -r --arg i $q_issue '.tasks[\$i].sdkRunId // empty' $q_state_file 2>/dev/null || true)"
+WM_ATTEMPT_REF="\$(attempt_identity_project_attempt_ref $q_issue "\$WM_SDK_RUN_ID" "\$(attempt_identity_mint_stage_attempt_id)")"
 WM_SESSION_REF="\$(session_ownership_new_ref)"
 WM_LAUNCH_NONCE_LINE=""
 SNIPPET
@@ -141,7 +149,11 @@ SNIPPET
   fi
   [[ -n "$state_dir" ]] || return 0
   cat <<SNIPPET
-session_ownership_append $q_dir "\$WM_SESSION_REF" $q_harness $q_kind $q_model "" "\$PWD" \\
+session_ownership_append $q_dir "\$WM_SESSION_REF" $q_harness $q_kind $q_model "" "\$PWD" "\$WM_ATTEMPT_REF" \\
   || echo "[wavemill] warning: session ownership row not recorded" >&2
+WM_OWNERSHIP_STAGE="\$(_session_ownership_stage_for_kind $q_kind)"
+if [[ -n "\$WM_ATTEMPT_REF" && -n "\$WM_OWNERSHIP_STAGE" ]]; then
+  node $q_cli bind-attempt $q_dir "\$WM_OWNERSHIP_STAGE" "\$WM_ATTEMPT_REF" || echo "[wavemill] warning: stage lineage not recorded" >&2
+fi
 SNIPPET
 }

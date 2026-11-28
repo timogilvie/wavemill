@@ -370,3 +370,15 @@ describe('one launch identity (HOK-3447)', () => {
     );
   });
 });
+
+it('SDK lineage is minted once per launch and survives ownership reads', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lineage-'));
+  try {
+    const input = { sessionRef: 'one', harness: 'native' as const, kind: 'coding' as const, model: 'm', taskIdentity: { taskId: 'HOK-1', sdkRunId: '018f0000-0000-7000-8000-000000000001' } };
+    const first = appendOwnershipRow(dir, input);
+    const second = appendOwnershipRow(dir, { ...input, sessionRef: 'two' });
+    assert.equal(first.attemptRef?.run_id, input.taskIdentity.sdkRunId);
+    assert.notEqual(first.attemptRef?.stage_attempt_id, second.attemptRef?.stage_attempt_id);
+    assert.deepEqual(readOwnershipRows(dir).map(row => row.attemptRef), [first.attemptRef, second.attemptRef]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

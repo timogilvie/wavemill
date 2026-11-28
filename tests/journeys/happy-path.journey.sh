@@ -32,6 +32,7 @@ phase_is() { [[ "$(journey_task_field "$ISSUE" phase)" == "$1" ]]; }
 # Budgets are monitor ticks (passes), not seconds.
 journey_wait_until "$ISSUE" 5  "task launched into planning" phase_is planning
 TASK_RUN_ID="$(journey_task_field "$ISSUE" runId)"
+TASK_SDK_RUN_ID="$(journey_task_field "$ISSUE" sdkRunId)"
 # HOK-3403: a workflow-state writer dies while its owner-stamped lock is held.
 # The real monitor must reclaim it on its next state write and finish the task.
 lock_ready="$JOURNEY_TMP/killed-state-writer.ready"
@@ -78,6 +79,26 @@ for stage in planning coding review ready; do
   journey_assert "$stage completion retains the launched task run" \
     jq -e --arg run "$TASK_RUN_ID" '.runId == $run' "$REPO_DIR/.wavemill/evals/artifacts/$ISSUE/.$stage-result.json"
 done
+for stage in planning coding review; do
+  result="$REPO_DIR/.wavemill/evals/artifacts/$ISSUE/.$stage-result.json"
+  ownership="$REPO_DIR/.wavemill/evals/artifacts/$ISSUE/.session-ownership.jsonl"
+  journey_assert "$stage result carries the SDK run" jq -e --arg run "$TASK_SDK_RUN_ID" '.attemptRef.run_id == $run and (.attemptRef.stage_attempt_id | type == "string")' "$result"
+  attempt="$(jq -r '.attemptRef.stage_attempt_id' "$result")"
+  journey_assert "$stage ownership matches its result" jq -s -e --arg run "$TASK_SDK_RUN_ID" --arg attempt "$attempt" 'any(.[]; .type == "launch" and .attemptRef.run_id == $run and .attemptRef.stage_attempt_id == $attempt)' "$ownership"
+done
+# The shared journey disables automatic eval. Exercise the production artifact
+# gatherer and record builder against the archived coding result instead.
+journey_eval_lineage_matches() {
+  (cd "$JOURNEY_INSTALL_DIR" && node --import tsx --input-type=module -e '
+    import { gatherStageArtifacts } from "./shared/lib/eval-context-gatherer.ts";
+    import { attachAttemptLineage } from "./shared/lib/eval-record-builder.ts";
+    const [repo, issue, run] = process.argv.slice(1);
+    const record = {};
+    attachAttemptLineage(record, gatherStageArtifacts(repo, issue, "task/add-journey-output-file").attemptLineage);
+    if (record.attemptLineage?.run_id !== run) process.exit(1);
+  ' "$REPO_DIR" "$ISSUE" "$TASK_SDK_RUN_ID")
+}
+journey_assert "eval carries the SDK run" journey_eval_lineage_matches
 journey_assert "the happy path creates no retired ledger database" \
   test ! -e "$REPO_DIR/.wavemill/ledger.sqlite"
 journey_assert "the happy path creates no retired duplicate audit" \
