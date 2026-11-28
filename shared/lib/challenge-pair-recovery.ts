@@ -109,7 +109,7 @@ interface ExecutionIntent {
   challengeStage?: string;
 }
 
-export type ArmIntentSource = 'task-state' | 'primary-challenge-arm' | 'feature-dir';
+export type ArmIntentSource = 'task-state' | 'primary-challenge-arm' | 'feature-dir' | 'archive';
 
 /** The task-record fields recovery reads. */
 type ArmTask = Pick<
@@ -187,8 +187,8 @@ function resolveArmIntent(
     slug: task?.slug,
     worktreePath: task?.worktree,
   });
-  if (resolved?.source === 'feature-dir' && belongsToPair(resolved.intent as ExecutionIntent)) {
-    return { intent: resolved.intent as ExecutionIntent, source: 'feature-dir' };
+  if (resolved && belongsToPair(resolved.intent as ExecutionIntent)) {
+    return { intent: resolved.intent as ExecutionIntent, source: resolved.source };
   }
   return {};
 }

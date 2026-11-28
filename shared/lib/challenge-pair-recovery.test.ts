@@ -425,6 +425,23 @@ describe('challenger intent resolution', () => {
     }
   });
 
+  it('proves the challenger from an archived challenge intent', () => {
+    const repoDir = makeRepo(challengerWithoutStateIntent());
+    try {
+      const archiveDir = join(repoDir, '.wavemill', 'evals', 'artifacts', 'PAIR-1_c');
+      mkdirSync(archiveDir, { recursive: true });
+      writeFileSync(
+        join(archiveDir, 'challenge-intent.json'),
+        JSON.stringify({ pairId: 'PAIR-1', createdAt: INTENT_AT, selectedStage: 'review' }),
+      );
+      const assessment = assess(repoDir, 'PAIR-1');
+      assert.equal(assessment.verdict, 'supersedable');
+      assert.equal(assessment.arms[1].intentSource, 'archive');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
   it('ignores a fallback intent that names a different pair', () => {
     const repoDir = makeRepo(challengerWithoutStateIntent());
     try {
