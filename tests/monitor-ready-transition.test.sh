@@ -68,7 +68,6 @@ extract_function "$MONITOR_SCRIPT_FILE" "stage_agent_disposition" >> "$MONITOR_F
 extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_marker_path" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_awaiting_ready" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_exhausted_hold" >> "$MONITOR_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "clear_transient_mergeability_state" >> "$MONITOR_FUNC_FILE"
 # HOK-3371: the failed-ready-recheck wrappers are retired; the failed-status
 # block dispatches through ready_failure_classify_and_act →
 # _maybe_retry_failed_stage_now (shared stage-failure-ready bucket).
@@ -475,7 +474,6 @@ JSON
         VALIDATE_MERGED="true"
         printf "%s\n" "{\"status\":\"completed\",\"artifacts\":{\"verdict\":\"pass\"}}" > "$READY_DIR/.ready-result.json"
         printf "%s\n" "stale transient attention" > "$READY_DIR/.needs-attention"
-        printf "%s\n" "4" > "$READY_DIR/.transient-mergeability-count"
         ;;
       discovered_pr_from_coding)
         unset "PR_BY_ISSUE[$ISSUE]"
@@ -631,7 +629,6 @@ JSON
     effective_task_base_branch() { printf "%s\n" "$BASE_BRANCH"; }
     read_state_value() { printf "%s\n" "${1-}"; }
     set_window_attention_state() { ATTENTION_STATE="$2"; }
-    handle_agent_error_recovery() { :; }
     cleanup_completed_task() { CLEANUP_COUNT=$((CLEANUP_COUNT + 1)); }
     execute() { :; }
     tmux() { return 1; }
@@ -754,7 +751,6 @@ JSON
     wavemill_release_terminal_pane() { return 0; }
     get_challenge_sibling_pr() { :; }
     check_challenge_sibling_merged() { return 1; }
-    transient_error_recovery_pending() { return 1; }
     phase_should_remain_active_without_pr() { return 1; }
     codex_has_pending_approval() { return 1; }
 
@@ -772,8 +768,7 @@ JSON
     [[ -f "$READY_DIR/.needs-attention" ]] && needs_attention="present"
     transient_attention="absent"
     [[ -f "$READY_DIR/.needs-attention-transient" ]] && transient_attention="present"
-    transient_count="$(cat "$READY_DIR/.transient-mergeability-count" 2>/dev/null || echo "")"
-    printf "phase=%s\nattention=%s\nready_launches=%s\nreview_launches=%s\nrestore_calls=%s\ncleanup_count=%s\nactive_count=%s\nwrite_stage=%s\nready_args=%s\nreview_args=%s\nattention_calls=%s\nbypass_warn_count=%s\nsave_task_state_status=%s\nneeds_attention=%s\ntransient_attention=%s\ntransient_count=%s\nlogs=%s\n" \
+    printf "phase=%s\nattention=%s\nready_launches=%s\nreview_launches=%s\nrestore_calls=%s\ncleanup_count=%s\nactive_count=%s\nwrite_stage=%s\nready_args=%s\nreview_args=%s\nattention_calls=%s\nbypass_warn_count=%s\nsave_task_state_status=%s\nneeds_attention=%s\ntransient_attention=%s\nlogs=%s\n" \
       "$CURRENT_PHASE" \
       "$ATTENTION_STATE" \
       "$READY_LAUNCH_COUNT" \
@@ -789,7 +784,6 @@ JSON
       "$save_task_state_status" \
       "$needs_attention" \
       "$transient_attention" \
-      "$transient_count" \
       "$LOG_OUTPUT"
     recheck_count="$(cat "$READY_DIR/.retry-stage-failure-ready-count" 2>/dev/null || echo "")"
     recheck_sentinel="absent"
@@ -980,7 +974,6 @@ merged_after_ready_output="$(run_monitor_case merged_after_ready)"
 check_contains "merged PR after ready pass can clean up" "$merged_after_ready_output" "cleanup_count=1"
 check_contains "merged PR after ready pass clears stale attention" "$merged_after_ready_output" "needs_attention=absent"
 check_contains "merged PR after ready pass clears transient marker" "$merged_after_ready_output" "transient_attention=absent"
-check_contains "merged PR after ready pass clears transient counter" "$merged_after_ready_output" "transient_count="
 
 discovered_pr_from_coding_output="$(run_monitor_case discovered_pr_from_coding)"
 check_contains "newly discovered PR moves stale coding phase to ready" "$discovered_pr_from_coding_output" "phase=ready"

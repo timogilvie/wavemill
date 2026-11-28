@@ -237,6 +237,15 @@ check_eq "a retryable failure relaunches Ready" "$out" "rc=0"
 check_eq "the relaunch charges the stage-failure-ready bucket" "$(bounded_retry_count "$STATE_DIR" "$bucket")" "1"
 check_contains "the relaunch carries the evidence kind in its log" "$(cat "$STATUS_LOG")" "re-running Ready checks (attempt 1/3)"
 
+# UNKNOWN/ERROR mergeability is persisted as a failed Ready result and uses
+# the same shared bucket, with the observed state retained as evidence.
+bounded_retry_clear "$STATE_DIR" "$bucket"
+write_failed_result '{"stage":"ready","status":"failed","agent":"claude","notes":"Merge status UNKNOWN unavailable","artifacts":{"verdict":"fail","mergeConflict":"UNKNOWN","failureKind":"mergeability-unknown"}}'
+out="$(act)"
+check_eq "unknown mergeability is retried through Ready's shared bucket" "$out" "rc=0"
+check_eq "unknown mergeability charges stage-failure-ready" "$(bounded_retry_count "$STATE_DIR" "$bucket")" "1"
+check_eq "unknown mergeability evidence remains on the failed Ready result" "$(jq -r '.artifacts.failureKind' "$STATE_DIR/.ready-result.json")" "mergeability-unknown"
+
 # A repeat failure inside the backoff window holds without spending budget.
 out="$(act)"
 check_eq "a repeat failure inside the backoff window holds" "$out" "rc=2"

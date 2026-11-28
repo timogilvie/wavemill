@@ -49,7 +49,6 @@ safe_remove_task_worktree_and_branch() {
 cleanup_remote_task_branch() { return 0; }
 wavemill_cleanup_run() { return 0; }
 reconciliation_lease_release() { return 0; }
-reset_retry_count() { return 0; }
 log() { :; }
 log_warn() { :; }
 

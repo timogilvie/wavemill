@@ -62,9 +62,6 @@ extract_function() {
 LAUNCH_FUNC_FILE="$TEST_TMP/launch_ready_phase.sh"
 cat "$REPO_DIR/shared/lib/transient-marker.sh" > "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "conflict_remediation_marker_path" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "transient_mergeability_count" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "increment_transient_mergeability_count" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "clear_transient_mergeability_state" >> "$LAUNCH_FUNC_FILE"
 # HOK-3360: operator attention is raised by escalate_operator_attention, which
 # each harness stubs below (write_ready_attention_file was removed).
 extract_function "$MONITOR_SCRIPT_FILE" "_write_cross_pr_diagnostic" >> "$LAUNCH_FUNC_FILE"
@@ -255,7 +252,6 @@ run_launch_case() {
     TOOLS_DIR="$CASE_DIR/tools"
     REPO_DIR="$CASE_DIR/repo"
     AGENT_CMD="codex"
-    READY_TRANSIENT_MAX_ATTEMPTS=6
     mkdir -p "$TOOLS_DIR" "$REPO_DIR"
 
     STATE_DIR="$CASE_DIR/feature/ready"
@@ -384,9 +380,6 @@ EOF
         bounded_retry_increment "$STATE_DIR" "stage-failure-ready" "abc123" >/dev/null
         bounded_retry_mark_exhausted "$STATE_DIR" "stage-failure-ready" "old exhaustion" || true
         ;;
-      unknown_capped)
-        printf "%s\n" "6" > "$STATE_DIR/.transient-mergeability-count"
-        ;;
       remediation_backoff_hold)
         printf "%s\n" "1" > "$STATE_DIR/.retry-ready-remediation-count"
         printf "%s\n" "abc123" > "$STATE_DIR/.retry-ready-remediation-head"
@@ -408,7 +401,6 @@ EOF
         ;;
       clean_after_unknown)
         printf "%s\n" "stale transient attention" > "$STATE_DIR/.needs-attention"
-        printf "%s\n" "3" > "$STATE_DIR/.transient-mergeability-count"
         ;;
       review_tool_error_gate)
         cat > "$STATE_DIR/.review-result.json" <<EOF
@@ -944,7 +936,6 @@ EOF
     [[ -f "$STATE_DIR/.needs-attention" ]] && needs_attention="present"
     transient_attention="absent"
     [[ -f "$STATE_DIR/.needs-attention-transient" ]] && transient_attention="present"
-    transient_count="$(cat "$STATE_DIR/.transient-mergeability-count" 2>/dev/null || echo "")"
     infra_retry_count="$(cat "$STATE_DIR/.retry-review-infra-recovery-count" 2>/dev/null || echo "")"
     handoff_claims="$(cat "$HANDOFF_CLAIM_COUNT_FILE" 2>/dev/null || echo "0")"
     ready_result_payload=""
@@ -955,8 +946,8 @@ EOF
     debug_payload=""
     [[ -f "$DEBUG_FILE" ]] && debug_payload=$(cat "$DEBUG_FILE")
 
-    printf "rc=%s\nstage_calls=%s\nattention_calls=%s\nattention_count=%s\nlaunch_calls=%s\nreview_launch_calls=%s\nreview_launch_model=%s\nprepare_recovery_calls=%s\nagent_validate_calls=%s\nprompt_calls=%s\nerror_count=%s\nlogs=%s\nwarn_logs=%s\nerror_payload=%s\ndebug_file=%s\ndebug_lines=%s\ndebug_payload=%s\nconflict_marker=%s\nconflict_marker_json=%s\nconflict_retry_count=%s\nconflict_retry_key=%s\nconflict_retry_exhausted=%s\nlegacy_conflict_files=%s\nneeds_attention=%s\ntransient_attention=%s\ntransient_count=%s\ninfra_retry_count=%s\nready_result_payload=%s\n" \
-      "$rc" "$stage_summary" "$attention_summary" "$attention_count" "$LAUNCH_AGENT_CALLS" "$REVIEW_LAUNCH_CALLS" "${REVIEW_LAUNCH_MODEL:-}" "$PREPARE_RECOVERY_CALLS" "$AGENT_VALIDATE_CALLS" "$READY_PROMPT_CALLS" "$error_count" "$LOG_OUTPUT" "$LOG_WARN_OUTPUT" "$LOG_ERROR_OUTPUT" "$DEBUG_FILE" "$debug_line_count" "$debug_payload" "$conflict_marker" "$conflict_marker_json" "$conflict_retry_count" "$conflict_retry_key" "$conflict_retry_exhausted" "$legacy_conflict_files" "$needs_attention" "$transient_attention" "$transient_count" "$infra_retry_count" "$ready_result_payload"
+    printf "rc=%s\nstage_calls=%s\nattention_calls=%s\nattention_count=%s\nlaunch_calls=%s\nreview_launch_calls=%s\nreview_launch_model=%s\nprepare_recovery_calls=%s\nagent_validate_calls=%s\nprompt_calls=%s\nerror_count=%s\nlogs=%s\nwarn_logs=%s\nerror_payload=%s\ndebug_file=%s\ndebug_lines=%s\ndebug_payload=%s\nconflict_marker=%s\nconflict_marker_json=%s\nconflict_retry_count=%s\nconflict_retry_key=%s\nconflict_retry_exhausted=%s\nlegacy_conflict_files=%s\nneeds_attention=%s\ntransient_attention=%s\ninfra_retry_count=%s\nready_result_payload=%s\n" \
+      "$rc" "$stage_summary" "$attention_summary" "$attention_count" "$LAUNCH_AGENT_CALLS" "$REVIEW_LAUNCH_CALLS" "${REVIEW_LAUNCH_MODEL:-}" "$PREPARE_RECOVERY_CALLS" "$AGENT_VALIDATE_CALLS" "$READY_PROMPT_CALLS" "$error_count" "$LOG_OUTPUT" "$LOG_WARN_OUTPUT" "$LOG_ERROR_OUTPUT" "$DEBUG_FILE" "$debug_line_count" "$debug_payload" "$conflict_marker" "$conflict_marker_json" "$conflict_retry_count" "$conflict_retry_key" "$conflict_retry_exhausted" "$legacy_conflict_files" "$needs_attention" "$transient_attention" "$infra_retry_count" "$ready_result_payload"
     printf "handoff_claims=%s\n" "$handoff_claims"
     printf "rc_by_pass=%s\n" "$RC_BY_PASS"
     printf "budget_by_pass=%s\n" "$BUDGET_BY_PASS"
@@ -1285,36 +1276,20 @@ check_contains "direct cross-pr tool error skips stage helper writes" "$output" 
 check_not_contains "direct cross-pr tool error does not run ready tool" "$output" "\"checksRun\":3"
 
 output="$(run_launch_case unknown_first)"
-check_contains "unknown first poll returns retry code" "$output" "rc=4"
-check_contains "unknown first poll writes running stage result" "$output" "|ready|running|"
-check_contains "unknown first poll records pending verdict" "$output" "\"verdict\":\"pending\""
-check_contains "unknown first poll tracks transient attempt" "$output" "\"transientMergeabilityAttempts\":1"
-check_contains "unknown first poll leaves no attention file" "$output" "needs_attention=absent"
-check_contains "unknown first poll leaves no transient attention marker" "$output" "transient_attention=absent"
-check_contains "unknown first poll stores retry count" "$output" "transient_count=1"
-check_contains "unknown first poll logs retry" "$output" "Merge status for HOK-1300 is UNKNOWN - will retry (attempt 1/6)"
+check_contains "unknown mergeability returns the shared retry code" "$output" "rc=4"
+check_contains "unknown mergeability writes a failed ready result" "$output" "|ready|failed|"
+check_contains "unknown mergeability records its failure kind" "$output" "\"failureKind\":\"mergeability-unknown\""
+check_contains "unknown mergeability records observed status" "$output" "\"mergeConflict\":\"UNKNOWN\""
 
 output="$(run_launch_case error_first)"
 check_contains "error first poll returns retry code" "$output" "rc=4"
-check_contains "error first poll writes running stage result" "$output" "|ready|running|"
-check_contains "error first poll records pending verdict" "$output" "\"verdict\":\"pending\""
-check_contains "error first poll tracks transient attempt" "$output" "\"transientMergeabilityAttempts\":1"
-check_contains "error first poll stores retry count" "$output" "transient_count=1"
+check_contains "error first poll writes a failed ready result" "$output" "|ready|failed|"
+check_contains "error first poll records its failure kind" "$output" "\"failureKind\":\"mergeability-unknown\""
 check_contains "error first poll leaves no attention file" "$output" "needs_attention=absent"
-check_contains "error first poll logs retry" "$output" "Merge status for HOK-1300 is ERROR - will retry (attempt 1/6)"
+check_contains "error first poll records a retryable mergeability failure" "$output" "Merge status for HOK-1300 is ERROR - recording a retryable Ready failure"
 
 output="$(run_launch_case unknown_capped)"
-check_contains "unknown capped returns failure" "$output" "rc=1"
-# HOK-3360: a persisted UNKNOWN mergeability records a failed ready result
-# (mergeability-unknown) instead of a transient attention marker; the
-# stage-failure-ready budget owns retries and only its exhaustion pages.
-check_contains "unknown capped records the persisted failure in the ready result" "$output" "Merge status UNKNOWN persisted after 7 checks for PR #304."
-check_contains "unknown capped writes a failed ready result" "$output" "|ready|failed|"
-check_contains "unknown capped records the mergeability-unknown kind" "$output" "\"failureKind\":\"mergeability-unknown\""
-check_contains "unknown capped writes no transient attention marker" "$output" "transient_attention=absent"
-check_contains "unknown capped raises no operator attention" "$output" "needs_attention=absent"
-check_contains "unknown capped increments counter past cap" "$output" "transient_count=7"
-check_contains "unknown capped logs persistent failure" "$output" "Merge status UNKNOWN persisted for HOK-1300 after 7 attempts"
+check_contains "unknown capped compatibility case writes failure" "$output" "|ready|failed|"
 
 output="$(run_launch_case remediation_launch)"
 check_contains "first remediation launch returns rc 5" "$output" "rc=5"
@@ -1669,7 +1644,6 @@ output="$(run_launch_case clean_after_unknown)"
 check_contains "clean after unknown returns success" "$output" "rc=0"
 check_contains "clean after unknown clears attention" "$output" "needs_attention=absent"
 check_contains "clean after unknown clears transient marker" "$output" "transient_attention=absent"
-check_contains "clean after unknown clears transient count" "$output" "transient_count="
 
 output="$(run_launch_case clean_with_stderr)"
 check_contains "success stderr is not treated as error" "$output" "error_count=0"

@@ -151,7 +151,6 @@ for fn in \
   record_review_pr_reconciliation \
   clear_review_gate_attention \
   launch_review_for_missing_evidence \
-  clear_transient_mergeability_state \
   reroute_expanded_packets_for_coding_handoff \
   handle_expanded_reroute_handoff_failure \
   recover_missing_expansion_artifact \
@@ -427,7 +426,6 @@ run_lifecycle_scenario() {
     }
 
     set_window_attention_state() { ATTENTION_STATE="$2"; }
-    handle_agent_error_recovery() { :; }
     execute() { "$@" >/dev/null 2>&1 || true; }
     tmux() {
       if [[ "${1:-}" == "list-panes" && "$PANE_ALIVE" == "true" ]]; then
@@ -587,7 +585,6 @@ JSON
     get_challenge_sibling_pr() { printf "%s\n" "$CHALLENGE_SIBLING_PR"; }
     check_challenge_sibling_merged() { [[ "$CHALLENGE_SIBLING_MERGED" == "true" ]]; }
     get_main_head_sha() { printf "%s\n" "$MAIN_SHA_RETURN"; }
-    transient_error_recovery_pending() { return 1; }
     phase_should_remain_active_without_pr() { return 1; }
     codex_has_pending_approval() { return 1; }
     check_pr_exists() { return 1; }

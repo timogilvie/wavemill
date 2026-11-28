@@ -171,7 +171,6 @@ EOF
     log() { LOG_OUTPUT+="$*\n"; }
     log_warn() { WARN_OUTPUT+="$*\n"; }
     set_window_attention_state() { ATTENTION="$2"; }
-    reset_retry_count() { :; }
     archive_stage_artifacts() { ORDER+="archive;"; }
     read_state_value() {
       local default="$1"

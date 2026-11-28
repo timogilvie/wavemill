@@ -94,7 +94,6 @@ set_window_attention_state() { printf '%s=%s\n' "$1" "$2" >> "$ATTENTION_FILE"; 
 _tmux_task_window_target() { return 1; }
 _tmux_target_join() { printf '%s:%s\n' "$1" "$2"; }
 _tmux_window_target_exists() { return 1; }
-reset_retry_count() { :; }
 remove_task_state() {
   local issue="$1"
   state_mutate "$STATE_FILE" 'del(.tasks[$issue])' --arg issue "$issue"

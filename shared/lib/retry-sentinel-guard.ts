@@ -34,6 +34,18 @@ export const RETRY_SENTINEL_GUARD: GuardSpec = {
   ],
   patterns: [
     {
+      name: 'legacy-private-retry-file',
+      description: 'legacy `/tmp/wavemill-*.retry` counter file — use the bounded-retry helper with a stage-failure bucket',
+      lang: 'both',
+      re: /\/tmp\/wavemill-[^\s'"`]*\.retry\b/,
+    },
+    {
+      name: 'private-count-file',
+      description: 'private `-count` counter file — use the bounded-retry helper with a stage-failure bucket',
+      lang: 'both',
+      re: /\$[A-Za-z_][A-Za-z0-9_]*\/\.(?!retry-)(?!push-retry-count)[a-z0-9][a-z0-9_-]*-count(?:\.json)?\b/,
+    },
+    {
       name: 'retry-state-file',
       description: 'hand-built `.retry-<bucket>-*` path — bounded-retry storage is private to shared/lib/bounded-retry.{sh,ts}; call bounded_retry_* / createStateDirRetry',
       lang: 'both',
