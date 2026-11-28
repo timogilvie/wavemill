@@ -23,6 +23,7 @@ import {
   sealChallengeDecision,
   assessChallengeRouteInvariant,
   loadChallengeDivergenceFromState,
+  resolveChallengeIntent,
   sealedSideRoute,
   routeFromPhaseConfig,
   variedFieldsForStage,
@@ -1462,6 +1463,80 @@ test('checkChallengeRoute compares arm phase-configs and reports drift', () => {
     assert.equal(unreadable.status, 'unreadable');
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('resolveChallengeIntent finds pair intent in existing arm dir despite stale slug and bad earlier candidates', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'challenge-intent-repo-'));
+  const worktreePath = mkdtempSync(join(tmpdir(), 'challenge-intent-worktree-'));
+  try {
+    const wrong = join(worktreePath, 'features', 'a-wrong');
+    const actual = join(worktreePath, 'features', 'z-actual-long-task-slug');
+    mkdirSync(wrong, { recursive: true });
+    mkdirSync(actual, { recursive: true });
+    writeFileSync(join(wrong, 'challenge-intent.json'), '{ malformed');
+    writeFileSync(join(wrong, '.challenge-intent.json'), JSON.stringify(makeReviewIntent({ pairId: 'OTHER-1' })));
+    writeFileSync(join(actual, '.challenge-intent.json'), JSON.stringify(makeReviewIntent({ pairId: 'HOK-3516' })));
+
+    const resolved = resolveChallengeIntent({
+      repoDir,
+      issueId: 'HOK-3516',
+      challengePairId: 'HOK-3516',
+      worktreePath,
+      slug: 'stale-branch-slug',
+    });
+    assert.equal(resolved?.source, 'feature-dir');
+    assert.equal(resolved?.featureDir, actual);
+    assert.equal(resolved?.intent.pairId, 'HOK-3516');
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+    rmSync(worktreePath, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3516 eval replay resolves both persisted arm intents with stale branch metadata', () => {
+  const replay = JSON.parse(readFileSync(join(
+    __dirname,
+    '..',
+    '..',
+    'tests',
+    'fixtures',
+    'incident-replay',
+    'real',
+    'hok3516-challenge-intent',
+    'evidence.json',
+  ), 'utf8')) as {
+    sourceEval: { id: string; challengeDivergenceReason: string };
+    observedArtifacts: { pairId: string; primaryIntentFile: string; challengerIntentFile: string };
+  };
+  assert.equal(replay.sourceEval.id, '2636f3ae-f21b-4c4a-b31f-6a739c4a7ff9');
+  assert.equal(replay.sourceEval.challengeDivergenceReason, 'missing_challenge_intent');
+  const repoDir = mkdtempSync(join(tmpdir(), 'hok3516-intent-replay-repo-'));
+  const worktreePath = mkdtempSync(join(tmpdir(), 'hok3516-intent-replay-worktree-'));
+  try {
+    const primaryDir = join(worktreePath, 'features', 'hok3516-primary-long-slug');
+    const challengerDir = join(worktreePath, 'features', 'hok3516-challenger-long-slug');
+    mkdirSync(primaryDir, { recursive: true });
+    mkdirSync(challengerDir, { recursive: true });
+    writeFileSync(join(primaryDir, replay.observedArtifacts.primaryIntentFile), JSON.stringify(makeReviewIntent({ pairId: replay.observedArtifacts.pairId })));
+    writeFileSync(join(challengerDir, replay.observedArtifacts.challengerIntentFile), JSON.stringify(makeReviewIntent({ pairId: replay.observedArtifacts.pairId })));
+
+    for (const [issueId, slug] of [
+      ['HOK-3516', 'stale-primary-branch'],
+      ['HOK-3516_c', 'stale-challenger-branch'],
+    ] as const) {
+      const resolved = resolveChallengeIntent({
+        repoDir,
+        issueId,
+        challengePairId: replay.observedArtifacts.pairId,
+        worktreePath,
+        slug,
+      });
+      assert.equal(resolved?.intent.pairId, replay.observedArtifacts.pairId);
+    }
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+    rmSync(worktreePath, { recursive: true, force: true });
   }
 });
 

@@ -1514,6 +1514,28 @@ test('resolver voids the pair when the challenger was retired for a route-stamp 
   }
 });
 
+test('resolver preserves the aborted eval typed challenge reason in the comparison', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    writeWorkflowState(repoDir, readyExhaustedPairTasks(ROUTE_STAMP_ABORT));
+    writeFileSync(join(repoDir, '.wavemill', 'evals', 'evals.jsonl'), `${JSON.stringify({
+      id: 'eval-with-typed-challenge-reason',
+      challengePairId: 'HOK-3145',
+      challengeSide: 'challenger',
+      invalidChallenge: true,
+      challengeDivergenceReason: 'state_vs_derived_side_mismatch',
+      nonRewardReason: { code: 'INVALID_CHALLENGE', message: 'challenge side disagreed with task identity' },
+    })}\n`);
+
+    const result = await resolveUnresolvablePair({ pairId: 'HOK-3145', repoDir });
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.record.invalidChallengeReason, 'state_vs_derived_side_mismatch');
+    assert.equal(result.record.noComparisonReason, 'state_vs_derived_side_mismatch');
+  } finally {
+    cleanup();
+  }
+});
+
 test('resolver voids an infrastructure-retired pair without waiting on the survivor eval (HOK-3147)', async () => {
   const { repoDir, cleanup } = setupRepoDir();
   try {

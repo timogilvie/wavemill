@@ -113,11 +113,11 @@ it('records missing/pending/foreign evidence and preserves failed/aborted artifa
   }
   mkdirSync(f.archive, { recursive: true });
   writeFileSync(join(f.archive, '.ready-result.json'), '{"old":true}');
-  for (const name of ['.coding-result.attempt-1-failed.json', '.challenge-aborted.json', '.coding-failure-handoff.json']) writeFileSync(join(f.featureDir, name), '{"reason":"fixture"}');
+  for (const name of ['.coding-result.attempt-1-failed.json', '.challenge-aborted.json', '.coding-failure-handoff.json', 'challenge-intent.json', '.challenge-intent.json']) writeFileSync(join(f.featureDir, name), '{"reason":"fixture"}');
   const inventory = archiveTaskEvidence(f, silent);
   assert.deepEqual(inventory.sessions.map(s => s.status), ['missing', 'pending', 'foreign-cwd']);
   assert.equal(existsSync(join(f.archive, '.ready-result.json')), false);
-  for (const name of ['.coding-result.attempt-1-failed.json', '.challenge-aborted.json', '.coding-failure-handoff.json']) assert.ok(existsSync(join(f.archive, name)));
+  for (const name of ['.coding-result.attempt-1-failed.json', '.challenge-aborted.json', '.coding-failure-handoff.json', 'challenge-intent.json', '.challenge-intent.json']) assert.ok(existsSync(join(f.archive, name)));
   assert.ok(inventory.absentArtifacts.includes('.ready-result.json'));
 });
 

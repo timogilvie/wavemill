@@ -10,6 +10,7 @@ import type { EvalContext } from './eval-context-gatherer.ts';
 import type { WorkflowCostOutcome } from './workflow-cost.ts';
 import { meterWorkflowCost } from './sdk-task-cost/meter.ts';
 import { appendOwnershipRow } from './session-ownership.ts';
+import { buildChallengeExecutionIntent } from './challenge-execution-contract.ts';
 
 function makeJudgeRecord(): EvalRecord {
   return {
@@ -488,6 +489,32 @@ describe('eval-orchestrator', () => {
 
     assert.equal(evaluateTaskInput?.timeSeconds, 180);
     assert.equal(record.timeSeconds, 180);
+  });
+
+  it('attaches an intent found in the arm artifact before enforcing challenge evidence', async () => {
+    const pairId = 'HOK-3516';
+    const slug = 'archived-challenge-arm';
+    const featureDir = join(repoDir, 'features', slug);
+    mkdirSync(featureDir, { recursive: true });
+    writeFileSync(join(featureDir, 'challenge-intent.json'), JSON.stringify(buildChallengeExecutionIntent({
+      pairId,
+      challengeStage: 'implementation',
+      primary: { model: 'gpt-5.4', planner: 'claude-opus-4-6', reviewer: 'claude-sonnet-4-5-20250929' },
+      challenger: { model: 'claude-opus-4-6', planner: 'claude-opus-4-6', reviewer: 'claude-sonnet-4-5-20250929' },
+    })));
+
+    const record = await runEvaluation({
+      issueId: pairId,
+      challengePairId: pairId,
+      prNumber: '3516',
+      repoDir,
+      worktreePath: repoDir,
+      agentType: 'codex',
+    });
+
+    assert.equal(record.challengeIntent?.pairId, pairId);
+    assert.notEqual(record.challengeDivergenceReason, 'missing_challenge_intent');
+    assert.notEqual(record.invalidChallenge, true);
   });
 
   it('matches post-completion training fields for equivalent inputs', async () => {

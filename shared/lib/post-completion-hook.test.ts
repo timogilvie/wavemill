@@ -1034,6 +1034,29 @@ await test('enrichPostCompletionRecord uses canonical challengeRole and challeng
   }
 });
 
+await test('enrichPostCompletionRecord resolves a challenge intent from the arm artifact', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'post-completion-artifact-challenge-'));
+  const pairId = 'pair-2598';
+  try {
+    const featureDir = join(repoDir, 'features', 'reaped-challenge-arm');
+    mkdirSync(featureDir, { recursive: true });
+    writeFileSync(join(featureDir, 'challenge-intent.json'), JSON.stringify(makeChallengeIntent(pairId)));
+
+    const record = enrichChallengeRecord({
+      repoDir,
+      issueId: pairId,
+      branchName: 'task/reaped-challenge-arm',
+      challengePairId: pairId,
+    });
+
+    assert.equal(record.challengeIntent?.pairId, pairId);
+    assert.notEqual(record.challengeDivergenceReason, 'missing_challenge_intent');
+    assert.notEqual(record.invalidChallenge, true);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
 await test('enrichPostCompletionRecord recognizes -challenger branch fallback when state is absent', () => {
   const repoDir = mkdtempSync(join(tmpdir(), 'post-completion-dash-challenger-'));
   try {

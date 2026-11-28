@@ -26,7 +26,7 @@ export const TASK_EVIDENCE_MANIFEST = '.evidence-inventory.json';
 /** Stable evidence basenames archived before reap. Mill-owned paths derives its
  * evidence subset from this existing archive inventory. */
 export const TASK_EVIDENCE_NAMES = ['plan.md', 'task-packet.md', 'task-packet-header.md', 'task-packet-details.md',
-  '.routing-complete', '.initial-route.json', '.post-expansion-route.json', 'routing.jsonl', '.coding-uncommitted-output.resolved.jsonl', '.operator-intervention.json', '.terminal-history.jsonl', '.operator-events.jsonl', '.session-ownership.jsonl', '.head-moves.jsonl', '.recovery-actions.jsonl', '.challenge-aborted.json', '.coding-failure-handoff.json', 'trace.jsonl',
+  '.routing-complete', '.initial-route.json', '.post-expansion-route.json', 'routing.jsonl', '.coding-uncommitted-output.resolved.jsonl', '.operator-intervention.json', '.terminal-history.jsonl', '.operator-events.jsonl', '.session-ownership.jsonl', '.head-moves.jsonl', '.recovery-actions.jsonl', '.challenge-aborted.json', '.coding-failure-handoff.json', 'challenge-intent.json', '.challenge-intent.json', 'trace.jsonl',
   ...TASK_RESULT_STAGES.map(stage => `.${stage}-result.json`),
 ] as const;
 const EVIDENCE_NAMES: readonly string[] = TASK_EVIDENCE_NAMES;

@@ -62,8 +62,7 @@ import { buildTaskDescriptor } from './task-descriptor-builder.ts';
 import {
   attestEvalRecordChallengeExecution,
   enforceChallengeIntentPresence,
-  loadChallengeIntentFromFeatureDir,
-  loadChallengeIntentFromState,
+  resolveChallengeIntent,
   loadChallengeDivergenceFromState,
   resolveChallengeSide,
   type ChallengeExecutionIntent,
@@ -173,19 +172,6 @@ function deriveRouteProvenance(
     readRouteLifecycleArtifacts(featureDir, archiveDir),
     repoDir,
   );
-}
-
-function deriveChallengeFeatureDir(worktreePath: string | undefined, slug: string): string | undefined {
-  if (!worktreePath || !slug) return undefined;
-  for (const dir of ['features', 'bugs']) {
-    const featureDir = path.join(worktreePath, dir, slug);
-    try {
-      return featureDir;
-    } catch {
-      continue;
-    }
-  }
-  return undefined;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -626,10 +612,10 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
   // finalised. It used to be declared inside the block below, which threw a
   // ReferenceError as soon as an attestation existed to test it against.
   let challengeEvidenceInvalid: { reason: string; detail?: string } | undefined;
-  challengeIntent = loadChallengeIntentFromState(repoDir, issueId, challengePairId);
-  if (challengePairId && slug) {
-    const challengeFeatureDir = deriveChallengeFeatureDir(worktreePath, slug);
-    challengeIntent ??= challengeFeatureDir ? loadChallengeIntentFromFeatureDir(challengeFeatureDir) : undefined;
+  const resolvedChallengeIntent = resolveChallengeIntent({ repoDir, issueId, challengePairId, worktreePath, slug });
+  challengeIntent = resolvedChallengeIntent?.intent;
+  if (challengePairId) {
+    const challengeFeatureDir = resolvedChallengeIntent?.featureDir;
     if (challengeFeatureDir) {
       const invalidPath = path.join(challengeFeatureDir, '.challenge-evidence-invalid.json');
       if (existsSync(invalidPath)) {

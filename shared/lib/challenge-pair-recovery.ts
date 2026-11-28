@@ -34,6 +34,7 @@ import { taskHasPendingChallengeArm } from './tend-challenge-gate.ts';
 import { challengerTaskKey, parseTaskId } from './task-identity.ts';
 import { readWorkflowState, type TaskRecord } from './workflow-state.ts';
 import { challengeModelIdsEquivalent } from './challenge-comparison.ts';
+import { resolveChallengeIntent } from './challenge-execution-contract.ts';
 import type { StageName } from './stage-result.ts';
 import { resolveTaskArtifact, resolveTaskArtifactDirs } from './task-artifact-lookup.ts';
 
@@ -108,12 +109,12 @@ interface ExecutionIntent {
   challengeStage?: string;
 }
 
-export type ArmIntentSource = 'task-state' | 'primary-challenge-arm' | 'feature-dir';
+export type ArmIntentSource = 'task-state' | 'primary-challenge-arm' | 'feature-dir' | 'archive';
 
 /** The task-record fields recovery reads. */
 type ArmTask = Pick<
   TaskRecord,
-  'slug' | 'linearIssueId' | 'challengePairId' | 'challengeRole' | 'pr' | 'challengeExecutionIntent' | 'challengeArms'
+  'slug' | 'worktree' | 'linearIssueId' | 'challengePairId' | 'challengeRole' | 'pr' | 'challengeExecutionIntent' | 'challengeArms'
 >;
 
 function defaultResolvePrIdentity(pr: string, repoDir: string): { url: string; headSha: string } {
@@ -179,17 +180,15 @@ function resolveArmIntent(
   }
   // The challenge-intent files have no live-vs-archived rename rule yet; probe
   // every live feature dir the arm might have executed in (HOK-2891).
-  const slug = task?.slug;
-  if (slug) {
-    const dirs = resolveTaskArtifactDirs({ issueId, slug, repoDir });
-    for (const dir of dirs.liveFeatureDirs) {
-      for (const name of ['challenge-intent.json', '.challenge-intent.json']) {
-        const intent = readJson<ExecutionIntent>(join(dir, name));
-        if (belongsToPair(intent)) {
-          return { intent, source: 'feature-dir' };
-        }
-      }
-    }
+  const resolved = resolveChallengeIntent({
+    repoDir,
+    issueId,
+    challengePairId: pairId,
+    slug: task?.slug,
+    worktreePath: task?.worktree,
+  });
+  if (resolved && belongsToPair(resolved.intent as ExecutionIntent)) {
+    return { intent: resolved.intent as ExecutionIntent, source: resolved.source };
   }
   return {};
 }

@@ -22,6 +22,8 @@ features/*/.head-moves.jsonl||evidence|
 features/*/.recovery-actions.jsonl||evidence|
 features/*/.challenge-aborted.json||evidence|
 features/*/.coding-failure-handoff.json||evidence|
+features/*/challenge-intent.json||evidence|
+features/*/.challenge-intent.json||evidence|
 features/*/trace.jsonl||evidence|
 features/*/.planning-result.json||evidence|
 features/*/.coding-result.json||evidence|
