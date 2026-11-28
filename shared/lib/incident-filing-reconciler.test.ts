@@ -12,7 +12,7 @@ import { createIncidentDraft } from './wavemill-incident-model.ts';
 function item(overrides: Record<string, unknown> = {}) {
   return createIncidentDraft({
     taskId: 'HOK-1', category: 'stale_orphaned_state', severity: 'medium', confidence: 'definite', lifecycle: 'active',
-    rootCauseClass: 'failed_job_no_result', summary: 'eval failed', operatorAction: 'retry',
+    rootCauseClass: 'failed_background_job', summary: 'eval failed', operatorAction: 'retry',
     evidence: [{ type: 'job_state', source: 'state', timestamp: '2026-09-01T10:00:00.000Z', redactedData: 'failed', key: 'failed' }],
     metadata: { jobId: 'job-1', jobKind: 'eval', resultPath: '.wavemill/results/job-1.json', authoritativeFailureAt: '2026-09-01T10:00:00.000Z' },
     ...overrides,

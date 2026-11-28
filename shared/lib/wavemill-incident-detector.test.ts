@@ -366,7 +366,7 @@ test('job detector enriches failed job with module_export_contract_mismatch from
     const incident = incidents[0];
     assert.equal(incident.rootCauseClass, 'module_export_contract_mismatch');
     assert.equal(incident.category, 'product_defect');
-    assert.equal(incident.metadata.observedSymptom, 'failed_job_no_result');
+    assert.equal(incident.metadata.observedSymptom, 'failed_background_job');
     assert.equal(incident.metadata.diagnosedClass, 'module_export_contract_mismatch');
     assert.equal(incident.metadata.logExcerptSource, 'log_head_tail');
 
@@ -378,7 +378,7 @@ test('job detector enriches failed job with module_export_contract_mismatch from
 
     const jobEvidence = incident.evidence.find((item) => item.type === 'job_state');
     assert.ok(jobEvidence, 'expected job_state evidence to be preserved as observed symptom');
-    assert.equal(jobEvidence!.key, 'observed:failed_job_no_result');
+    assert.equal(jobEvidence!.key, 'observed:failed_background_job');
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
@@ -447,7 +447,32 @@ test('job detector fingerprint is stable across stack-frame drift for the same d
   }
 });
 
-test('job detector degrades to generic failed_job_no_result when logPath is missing and no persisted error', () => {
+test('job classification is unchanged when its result file appears after observation', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-job-result-arrival-'));
+  try {
+    mkdirSync(join(repo, '.wavemill', 'jobs'), { recursive: true });
+    const resultPath = join(repo, '.wavemill', 'jobs', 'eval.result.json');
+    writeFileSync(join(repo, '.wavemill', 'jobs', 'eval.json'), JSON.stringify({
+      id: 'eval-HOK-3458-1', kind: 'eval', status: 'failed', issueId: 'HOK-3458',
+      reason: 'eval_not_persisted', resultPath, finishedAt: now.toISOString(),
+    }));
+
+    const before = new JobFailureDetector().detect(repo, null, { repoDir: repo, now })[0];
+    writeFileSync(resultPath, JSON.stringify({ ok: false, persisted: false, exitCode: 1 }));
+    const after = new JobFailureDetector().detect(repo, null, { repoDir: repo, now })[0];
+
+    assert.equal(before.rootCauseClass, after.rootCauseClass);
+    assert.equal(before.category, after.category);
+    assert.equal(before.metadata.observedSymptom, after.metadata.observedSymptom);
+    const store = new IncidentStore(join(repo, '.wavemill', 'incidents'));
+    assert.equal(store.computeFingerprint(before), store.computeFingerprint(after));
+    assert.equal(store.computeEventKey(before), store.computeEventKey(after));
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('job detector classifies from recorded failure reason without checking result presence', () => {
   const repo = mkdtempSync(join(tmpdir(), 'incident-jobs-degrade-'));
   try {
     mkdirSync(join(repo, '.wavemill', 'jobs'), { recursive: true });
@@ -458,13 +483,14 @@ test('job detector degrades to generic failed_job_no_result when logPath is miss
       issueId: 'HOK-2845_c',
       reason: 'no_result_file',
       finishedAt: now.toISOString(),
+      resultPath: join(repo, 'later-result.json'),
     }));
 
     const incidents = new JobFailureDetector().detect(repo, null, { repoDir: repo, now });
     assert.equal(incidents.length, 1);
-    assert.equal(incidents[0].rootCauseClass, 'failed_job_no_result');
-    assert.equal(incidents[0].category, 'stale_orphaned_state');
-    assert.equal(incidents[0].metadata.observedSymptom, 'failed_job_no_result');
+    assert.equal(incidents[0].rootCauseClass, 'failed_background_job');
+    assert.equal(incidents[0].category, 'product_defect');
+    assert.equal(incidents[0].metadata.observedSymptom, 'failed_background_job');
     assert.equal(incidents[0].metadata.diagnosedClass, null);
     assert.equal(incidents[0].metadata.logExcerptSource, 'unavailable');
     assert.equal(incidents[0].evidence.some((item) => item.type === 'log_excerpt'), false);
@@ -490,7 +516,7 @@ test('job detector degrades safely when logPath is binary', () => {
     }));
 
     const incidents = new JobFailureDetector().detect(repo, null, { repoDir: repo, now });
-    assert.equal(incidents[0].rootCauseClass, 'failed_job_no_result');
+    assert.equal(incidents[0].rootCauseClass, 'failed_background_job');
     assert.equal(incidents[0].metadata.logExcerptSource, 'unavailable');
     assert.equal(incidents[0].evidence.some((item) => item.type === 'log_excerpt'), false);
   } finally {

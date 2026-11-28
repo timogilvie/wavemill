@@ -184,7 +184,7 @@ test('drainIncidentQueue tombstones a recovered queued create without Linear cal
     const store = new IncidentStore(join(repoDir, '.wavemill', 'incidents'));
     const stored = await store.upsert(createIncidentDraft({
       taskId: 'HOK-1', category: 'stale_orphaned_state', severity: 'medium', confidence: 'definite', lifecycle: 'active',
-      rootCauseClass: 'failed_job_no_result', summary: 'job failed', operatorAction: 'retry',
+      rootCauseClass: 'failed_background_job', summary: 'job failed', operatorAction: 'retry',
       evidence: [{ type: 'job_state', source: 'state', timestamp: '2026-08-04T12:00:00.000Z', redactedData: 'failed', key: 'failed' }],
       metadata: { jobId: 'job-1', jobKind: 'eval' },
     }));

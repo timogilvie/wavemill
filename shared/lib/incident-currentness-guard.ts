@@ -6,6 +6,7 @@ export const INCIDENT_CURRENTNESS_GUARD: GuardSpec = {
   invariantDocs: ['docs/invariants/incident-currentness.md'],
   suppressionMarker: 'allow-incident-currentness', allowlistFile: 'tools/incident-currentness-allowlist.txt',
   invariantPaths: [
+    'shared/lib/wavemill-incident-detector.ts',
     'shared/lib/incident-filing-reconciler.ts',
     'shared/lib/incident-currentness-guard.ts',
     // HOK-3509: the one cross-task correlation step and its row-builder reader.
@@ -13,6 +14,8 @@ export const INCIDENT_CURRENTNESS_GUARD: GuardSpec = {
     'shared/lib/incident-reconcile-cycle.ts',
   ],
   patterns: [
+    { name: 'job-result-presence-classification', lang: 'ts', re: /existsSync\s*\(\s*job\.resultPath\s*\)/,
+      description: 'Job incident class must come from its recorded outcome, never result-file presence.' },
     { name: 'private-job-reader', lang: 'ts', re: /function\s+read(?:AuthoritativeWorkflow)?Jobs\s*\(/,
       description: 'Read persisted jobs through readAuthoritativeWorkflowJobs in incident-filing-reconciler.ts.' },
     { name: 'result-presence-recovery', lang: 'ts', re: /\bresultExists\s*\(repoDir/,

@@ -22,3 +22,14 @@ describe('incident-currentness guard — fleet correlation', () => {
     assert.deepEqual(result.findings, []);
   });
 });
+
+describe('incident-currentness guard — job outcome classification', () => {
+  it('rejects classifying a job from result-file presence', () => {
+    const patterns = checkGuardSource(
+      INCIDENT_CURRENTNESS_GUARD,
+      'shared/lib/wavemill-incident-detector.ts',
+      'const missingResult = job.resultPath ? !existsSync(job.resultPath) : false;\n',
+    ).map((finding) => finding.pattern);
+    assert.ok(patterns.includes('job-result-presence-classification'));
+  });
+});

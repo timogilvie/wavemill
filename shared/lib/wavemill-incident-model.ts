@@ -32,7 +32,6 @@ export const INCIDENT_ROOT_CAUSE_CLASSES = [
   // Workflow / background-job state
   'orphaned_completion_marker',
   'failed_background_job',
-  'failed_job_no_result',
   'missing_eval_records_for_comparison',
   // Affirmatively remote dependency failures (external_transient_dependency)
   'remote_ssh_failure',
@@ -438,6 +437,8 @@ export interface IncidentMetadata {
   pairId?: string;
   /** Immutable lineage captured from a job-backed detector event. */
   jobId?: string;
+  /** Deterministic job attempt lineage fallback when the producer has no id. */
+  jobAttemptKey?: string;
   jobKind?: string;
   side?: string;
   resultPath?: string;

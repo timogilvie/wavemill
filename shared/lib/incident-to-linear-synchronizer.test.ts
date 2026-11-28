@@ -145,7 +145,7 @@ test('ticket body renders both observed symptom and diagnosed root cause with ou
     metadata: {
       thresholdTriggered: true,
       escalatedAt: '2026-08-04T12:10:00.000Z',
-      observedSymptom: 'failed_job_no_result',
+      observedSymptom: 'failed_background_job',
       diagnosedClass: 'module_export_contract_mismatch',
       logExcerptSource: 'log_head_tail',
     },
@@ -178,7 +178,7 @@ test('inbound 500-char redactor bounds an inflated log_excerpt before it reaches
     metadata: {
       thresholdTriggered: true,
       escalatedAt: '2026-08-04T12:10:00.000Z',
-      observedSymptom: 'failed_job_no_result',
+      observedSymptom: 'failed_background_job',
     },
     evidence: [{
       type: 'log_excerpt',
@@ -431,7 +431,7 @@ test('recovered unlinked incident is skipped before every Linear client call and
   let calls = 0;
   const recovered = () => ({ outcome: 'recovered' as const, evidence: { jobId: 'job-1', resultExists: true } });
   const result = await syncIncident({
-    incident: incident({ rootCauseClass: 'failed_job_no_result', metadata: { jobId: 'job-1', jobKind: 'eval', thresholdTriggered: true } }),
+    incident: incident({ rootCauseClass: 'failed_background_job', metadata: { jobId: 'job-1', jobKind: 'eval', thresholdTriggered: true } }),
     config: config(),
     reconciler: recovered,
     client: mockClient({ searchIssues: async () => { calls += 1; return []; }, getTeams: async () => { calls += 1; return []; } }),
@@ -441,7 +441,7 @@ test('recovered unlinked incident is skipped before every Linear client call and
   assert.equal(calls, 0);
 
   const dry = await syncIncident({
-    incident: incident({ rootCauseClass: 'failed_job_no_result', metadata: { jobId: 'job-1', jobKind: 'eval', thresholdTriggered: true } }),
+    incident: incident({ rootCauseClass: 'failed_background_job', metadata: { jobId: 'job-1', jobKind: 'eval', thresholdTriggered: true } }),
     config: config({ detectionOnly: true }),
     reconciler: recovered,
     client: mockClient({ searchIssues: async () => { calls += 1; return []; } }),
@@ -609,7 +609,7 @@ test('shadow mode reports skip_recovered when reconciliation says the candidate 
   const superseded = () => ({ outcome: 'superseded' as const, evidence: { jobId: 'job-1' } });
   const result = await syncIncident({
     incident: incident({
-      rootCauseClass: 'failed_job_no_result',
+      rootCauseClass: 'failed_background_job',
       metadata: { jobId: 'job-1', jobKind: 'eval', thresholdTriggered: true },
     }),
     config: config({ mode: 'shadow' }),

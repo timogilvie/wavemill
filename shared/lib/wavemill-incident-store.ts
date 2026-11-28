@@ -76,7 +76,7 @@ export class IncidentStore {
   computeFingerprint(incident: Pick<IncidentRecord, 'category' | 'rootCauseClass' | 'taskId' | 'evidence' | 'metadata'>): string {
     // HOK-3509: a fleet record is keyed on its cause key alone so the
     // fingerprint stays stable as the attempts evidence list grows.
-    const fleet = extractFleetCauseKey(incident.metadata);
+    const fleet = fleetRecordCauseIdentity(incident.metadata);
     if (fleet) {
       const input = [
         incident.category,
@@ -86,6 +86,8 @@ export class IncidentStore {
       ].join('::');
       return createHash('sha256').update(input).digest('hex');
     }
+    const jobAttempt = jobAttemptIdentity(incident.metadata);
+    if (jobAttempt) return createHash('sha256').update(`job::${jobAttempt}`).digest('hex');
     const evidenceKeys = incident.evidence
       .map((evidence) => evidence.key ?? `${evidence.type}:${evidence.source}`)
       .sort();
@@ -104,10 +106,12 @@ export class IncidentStore {
    * key, so it is counted once regardless of observer cadence.
    */
   computeEventKey(incident: Pick<IncidentRecord, 'category' | 'rootCauseClass' | 'taskId' | 'evidence' | 'metadata'>): string {
+    const jobAttempt = jobAttemptIdentity(incident.metadata);
+    if (jobAttempt) return createHash('sha256').update(`job-event::${jobAttempt}`).digest('hex');
     const evidenceIdentity = incident.evidence
       .map((evidence) => `${evidence.type}:${evidence.source}:${evidence.key ?? ''}:${evidence.timestamp}`)
       .sort();
-    const fleet = extractFleetCauseKey(incident.metadata);
+    const fleet = fleetRecordCauseIdentity(incident.metadata);
     const input = [
       incident.category,
       canonicalizeRootCauseClass(incident.rootCauseClass),
@@ -148,7 +152,10 @@ export class IncidentStore {
       const redactedEvidence = canonicalIncident.evidence.slice(-this.maxEvidencePerRecord);
       if (existing) {
         const seenEventKeys = Array.isArray(existing.metadata?.seenEventKeys) ? existing.metadata.seenEventKeys : [];
-        freshEvent = !seenEventKeys.includes(eventKey);
+        // A job attempt is the event identity. Older category/class keyed rows
+        // may not have recorded this version's event key, but they still
+        // represent the same already-counted attempt.
+        freshEvent = jobAttemptIdentity(canonicalIncident.metadata) ? false : !seenEventKeys.includes(eventKey);
         const firstObservedAt = this.backfillFirstObservedAt(existing, observedAt);
         if (!freshEvent) {
           // Re-poll of an already-counted event: no count/liveness change,
@@ -157,6 +164,7 @@ export class IncidentStore {
           stored = {
             ...refreshed,
             firstObservedAt,
+            evidence: this.dedupeEvidence([...existing.evidence, ...redactedEvidence]).slice(-this.maxEvidencePerRecord),
             metadata: this.preserveStoreOwnedMetadata(existing.metadata, canonicalIncident.metadata),
           };
           index[fingerprint] = stored;
@@ -602,10 +610,14 @@ export class IncidentStore {
     // the same canonical identity. One or the other carrying a `fleet` key
     // is enough to prevent legacy consolidation — the fleet fingerprint is
     // computed from the cause key alone and lives in its own namespace.
-    const storedFleet = extractFleetCauseKey(stored.metadata);
-    const candidateFleet = extractFleetCauseKey(candidate.metadata);
+    const storedFleet = fleetRecordCauseIdentity(stored.metadata);
+    const candidateFleet = fleetRecordCauseIdentity(candidate.metadata);
     if (Boolean(storedFleet) !== Boolean(candidateFleet)) return false;
     if (storedFleet && candidateFleet && storedFleet !== candidateFleet) return false;
+
+    const storedJob = jobAttemptIdentity(stored.metadata);
+    const candidateJob = jobAttemptIdentity(candidate.metadata);
+    if (storedJob || candidateJob) return Boolean(storedJob && candidateJob && storedJob === candidateJob);
 
     // Base canonical match: same category, root cause, and evidence identity
     const baseMatch = stored.category === candidate.category
@@ -651,6 +663,7 @@ export class IncidentStore {
     // refreshing canonical identity and presentation fields from the current incident.
     return {
       ...stored,
+      metadata: { ...(stored.metadata ?? {}), ...(canonical.metadata ?? {}) },
       schemaVersion: WAVEMILL_INCIDENT_SCHEMA_VERSION,
       fingerprint: this.computeFingerprint(canonical),
       taskId: canonical.taskId ?? null,
@@ -698,6 +711,7 @@ export class IncidentStore {
   private mergeStoredRecords(records: IncidentRecord[]): IncidentRecord | undefined {
     if (records.length === 0) return undefined;
     const [first, ...rest] = records;
+    const jobAttempt = jobAttemptIdentity(first.metadata);
     return rest.reduce((merged, record) => ({
       ...merged,
       schemaVersion: WAVEMILL_INCIDENT_SCHEMA_VERSION,
@@ -707,7 +721,9 @@ export class IncidentStore {
       createdAt: earlierIso(merged.createdAt, record.createdAt),
       firstObservedAt: earlierIso(merged.firstObservedAt, record.firstObservedAt),
       lastObservedAt: laterIso(merged.lastObservedAt, record.lastObservedAt),
-      occurrenceCount: (merged.occurrenceCount || 0) + (record.occurrenceCount || 0),
+      occurrenceCount: jobAttempt && jobAttemptIdentity(record.metadata) === jobAttempt
+        ? Math.max(merged.occurrenceCount || 0, record.occurrenceCount || 0)
+        : (merged.occurrenceCount || 0) + (record.occurrenceCount || 0),
       evidence: this.dedupeEvidence([...merged.evidence, ...record.evidence]).slice(-this.maxEvidencePerRecord),
       metadata: this.mergeMetadata(merged.metadata, record.metadata),
     }), first);
@@ -819,7 +835,12 @@ function isSweepObject(value: unknown): value is { fresh: Iterable<string>; obse
  * so the store module stays self-contained; the type lives on IncidentMetadata.
  */
 // allow-incident-currentness: reader of the cause key the correlator wrote, not a second derivation
-function extractFleetCauseKey(metadata: IncidentRecord['metadata'] | undefined): string | null {
+function jobAttemptIdentity(metadata: IncidentRecord['metadata'] | undefined): string | null {
+  if (typeof metadata?.jobId === 'string' && metadata.jobId) return metadata.jobId;
+  return typeof metadata?.jobAttemptKey === 'string' && metadata.jobAttemptKey ? metadata.jobAttemptKey : null;
+}
+
+function fleetRecordCauseIdentity(metadata: IncidentRecord['metadata'] | undefined): string | null {
   const fleet = metadata?.fleet;
   if (!fleet || typeof fleet !== 'object') return null;
   const causeKey = (fleet as { causeKey?: unknown }).causeKey;

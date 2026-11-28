@@ -72,6 +72,8 @@ export interface IncidentFixtureEvidence {
 export interface IncidentFixtureObservation {
   absentCyclesBefore: number;
   evidence: IncidentFixtureEvidence[];
+  /** The recorded job result artifact appeared before this observation. */
+  resultAppears?: boolean;
 }
 
 export interface IncidentFixtureFailure {
@@ -850,8 +852,9 @@ export function deriveExpectations(
     || typeof record.metadata?.escalatedAt === 'string';
   const lifecycleWhilePresent: IncidentLifecycle = escalated ? 'active' : 'observed';
 
-  const jobBacked = cls === 'failed_background_job' || cls === 'failed_job_no_result'
-    || typeof record.metadata?.jobId === 'string';
+  const jobBacked = cls === 'failed_background_job'
+    || typeof record.metadata?.jobId === 'string'
+    || typeof record.metadata?.jobAttemptKey === 'string';
   let finalLifecycle: IncidentLifecycle = lifecycleWhilePresent;
   let resolutionReasonPrefix: string | null = null;
   if (jobBacked) {
@@ -894,7 +897,7 @@ function stableReplacer(): (key: string, value: unknown) => unknown {
     'issue', 'slug', 'phase', 'status',
     'id', 'kind', 'reason', 'side', 'pair', 'resultPath',
     'summary', 'operatorAction', 'metadata',
-    'absentCyclesBefore', 'evidence',
+    'absentCyclesBefore', 'resultAppears', 'evidence',
     'type', 'source', 'timestamp', 'redactedData', 'key',
     'stage', 'failureKind', 'detail', 'survivesRelaunches', 'progressing',
     'mustMerge', 'mustEscalate', 'maxTickCount', 'tickIntervalSeconds',
@@ -967,6 +970,11 @@ export function validateIncidentFixture(value: unknown): string[] {
     if (!Array.isArray(init.jobs)) errors.push('initialState.jobs must be an array');
   }
   if (!Array.isArray(obj.observations)) errors.push('observations must be an array');
+  else obj.observations.forEach((observation, index) => {
+    if (!observation || typeof observation !== 'object' || Array.isArray(observation)) return;
+    const resultAppears = (observation as Record<string, unknown>).resultAppears;
+    if (resultAppears !== undefined && typeof resultAppears !== 'boolean') errors.push(`observations[${index}].resultAppears must be a boolean`);
+  });
   if (typeof obj.trailingAbsentCycles !== 'number') errors.push('trailingAbsentCycles must be a number');
   const incident = obj.incident as Record<string, unknown> | undefined;
   if (!incident || typeof incident.rootCauseClass !== 'string') errors.push('incident.rootCauseClass missing');

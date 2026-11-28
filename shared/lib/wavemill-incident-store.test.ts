@@ -86,6 +86,72 @@ test('re-polling an unchanged event is a no-op for count and liveness', async ()
   }
 });
 
+test('job attempt identity refreshes class and category without a second occurrence', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'incident-job-identity-'));
+  try {
+    const store = new IncidentStore(dir);
+    const common = {
+      taskId: 'HOK-3458',
+      metadata: { jobId: 'prepare-task-inputs-HOK-3458', jobKind: 'prepare-task-inputs' },
+      evidence: [{ type: 'job_state' as const, source: 'workflow-state.json', timestamp: '2026-11-10T13:27:00.000Z', redactedData: 'status=failed', key: 'job-attempt' }],
+    };
+    const before = incident({ ...common, category: 'stale_orphaned_state', rootCauseClass: 'failed_background_job' });
+    const after = incident({ ...common, category: 'product_defect', rootCauseClass: 'module_export_contract_mismatch' });
+    const first = await store.upsert(before);
+    const second = await store.upsert(after);
+    assert.equal(store.computeFingerprint(before), store.computeFingerprint(after));
+    assert.equal(store.computeEventKey(before), store.computeEventKey(after));
+    assert.equal(second.fingerprint, first.fingerprint);
+    assert.equal(second.occurrenceCount, 1);
+    assert.equal(second.rootCauseClass, 'module_export_contract_mismatch');
+    assert.equal(second.category, 'product_defect');
+    assert.equal(second.evidence.length, 1);
+    assert.equal((await store.getIncidents()).length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('job fallback attempt keys stay distinct and collapse legacy class-keyed records', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'incident-job-legacy-'));
+  try {
+    const store = new IncidentStore(dir);
+    const common = {
+      taskId: 'HOK-3458',
+      metadata: { jobKind: 'prepare-task-inputs', jobAttemptKey: 'prepare-task-inputs:HOK-3458:2026-11-10T13:25:00Z' },
+      evidence: [{ type: 'job_state' as const, source: 'workflow-state.json', timestamp: '2026-11-10T13:27:00.000Z', redactedData: 'status=failed', key: 'attempt' }],
+    };
+    const fallback = incident({ ...common, category: 'stale_orphaned_state', rootCauseClass: 'failed_background_job' });
+    const sameAttempt = incident({ ...common, category: 'product_defect', rootCauseClass: 'module_export_contract_mismatch' });
+    const otherAttempt = incident({
+      ...common,
+      metadata: { ...common.metadata, jobAttemptKey: 'prepare-task-inputs:HOK-3458:2026-11-10T14:25:00Z' },
+    });
+    assert.equal(store.computeFingerprint(fallback), store.computeFingerprint(sameAttempt));
+    assert.notEqual(store.computeFingerprint(fallback), store.computeFingerprint(otherAttempt));
+
+    // Seed the two category/class-keyed index rows written by older versions.
+    const oldRows = [fallback, sameAttempt].map((record, index) => ({
+      ...record,
+      fingerprint: `legacy-${index}`,
+      occurrenceCount: 1,
+      metadata: { ...record.metadata, seenEventKeys: [] },
+    }));
+    writeFileSync(join(dir, 'index.json'), JSON.stringify(Object.fromEntries(oldRows.map((row) => [row.fingerprint, row]))));
+
+    const updated = await store.upsert(sameAttempt);
+    const records = await store.getIncidents();
+    const index = JSON.parse(readFileSync(join(dir, 'index.json'), 'utf-8')) as Record<string, IncidentRecord>;
+    assert.equal(records.length, 1);
+    assert.deepEqual(Object.keys(index), [updated.fingerprint]);
+    assert.equal(updated.rootCauseClass, 'module_export_contract_mismatch');
+    assert.equal(updated.category, 'product_defect');
+    assert.equal(updated.occurrenceCount, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('incident store escalates on distinct events at configured threshold', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'incident-threshold-'));
   try {
@@ -361,7 +427,7 @@ test('multiple tasks with same evidence source/key produce separate records with
       source: '.wavemill/workflow-state.json',
       timestamp: '2026-08-03T12:00:00.000Z',
       redactedData: 'stage=coding result=failed',
-      key: 'failed_job_no_result',
+      key: 'observed:failed_background_job',
     }];
 
     const incident1 = await store.upsert(incident({
@@ -558,7 +624,7 @@ test('task-to-null repo migration is explicit and does not permit task-to-differ
         source: '.wavemill/workflow-state.json',
         timestamp: '2026-08-03T12:00:00.000Z',
         redactedData: 'stage=coding result=failed',
-        key: 'failed_job_no_result',
+        key: 'observed:failed_background_job',
       }],
     }));
 
@@ -572,7 +638,7 @@ test('task-to-null repo migration is explicit and does not permit task-to-differ
         source: '.wavemill/workflow-state.json',
         timestamp: '2026-08-03T12:00:00.000Z',
         redactedData: 'stage=coding result=failed',
-        key: 'failed_job_no_result',
+        key: 'observed:failed_background_job',
       }],
     }));
 
@@ -645,14 +711,13 @@ test('a distinct event refreshes live correlation metadata but keeps first-event
   try {
     const store = new IncidentStore(dir);
     await store.upsert(incidentEvent('2026-08-03T12:00:00.000Z', {
-      metadata: { pairState: 'blocked_on_provider_recovery', jobId: 'job-first', authoritativeFailureAt: '2026-08-03T12:00:00.000Z' },
+      metadata: { pairState: 'blocked_on_provider_recovery', authoritativeFailureAt: '2026-08-03T12:00:00.000Z' },
     }));
     const second = await store.upsert(incidentEvent('2026-08-03T13:00:00.000Z', {
-      metadata: { pairState: 'ready_for_rereview', jobId: 'job-second', authoritativeFailureAt: '2026-08-03T13:00:00.000Z' },
+      metadata: { pairState: 'ready_for_rereview', authoritativeFailureAt: '2026-08-03T13:00:00.000Z' },
     }));
     assert.equal(second.occurrenceCount, 2);
     assert.equal(second.metadata.pairState, 'ready_for_rereview');
-    assert.equal(second.metadata.jobId, 'job-first');
     assert.equal(second.metadata.authoritativeFailureAt, '2026-08-03T12:00:00.000Z');
   } finally {
     rmSync(dir, { recursive: true, force: true });

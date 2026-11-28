@@ -29,7 +29,6 @@ export interface WorkflowJob {
 }
 
 const JOB_BACKED_CLASSES = new Set([
-  'failed_job_no_result',
   'failed_background_job',
   'missing_eval_records_for_comparison',
 ]);
@@ -133,7 +132,7 @@ export function workflowJobResultSucceeded(repoDir: string, job: WorkflowJob): b
 }
 
 export function isJobBackedIncident(incident: IncidentRecord): boolean {
-  return JOB_BACKED_CLASSES.has(incident.rootCauseClass) || Boolean(incident.metadata.jobId);
+  return JOB_BACKED_CLASSES.has(incident.rootCauseClass) || Boolean(incident.metadata.jobId || incident.metadata.jobAttemptKey);
 }
 
 function sameLineage(job: WorkflowJob, incident: IncidentRecord, expectedKind: string, expectedPair?: string, expectedSide?: string): boolean {

@@ -21,7 +21,7 @@ function tempRepo(prefix: string): string {
   return realpathSync(mkdtempSync(join(tmpdir(), prefix)));
 }
 
-const OBSERVED = 'failed_job_no_result';
+const OBSERVED = 'failed_background_job';
 
 test('prefers persisted job.error over any file read (no logPath needed)', () => {
   const repo = tempRepo('excerpt-persisted-');

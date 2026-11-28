@@ -647,6 +647,14 @@ export async function runIncidentCycleReplay(fixture: IncidentFixture): Promise<
     const candidateTemplate = () => buildCandidate(fixture);
 
     for (const obs of fixture.observations) {
+      if (obs.resultAppears) {
+        for (const job of fixture.initialState.jobs) {
+          if (!job.resultPath) continue;
+          const path = job.resultPath.startsWith('/') ? job.resultPath : join(dir, job.resultPath);
+          mkdirSync(dirname(path), { recursive: true });
+          writeFileSync(path, JSON.stringify({ ok: false, persisted: false, exitCode: 1 }));
+        }
+      }
       for (let i = 0; i < obs.absentCyclesBefore; i += 1) {
         await runCycle([]);
       }
@@ -659,6 +667,11 @@ export async function runIncidentCycleReplay(fixture: IncidentFixture): Promise<
         redactedData: ev.redactedData,
         ...(ev.key ? { key: ev.key } : {}),
       })) as never;
+      const diagnosedKey = obs.evidence.find((ev) => ev.type === 'log_excerpt' && ev.key?.startsWith('diag:'))?.key;
+      if (diagnosedKey) {
+        draft.rootCauseClass = diagnosedKey.slice(5) as typeof draft.rootCauseClass;
+        draft.category = 'product_defect';
+      }
       await runCycle([draft]);
     }
     for (let i = 0; i < fixture.trailingAbsentCycles; i += 1) {

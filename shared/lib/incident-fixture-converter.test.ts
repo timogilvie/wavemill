@@ -325,6 +325,8 @@ test('job-backed successful retry writes result evidence in the replay sandbox',
 
 test('validateIncidentFixture rejects missing fields and bad failure block', () => {
   assert.ok(validateIncidentFixture({}).length > 0);
+  assert.ok(validateIncidentFixture({ schemaVersion: 'incident-fixture/1', observations: [{ resultAppears: 'yes' }] })
+    .some((error) => error.includes('observations[0].resultAppears')));
   assert.ok(validateIncidentFixture({
     schemaVersion: 'incident-fixture/1',
     chain: 'x',

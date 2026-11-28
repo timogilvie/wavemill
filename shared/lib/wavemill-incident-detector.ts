@@ -216,13 +216,8 @@ export class JobFailureDetector {
       const subjectTaskId = jobSubjectTaskId(job);
       if (taskId && subjectTaskId !== taskId) continue;
 
-      const missingResult = job.resultPath ? !existsSync(job.resultPath) : /no_result|missing/i.test(job.reason ?? '');
       const missingEvalEvidence = job.kind === 'comparison' && /eval|record|no_result|missing/i.test(`${job.reason ?? ''} ${job.error ?? ''}`);
-      const observedSymptom: IncidentRootCauseClass = missingEvalEvidence
-        ? 'missing_eval_records_for_comparison'
-        : missingResult
-          ? 'failed_job_no_result'
-          : 'failed_background_job';
+      const observedSymptom: IncidentRootCauseClass = missingEvalEvidence ? 'missing_eval_records_for_comparison' : 'failed_background_job';
 
       const terminalTimestamp = job.finishedAt ?? job.startedAt ?? timestamp;
       const excerpt = readIncidentLogExcerpt({ ...job, kind: job.kind === 'eval' || job.kind === 'comparison' ? job.kind : undefined, status: job.status as 'failed' | 'timeout' }, repoDir, observedSymptom);
@@ -230,7 +225,7 @@ export class JobFailureDetector {
       const rootCauseClass: IncidentRootCauseClass = diagnosed ?? observedSymptom;
       const category = diagnosed
         ? categoryForDiagnosedClass(diagnosed)
-        : (observedSymptom === 'failed_background_job' ? 'product_defect' : 'stale_orphaned_state');
+        : missingEvalEvidence ? 'stale_orphaned_state' : 'product_defect';
 
       const summary = diagnosed
         ? `${job.kind ?? 'background'} job ${job.id ?? '(unknown)'} ended ${job.status}: ${diagnosed}.`
@@ -247,7 +242,7 @@ export class JobFailureDetector {
         // Terminal event time, not poll time: an un-reaped historical failure
         // must not register a fresh occurrence every observer cycle.
         timestamp: terminalTimestamp,
-        redactedData: redactIncidentData(`id=${job.id ?? 'unknown'} kind=${job.kind ?? 'unknown'} status=${job.status} reason=${job.reason ?? 'unknown'} resultMissing=${missingResult}`),
+        redactedData: redactIncidentData(`id=${job.id ?? 'unknown'} kind=${job.kind ?? 'unknown'} status=${job.status} reason=${job.reason ?? 'unknown'}`),
         key: `observed:${observedSymptom}`,
       };
       const evidence: IncidentEvidence[] = [jobEvidence];
@@ -274,6 +269,7 @@ export class JobFailureDetector {
         evidence,
         metadata: {
           jobId: job.id,
+          jobAttemptKey: key,
           jobKind: job.kind,
           pairId: job.pairId,
           side: job.side,
