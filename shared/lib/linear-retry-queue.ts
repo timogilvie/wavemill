@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { classifyLinearError, setIssuesState, type ClassifiedLinearError, type LinearBatchFailure } from './linear.ts';
+import { classifyLinearError, getIssueReplayState, setIssuesState, type ClassifiedLinearError, type LinearBatchFailure, type LinearIssueReplayState } from './linear.ts';
 import { mutateJsonState } from './state-mutex.ts';
 
 const QUEUE_RELATIVE_PATH = join('.wavemill', 'registry', 'linear-retry-queue.jsonl');
@@ -9,6 +9,7 @@ const COMPACT_LOCK_RELATIVE_PATH = join('.wavemill', 'registry', 'linear-retry-q
 const SCHEMA_VERSION = '1.0';
 const MAX_ATTEMPTS = 5;
 const MAX_BACKOFF_MS = 30 * 60_000;
+export const MAX_PENDING_AGE_MS = 7 * 24 * 60 * 60_000;
 const RETAIN_SETTLED_MS = 24 * 60 * 60_000;
 
 export interface RetryQueueErrorSnapshot extends ClassifiedLinearError {
@@ -45,7 +46,18 @@ export interface PermanentlyFailedRetryRecord {
   lastError: RetryQueueErrorSnapshot;
 }
 
-type RetryQueueRecord = PendingRetryRecord | TombstoneRetryRecord | PermanentlyFailedRetryRecord;
+export interface DroppedRetryRecord {
+  schemaVersion: '1.0';
+  recordType: 'dropped';
+  id: string;
+  droppedAt: string;
+  issueIds: string[];
+  targetState: string;
+  reason: 'stale_state' | 'expired' | 'invalid_age';
+  details: Array<{ issueId: string; observedState?: string; reason: string; ageMs?: number }>;
+}
+
+type RetryQueueRecord = PendingRetryRecord | TombstoneRetryRecord | PermanentlyFailedRetryRecord | DroppedRetryRecord;
 
 export interface EnqueueRetryEntry {
   issueIds: string[];
@@ -61,6 +73,7 @@ export interface DrainRetryQueueOptions {
   now?: Date;
   repoDir?: string;
   setIssuesStateImpl?: typeof setIssuesState;
+  getIssueReplayStateImpl?: (identifier: string) => Promise<LinearIssueReplayState>;
   log?: Pick<Console, 'error'>;
 }
 
@@ -69,6 +82,8 @@ export interface DrainRetryQueueResult {
   succeeded: number;
   failed: number;
   permanentFailures: number;
+  dropped: number;
+  expired: number;
   skipped: number;
 }
 
@@ -182,15 +197,20 @@ export async function compact(repoDir = process.cwd(), now = new Date()): Promis
     lockPath,
     (current) => {
       const cutoff = now.getTime() - RETAIN_SETTLED_MS;
-      const records = parseQueue(repoDir).filter((record) => {
-        if (record.recordType === 'tombstone') {
-          return new Date(record.settledAt).getTime() >= cutoff;
-        }
-        if (record.recordType === 'permanently_failed') {
-          return new Date(record.failedAt).getTime() >= cutoff;
-        }
-        return true;
-      });
+      const allRecords = parseQueue(repoDir);
+      const expiredTerminalIds = new Set(
+        [...latestRecordById(allRecords).values()]
+          .filter((record) => {
+            const settledAt = record.recordType === 'tombstone' ? record.settledAt
+              : record.recordType === 'permanently_failed' ? record.failedAt
+                : record.recordType === 'dropped' ? record.droppedAt : undefined;
+            return settledAt !== undefined && new Date(settledAt).getTime() < cutoff;
+          })
+          .map((record) => record.id),
+      );
+      // Delete the complete entry history together. Retaining an older pending
+      // record after pruning its terminal record would make it live again.
+      const records = allRecords.filter((record) => !expiredTerminalIds.has(record.id));
       rewriteQueueFile(repoDir, records);
       return { lastRunAt: toIso(now) };
     },
@@ -206,6 +226,7 @@ export async function drain(opts: DrainRetryQueueOptions = {}): Promise<DrainRet
   const now = opts.now ?? new Date();
   const maxEntries = opts.maxEntries ?? 10;
   const setIssuesStateImpl = opts.setIssuesStateImpl ?? setIssuesState;
+  const getIssueReplayStateImpl = opts.getIssueReplayStateImpl ?? getIssueReplayState;
   const log = opts.log ?? console;
   const latest = latestRecordById(parseQueue(repoDir));
   const pending = [...latest.values()]
@@ -219,6 +240,8 @@ export async function drain(opts: DrainRetryQueueOptions = {}): Promise<DrainRet
     succeeded: 0,
     failed: 0,
     permanentFailures: 0,
+    dropped: 0,
+    expired: 0,
     skipped: Math.max(latest.size - pending.length, 0),
   };
 
@@ -226,7 +249,69 @@ export async function drain(opts: DrainRetryQueueOptions = {}): Promise<DrainRet
     result.processed += 1;
     let failures: LinearBatchFailure[] = [];
 
+    const enqueuedAtMs = Date.parse(record.enqueuedAt);
+    const ageMs = now.getTime() - enqueuedAtMs;
+    if (!Number.isFinite(enqueuedAtMs) || ageMs < 0 || ageMs > MAX_PENDING_AGE_MS) {
+      const invalidAge = !Number.isFinite(enqueuedAtMs) || ageMs < 0;
+      appendRecord(repoDir, {
+        schemaVersion: SCHEMA_VERSION,
+        recordType: 'dropped',
+        id: record.id,
+        droppedAt: toIso(now),
+        issueIds: [...record.issueIds],
+        targetState: record.targetState,
+        reason: invalidAge ? 'invalid_age' : 'expired',
+        details: [{ issueId: '*', reason: invalidAge ? 'invalid_or_future_enqueued_at' : 'max_pending_age_exceeded', ageMs: Number.isFinite(ageMs) ? ageMs : undefined }],
+      });
+      result.dropped += 1;
+      result.expired += 1;
+      log.error(`Linear retry queue dropped ${record.id}: ${invalidAge ? 'invalid age' : 'expired'} (ageMs=${Number.isFinite(ageMs) ? ageMs : 'unknown'})`);
+      continue;
+    }
+
     try {
+      const observed = await Promise.all(record.issueIds.map((issueId) => getIssueReplayStateImpl(issueId)));
+      const staleDetails = observed.flatMap((issue) => {
+        const current = issue.state;
+        const target = issue.teamStates.find((state) => state.name.toLowerCase() === record.targetState.toLowerCase());
+        const currentState = issue.teamStates.find((state) => state.id && state.id === current.id)
+          ?? issue.teamStates.find((state) => state.name.toLowerCase() === current.name.toLowerCase());
+        let reason: string | undefined;
+        if (issue.completedAt || current.type === 'completed') reason = 'issue_completed';
+        else if (issue.canceledAt || current.type === 'canceled') reason = 'issue_canceled';
+        else if (!target || !currentState || typeof target.position !== 'number' || typeof currentState.position !== 'number') reason = 'state_order_unavailable';
+        else if (currentState.position > target.position) reason = 'current_state_later_than_target';
+        return reason ? [{ issueId: issue.identifier, observedState: current.name, reason }] : [];
+      });
+      const unavailable = staleDetails.filter((detail) => detail.reason === 'state_order_unavailable');
+      const stale = staleDetails.filter((detail) => detail.reason !== 'state_order_unavailable');
+      // A batch is all-or-nothing: once any issue has passed the target, a
+      // replay would regress that issue.  Keep any unavailable ordering in
+      // the audit details, but never let it keep the stale write retryable.
+      if (stale.length > 0) {
+        appendRecord(repoDir, {
+          schemaVersion: SCHEMA_VERSION,
+          recordType: 'dropped',
+          id: record.id,
+          droppedAt: toIso(now),
+          issueIds: [...record.issueIds],
+          targetState: record.targetState,
+          reason: 'stale_state',
+          details: staleDetails,
+        });
+        result.dropped += 1;
+        log.error(`Linear retry queue dropped ${record.id}: stale state (${stale.map((detail) => `${detail.issueId}=${detail.observedState}:${detail.reason}`).join(', ')})`);
+        continue;
+      }
+      if (unavailable.length > 0) {
+        failures = unavailable.map((detail) => ({ issueId: detail.issueId, error: detail.reason, category: 'unknown', httpStatus: null, graphqlErrors: [], isRetryable: true, message: detail.reason }));
+      }
+    } catch (error) {
+      const classified = classifyLinearError(error);
+      failures = record.issueIds.map((issueId) => ({ issueId, error: classified.message, ...classified }));
+    }
+
+    if (failures.length === 0) try {
       // HOK-3183: the queue record is the trigger event every replay shares.
       const response = await setIssuesStateImpl(record.issueIds, record.targetState, {
         triggerEventId: `linear-retry:${record.id}`,

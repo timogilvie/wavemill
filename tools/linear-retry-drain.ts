@@ -67,7 +67,12 @@ runTool({
         // re-gate every drain attempt.
         setIssuesStateImpl: (issueIds, stateName, transition) => setTaskIssuesState(issueIds, stateName, { transition }),
       });
-      console.log(JSON.stringify(summary, null, 2));
+      console.log(JSON.stringify({
+        ...summary,
+        applied: summary.succeeded,
+        dropped: summary.dropped,
+        expired: summary.expired,
+      }, null, 2));
       return;
     }
 
