@@ -387,6 +387,7 @@
           "type": "string",
           "description": "Routed review model. save_task_state / route reseal."
         },
+        "sdkRunId": { "type": "string" },
         "runId": {
           "type": "string",
           "description": "Run identity minted at launch, never changed for the life of the row (HOK-3373, attempt-identity.ts). A relaunch of a settled issue mints a new one. save_task_state."

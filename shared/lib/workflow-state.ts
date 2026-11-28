@@ -96,6 +96,7 @@ export type TaskRecord = {
    * (`task-settlement.ts`).
    */
   runId?: string;
+  sdkRunId?: string;
   /** Linear state last rendered from the settled outcome (HOK-3373). */
   linearSyncedState?: string;
   /** Validated against `task-lifecycle-state.schema.json`; legacy rows may be partial. */

@@ -142,6 +142,13 @@ describe('applySettlementGate', () => {
     assert.equal((row.lifecycle as Record<string, unknown>).workflowOutcome, 'merged');
   });
 
+  it('keeps a settled SDK run identity immutable', () => {
+    const before = merged({ sdkRunId: '018f0000-0000-7000-8000-000000000001' });
+    const { found, row } = gate(before, { ...before, sdkRunId: '018f0000-0000-7000-8000-000000000002' });
+    assert.deepEqual(found.map(item => item.field), ['sdkRunId']);
+    assert.equal(row.sdkRunId, before.sdkRunId);
+  });
+
   // protects: settled × evidence — late cost / executed model / comparison results being dropped.
   it('accepts evidence and cleanup writes against a settled run', () => {
     const after = {
@@ -206,6 +213,14 @@ describe('applySettlementGate', () => {
     assert.equal(isNewRunReplacement(merged(), fresh), true);
     assert.deepEqual(gate(merged(), fresh).found, []);
     assert.equal(isNewRunReplacement(active(), merged({ runId: RUN_B })), false);
+  });
+
+  it('recognizes fresh SDK runs when legacy IDs collide', () => {
+    const before = merged({ runId: RUN_A, sdkRunId: '018f0000-0000-7000-8000-000000000001' });
+    const after = active({ runId: RUN_A, sdkRunId: '018f0000-0000-7000-8000-000000000002' });
+    assert.equal(isNewRunReplacement(before, after), true);
+    assert.deepEqual(gate(before, after).found, []);
+    assert.equal(isNewRunReplacement(before, { ...after, runId: RUN_B, sdkRunId: before.sdkRunId }), false);
   });
 
   // protects: deletion (reap) of a settled row being blocked.

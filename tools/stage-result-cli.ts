@@ -1,4 +1,5 @@
 #!/usr/bin/env -S npx tsx
+import { validateTaskAttemptRef } from '../shared/lib/sdk-task-cost/contract.ts';
 /**
  * Stage Result CLI — Shell-callable interface for stage result I/O (HOK-1192)
  *
@@ -19,6 +20,7 @@
 import { execFileSync } from 'node:child_process';
 import { resolve as resolvePath } from 'node:path';
 import {
+  bindStageAttempt,
   writeStageResult,
   writeStageResultWithHistory,
   readStageResult,
@@ -302,6 +304,13 @@ async function main(): Promise<void> {
 
   const stage: StageName = stageArg;
 
+  if (subcommand === 'bind-attempt') {
+    const value: unknown = JSON.parse(args[3] ?? 'null');
+    validateTaskAttemptRef(value);
+    await bindStageAttempt(featureDir, stage, value);
+    return;
+  }
+
   if (subcommand === 'read') {
     const result = await readStageResult(featureDir, stage);
     if (result) {
@@ -369,7 +378,14 @@ async function main(): Promise<void> {
     });
     const withProviderFields = mergeProviderEvidence(truth, resolved);
 
+    let attemptRef = subcommand === 'write-with-history' ? undefined : existing?.attemptRef;
+    if (writeFlags['attempt-ref']) {
+      const value: unknown = JSON.parse(writeFlags['attempt-ref']);
+      validateTaskAttemptRef(value);
+      attemptRef = value;
+    }
     const result: StageResult = {
+      ...(attemptRef ? { attemptRef } : {}),
       stage,
       status,
       runId: stageRunId(featureDir, stage, status, writeFlags, existing),
@@ -411,6 +427,11 @@ async function main(): Promise<void> {
         process.exit(1);
       }
       patch.status = updateFlags['status'] as StageStatus;
+    }
+    if (updateFlags['attempt-ref']) {
+      const value: unknown = JSON.parse(updateFlags['attempt-ref']);
+      validateTaskAttemptRef(value);
+      patch.attemptRef = value;
     }
     if (updateFlags['agent'] !== undefined) patch.agent = updateFlags['agent'];
     if (updateFlags['model'] !== undefined) patch.model = updateFlags['model'];

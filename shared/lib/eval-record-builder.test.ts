@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import type { EvalRecord } from './eval-schema.ts';
 import {
+  attachAttemptLineage,
   attachEligibility,
   attachAgentType,
   attachCounterfactualLineage,
@@ -2209,4 +2210,14 @@ describe('eval-record-builder', () => {
       expect(baseRecord.routeProvenance?.stageRoutes?.coder.overrides).toEqual([]);
     });
   });
+});
+
+
+it('attaches lineage only when evidence is present', () => {
+  const record = {} as EvalRecord;
+  attachAttemptLineage(record, null);
+  assert.equal(record.attemptLineage, undefined);
+  const ref = { task_id: 'HOK-1', run_id: '018f0000-0000-7000-8000-000000000001' };
+  attachAttemptLineage(record, ref);
+  assert.deepEqual(record.attemptLineage, ref);
 });

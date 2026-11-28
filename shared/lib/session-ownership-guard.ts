@@ -33,6 +33,13 @@ export const SESSION_OWNERSHIP_GUARD: GuardSpec = {
   ],
   patterns: [
     {
+      name: 'inline-attempt-ref',
+      description: 'construct attempt references through projectTaskAttemptRef',
+      lang: 'ts',
+      re: /\battemptRef\s*:\s*\{/,
+      excludePaths: ['shared/lib/attempt-identity.ts'],
+    },
+    {
       name: 'stage-role-construction',
       description: 'session stageRole built outside session-ownership.ts — read it with ownershipStageRole(row)',
       lang: 'ts',

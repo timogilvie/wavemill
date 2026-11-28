@@ -108,6 +108,7 @@ import { readForkIdentity } from './fork-identity.ts';
 
 /** All metadata to attach to an eval record. */
 export interface EvalRecordMetadata {
+  attemptLineage?: import('./sdk-task-cost/contract.ts').TaskAttemptRef | null;
   /** Registry snapshot used for model identity attribution. */
   registry?: ModelRegistry;
   /** Agent type that ran the workflow */
@@ -197,6 +198,10 @@ const RUBRIC_DETERMINATIVE_BOUNDARY_SET = new Set<string>(RUBRIC_DETERMINATIVE_B
  * Attach agent type to eval record.
  * Sets agentType field unconditionally (even if undefined, it becomes 'claude').
  */
+export function attachAttemptLineage(record: EvalRecord, lineage?: import('./sdk-task-cost/contract.ts').TaskAttemptRef | null): void {
+  if (lineage) record.attemptLineage = lineage;
+}
+
 export function attachAgentType(record: EvalRecord, agentType?: string): void {
   record.agentType = agentType || 'claude';
 }
@@ -1785,6 +1790,7 @@ export function attachFeatureOutcomeDiagnostics(
  * @param metadata - All metadata to attach
  */
 export function enrichEvalRecord(record: EvalRecord, metadata: EvalRecordMetadata): void {
+  attachAttemptLineage(record, metadata.attemptLineage);
   attachAgentType(record, metadata.agentType);
   attachProviderMetadata(record, metadata.provider, metadata.endpoint);
   attachChallengePairId(record, metadata.challengePairId);
@@ -1849,6 +1855,7 @@ export function enrichTrainingMetadata(
   record: EvalRecord,
   metadata: EnrichTrainingMetadataInput,
 ): void {
+  attachAttemptLineage(record, metadata.attemptLineage);
   attachAgentType(record, metadata.agentType);
   attachProviderMetadata(record, metadata.provider, metadata.endpoint);
   attachChallengePairId(record, metadata.challengePairId);

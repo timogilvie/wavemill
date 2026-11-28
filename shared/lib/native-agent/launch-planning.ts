@@ -1,3 +1,4 @@
+import { bindStageAttempt } from '../stage-result.ts';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
@@ -86,7 +87,7 @@ import {
 } from './planning-guards.ts';
 import { loadPricingTable } from '../pricing/model-pricing.ts';
 import { priceUsageUsd } from '../sdk-task-cost/price-overrides.ts';
-import { buildAttemptId, nativeLaunchKind, newSessionRef, recordLaunch } from '../session-ownership.ts';
+import { launchTaskIdentity, buildAttemptId, nativeLaunchKind, newSessionRef, recordLaunch } from '../session-ownership.ts';
 import { loopCostLimitUsd, resolveTaskSpendRemainder } from '../task-spend.ts';
 
 const DEFAULT_HELPER_TIMEOUT_MS = 12 * 60 * 1000;
@@ -749,7 +750,8 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
 
     // Construct session stream configuration
     // HOK-3328: own the transcript's session before the loop starts.
-    recordLaunch(featureDir, {
+    const ownership = recordLaunch(featureDir, {
+      taskIdentity: launchTaskIdentity(options.repoDir, options.issue),
       sessionRef: planningNativeSessionId,
       harness: 'native',
       kind: launchKind,
@@ -759,6 +761,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       attemptId: buildAttemptId(launchKind, null, launchedAt, launchToken),
       cwd: options.wtDir,
     });
+    if (ownership?.attemptRef) await bindStageAttempt(featureDir, 'planning', ownership.attemptRef);
     const eventStreamPath = resolveSessionEventStreamPath(planningNativeSessionId, options.repoDir);
     const sessionStreamConfig: SessionStreamConfig = {
       sessionId: planningNativeSessionId,

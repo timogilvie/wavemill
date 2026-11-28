@@ -1,3 +1,4 @@
+import { bindStageAttempt } from '../stage-result.ts';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -101,7 +102,7 @@ import { resolveStageExecutionTruth } from '../executed-model-resolver.ts';
 import { equivalentOpenRouterModelIds } from '../openrouter-catalog.ts';
 import { getNativeContextManagementConfig, getNativePayloadCaptureConfig, getNativeReviewTimeoutConfig } from '../config.ts';
 import type { NormalizedPricing } from '../openrouter-catalog.ts';
-import { buildAttemptId, nativeLaunchKind, newSessionRef, recordLaunch } from '../session-ownership.ts';
+import { launchTaskIdentity, buildAttemptId, nativeLaunchKind, newSessionRef, recordLaunch } from '../session-ownership.ts';
 import { loopCostLimitUsd, resolveTaskSpendRemainder } from '../task-spend.ts';
 import {
   buildExecutedIdentity,
@@ -820,7 +821,8 @@ export async function runNativeReview(
   const launchedAt = new Date();
   const launchKind = nativeLaunchKind();
   // HOK-3328: own the transcript's session before the loop starts.
-  recordLaunch(options.featureDir, {
+  const ownership = recordLaunch(options.featureDir, {
+    ...(options.issue ? { taskIdentity: launchTaskIdentity(repoDir, options.issue) } : {}),
     sessionRef: sessionId,
     harness: 'native',
     kind: launchKind,
@@ -829,6 +831,7 @@ export async function runNativeReview(
     launchedAt,
     attemptId: buildAttemptId(launchKind, null, launchedAt, launchToken),
   });
+  if (options.featureDir && ownership?.attemptRef) await bindStageAttempt(options.featureDir, 'review', ownership.attemptRef);
   const transcriptPath = makeTranscriptPath(repoDir, sessionId);
   const transcriptWriter = new TranscriptWriter({
     sessionId,
