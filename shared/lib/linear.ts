@@ -61,6 +61,7 @@ export interface LinearState {
   id?: string;
   name: string;
   type?: string;
+  position?: number;
 }
 
 /**
@@ -209,6 +210,14 @@ export interface LinearIssueSummary {
   url?: string;
   completedAt?: string | null;
   canceledAt?: string | null;
+}
+
+export interface LinearIssueReplayState {
+  identifier: string;
+  state: LinearState;
+  completedAt?: string | null;
+  canceledAt?: string | null;
+  teamStates: LinearState[];
 }
 
 /**
@@ -497,6 +506,32 @@ async function getTeamWorkflowStates(teamId: string): Promise<Map<string, string
   }
   teamStateCache.set(teamId, byName);
   return byName;
+}
+
+/** Read current issue and ordered workflow state facts for safe retry replay. */
+export async function getIssueReplayState(identifier: string): Promise<LinearIssueReplayState> {
+  const issue = await fetchIssueByIdentifier(identifier, `
+    identifier
+    state { id name type }
+    completedAt
+    canceledAt
+    team { id }
+  `);
+  const data = await request(`
+    query($teamId: String!) {
+      team(id: $teamId) {
+        states { nodes { id name type position } }
+      }
+    }
+  `, { teamId: (issue as unknown as { team: { id: string } }).team.id });
+  const teamStates = ((data.team as { states?: { nodes?: LinearState[] } } | undefined)?.states?.nodes ?? []);
+  return {
+    identifier: issue.identifier,
+    state: issue.state,
+    completedAt: issue.completedAt,
+    canceledAt: issue.canceledAt,
+    teamStates,
+  };
 }
 
 /**

@@ -7,6 +7,7 @@ import {
   LinearApiError,
   classifyLinearError,
   type LinearBatchFailure,
+  type LinearIssueReplayState,
 } from './linear.ts';
 import {
   compact,
@@ -45,6 +46,20 @@ function failure(overrides: Partial<LinearBatchFailure> = {}): LinearBatchFailur
     isRetryable: true,
     message: 'rate limited',
     ...overrides,
+  };
+}
+
+function replayState(identifier: string, stateName = 'Todo', position = 0, type = 'unstarted', completedAt: string | null = null): LinearIssueReplayState {
+  return {
+    identifier,
+    state: { id: `state-${stateName}`, name: stateName, type, position },
+    completedAt,
+    canceledAt: null,
+    teamStates: [
+      { id: 'state-Todo', name: 'Todo', type: 'unstarted', position: 0 },
+      { id: 'state-In Progress', name: 'In Progress', type: 'started', position: 1 },
+      { id: `state-${stateName}`, name: stateName, type, position },
+    ],
   };
 }
 
@@ -133,6 +148,7 @@ test('drain appends a tombstone after a successful retry', async () => {
   const result = await drain({
     repoDir,
     now: new Date('2026-05-12T12:01:00.000Z'),
+    getIssueReplayStateImpl: async (id) => replayState(id),
     setIssuesStateImpl: async () => ({ updated: ['HOK-1'], failed: [] }),
   });
 
@@ -140,6 +156,118 @@ test('drain appends a tombstone after a successful retry', async () => {
   assert.equal(result.succeeded, 1);
   assert.equal(records.length, 2);
   assert.deepEqual(records.map((record) => record.recordType), ['pending', 'tombstone']);
+});
+
+test('incident replay drops an old In Progress batch when every issue is Done', async () => {
+  const repoDir = makeRepoDir();
+  writeRecords(repoDir, [{
+    schemaVersion: '1.0', recordType: 'pending', id: 'hok-3520-incident',
+    enqueuedAt: '2026-11-09T16:24:15Z',
+    issueIds: ['HOK-3426', 'HOK-3448', 'HOK-3455'], targetState: 'In Progress', attempts: 1,
+    nextRetryAt: '2026-11-09T16:25:15Z', lastError: failure(),
+  }]);
+  let writes = 0;
+  const result = await drain({
+    repoDir,
+    now: new Date('2026-11-10T17:20:00Z'),
+    getIssueReplayStateImpl: async (id) => replayState(id, 'Done', 2, 'completed', '2026-11-09T17:00:00Z'),
+    setIssuesStateImpl: async () => { writes += 1; return { updated: [], failed: [] }; },
+  });
+  const records = readJsonl(queuePath(repoDir)) as Array<Record<string, unknown>>;
+  assert.equal(result.dropped, 1);
+  assert.equal(writes, 0);
+  assert.equal(records.at(-1)?.recordType, 'dropped');
+  assert.equal(records.at(-1)?.reason, 'stale_state');
+  assert.equal((records.at(-1)?.details as Array<{ reason: string }>)[0].reason, 'issue_completed');
+});
+
+test('drain expires pending records before preflight or write activity', async () => {
+  const repoDir = makeRepoDir();
+  writeRecords(repoDir, [{
+    schemaVersion: '1.0', recordType: 'pending', id: 'retry-expired',
+    enqueuedAt: '2026-01-01T00:00:00Z', issueIds: ['HOK-9'], targetState: 'In Progress', attempts: 1,
+    nextRetryAt: '2026-01-01T00:01:00Z', lastError: failure(),
+  }]);
+  let activity = 0;
+  const result = await drain({
+    repoDir,
+    now: new Date('2026-01-10T00:00:00Z'),
+    getIssueReplayStateImpl: async () => { activity += 1; return replayState('HOK-9'); },
+    setIssuesStateImpl: async () => { activity += 1; return { updated: [], failed: [] }; },
+  });
+  const records = readJsonl(queuePath(repoDir)) as Array<Record<string, unknown>>;
+  assert.equal(result.expired, 1);
+  assert.equal(activity, 0);
+  assert.equal(records.at(-1)?.reason, 'expired');
+});
+
+test('drain drops canceled and later custom states without partially writing a batch', async () => {
+  const repoDir = makeRepoDir();
+  writeRecords(repoDir, [{
+    schemaVersion: '1.0', recordType: 'pending', id: 'retry-mixed',
+    enqueuedAt: '2026-05-12T12:00:00Z', issueIds: ['HOK-10', 'HOK-11'], targetState: 'In Progress', attempts: 1,
+    nextRetryAt: '2026-05-12T12:00:10Z', lastError: failure(),
+  }]);
+  let writes = 0;
+  const result = await drain({
+    repoDir,
+    now: new Date('2026-05-12T12:01:00Z'),
+    getIssueReplayStateImpl: async (id) => id === 'HOK-10'
+      ? replayState(id, 'Archived', 3, 'started')
+      : replayState(id, 'Stopped', 2, 'canceled', null),
+    setIssuesStateImpl: async () => { writes += 1; return { updated: [], failed: [] }; },
+  });
+  assert.equal(result.dropped, 1);
+  assert.equal(writes, 0);
+  const dropped = readJsonl(queuePath(repoDir)).at(-1) as { details: Array<{ issueId: string; reason: string }> };
+  assert.deepEqual(dropped.details.map((detail) => detail.reason).sort(), ['current_state_later_than_target', 'issue_canceled']);
+});
+
+test('preflight transport failure retries without calling the writer', async () => {
+  const repoDir = makeRepoDir();
+  writeRecords(repoDir, [{
+    schemaVersion: '1.0', recordType: 'pending', id: 'retry-unreadable',
+    enqueuedAt: '2026-05-12T12:00:00Z', issueIds: ['HOK-12'], targetState: 'In Progress', attempts: 1,
+    nextRetryAt: '2026-05-12T12:00:10Z', lastError: failure(),
+  }]);
+  let writes = 0;
+  const originalRandom = Math.random;
+  Math.random = () => 0;
+  try {
+    const result = await drain({
+      repoDir,
+      now: new Date('2026-05-12T12:01:00Z'),
+      getIssueReplayStateImpl: async () => { throw new TypeError('fetch failed'); },
+      setIssuesStateImpl: async () => { writes += 1; return { updated: [], failed: [] }; },
+    });
+    const records = readJsonl(queuePath(repoDir)) as PendingRetryRecord[];
+    assert.equal(result.failed, 1);
+    assert.equal(writes, 0);
+    assert.equal(records.at(-1)?.recordType, 'pending');
+    assert.equal(records.at(-1)?.attempts, 2);
+  } finally {
+    Math.random = originalRandom;
+  }
+});
+
+test('a second drain does not replay a successfully settled entry', async () => {
+  const repoDir = makeRepoDir();
+  writeRecords(repoDir, [{
+    schemaVersion: '1.0', recordType: 'pending', id: 'retry-once',
+    enqueuedAt: '2026-05-12T12:00:00Z', issueIds: ['HOK-1'], targetState: 'In Progress', attempts: 1,
+    nextRetryAt: '2026-05-12T12:00:10Z', lastError: failure(),
+  }]);
+  let writes = 0;
+  const options = {
+    repoDir,
+    now: new Date('2026-05-12T12:01:00Z'),
+    getIssueReplayStateImpl: async (id: string) => replayState(id),
+    setIssuesStateImpl: async () => { writes += 1; return { updated: ['HOK-1'], failed: [] }; },
+  };
+  await drain(options);
+  const second = await drain(options);
+  assert.equal(writes, 1);
+  assert.equal(second.processed, 0);
 });
 
 test('drain failure increments attempts and updates nextRetryAt', async () => {
@@ -162,6 +290,7 @@ test('drain failure increments attempts and updates nextRetryAt', async () => {
     const result = await drain({
       repoDir,
       now: new Date('2026-05-12T12:01:00.000Z'),
+      getIssueReplayStateImpl: async (id) => replayState(id),
       setIssuesStateImpl: async () => ({ updated: [], failed: [failure()] }),
     });
 
@@ -193,6 +322,7 @@ test('drain skips entries whose nextRetryAt is still in the future', async () =>
   const result = await drain({
     repoDir,
     now: new Date('2026-05-12T12:01:00.000Z'),
+    getIssueReplayStateImpl: async (id) => replayState(id),
     setIssuesStateImpl: async () => {
       throw new Error('should not run');
     },
@@ -220,6 +350,7 @@ test('drain marks entries permanently failed at five attempts', async () => {
   const result = await drain({
     repoDir,
     now: new Date('2026-05-12T12:01:00.000Z'),
+    getIssueReplayStateImpl: async (id) => replayState(id),
     setIssuesStateImpl: async () => ({ updated: [], failed: [failure({ issueId: 'HOK-4' })] }),
     log: { error: (message: string) => { errors.push(message); } },
   });
