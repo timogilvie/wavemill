@@ -31,8 +31,7 @@
   ],
   "trailingAbsentCycles": 6,
   "convergence": { "mustMerge": true, "maxTickCount": 10, "tickIntervalSeconds": 120 },
-  "journey": null,
-  "journeyNullReason": "queue replay is exercised by shared/lib/linear-retry-queue.test.ts",
+  "journey": "linear-retry-stale-state",
   "expected": {
     "category": "product_defect",
     "rootCauseClass": "unclassified_local_failure",

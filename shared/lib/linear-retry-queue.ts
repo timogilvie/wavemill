@@ -197,16 +197,20 @@ export async function compact(repoDir = process.cwd(), now = new Date()): Promis
     lockPath,
     (current) => {
       const cutoff = now.getTime() - RETAIN_SETTLED_MS;
-      const records = parseQueue(repoDir).filter((record) => {
-        if (record.recordType === 'tombstone') {
-          return new Date(record.settledAt).getTime() >= cutoff;
-        }
-        if (record.recordType === 'permanently_failed') {
-          return new Date(record.failedAt).getTime() >= cutoff;
-        }
-        if (record.recordType === 'dropped') return new Date(record.droppedAt).getTime() >= cutoff;
-        return true;
-      });
+      const allRecords = parseQueue(repoDir);
+      const expiredTerminalIds = new Set(
+        [...latestRecordById(allRecords).values()]
+          .filter((record) => {
+            const settledAt = record.recordType === 'tombstone' ? record.settledAt
+              : record.recordType === 'permanently_failed' ? record.failedAt
+                : record.recordType === 'dropped' ? record.droppedAt : undefined;
+            return settledAt !== undefined && new Date(settledAt).getTime() < cutoff;
+          })
+          .map((record) => record.id),
+      );
+      // Delete the complete entry history together. Retaining an older pending
+      // record after pruning its terminal record would make it live again.
+      const records = allRecords.filter((record) => !expiredTerminalIds.has(record.id));
       rewriteQueueFile(repoDir, records);
       return { lastRunAt: toIso(now) };
     },
